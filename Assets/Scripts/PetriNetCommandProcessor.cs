@@ -179,7 +179,14 @@ public partial class GameManager
 					return false;
 				}
 
-				return TryReturnSharedTransitionToPool(node, actorClientId, new Vector2(0f, sharedPoolY));
+				Vector2 dropPosition = new Vector2(cmd.x, cmd.y);
+				bool result = TryReturnSharedTransitionToPool(node, actorClientId, dropPosition);
+				if (result)
+				{
+					UpdateAllArcVisuals();
+					RefreshPetriNetVisuals();
+				}
+				return result;
 			}
 			case "UpdateAvatar":
 			{

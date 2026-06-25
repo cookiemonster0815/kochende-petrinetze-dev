@@ -597,7 +597,13 @@ public partial class GameManager
 
 	private bool TryReturnSharedTransitionToPool(NodeRuntime node, ulong actorClientId, Vector2 desiredPosition)
 	{
-		if (node == null || node.type != NodeType.Transition || !node.isSharedPoolTransition || node.isSharedPoolAvailable)
+		if (node == null || node.type != NodeType.Transition)
+		{
+			return false;
+		}
+
+		// Allow returning transitions that were placed outside the pool back to the pool
+		if (node.isSharedPoolTransition && node.isSharedPoolAvailable)
 		{
 			return false;
 		}
@@ -612,7 +618,19 @@ public partial class GameManager
 			return false;
 		}
 
-		Vector2 slotPosition = GetSharedPoolSlotPosition(node.id);
+		// Only transitions from the pool can be returned (must have T_POOL_ prefix)
+		if (!node.id.StartsWith("T_POOL_"))
+		{
+			return false;
+		}
+
+		if (IsPositionBlockedByTransition(new Vector3(desiredPosition.x, desiredPosition.y, 0f), node.id))
+		{
+			return false;
+		}
+
+		// Check if transition is fully inside the pool zone
+		bool fullyInPool = IsTransitionFullyInPoolZone(desiredPosition);
 
 		List<string> arcIdsToRemove = new List<string>();
 		foreach (KeyValuePair<string, ArcRuntime> pair in arcsById)
@@ -629,9 +647,24 @@ public partial class GameManager
 			RemoveArcInternal(arcIdsToRemove[i]);
 		}
 
-		node.ownerClientId = UnassignedOwnerClientId;
-		node.isSharedPoolAvailable = true;
-		node.transform.position = new Vector3(slotPosition.x, slotPosition.y, 0f);
+		node.transform.position = new Vector3(desiredPosition.x, desiredPosition.y, 0f);
+
+		if (fullyInPool)
+		{
+			// Fully in pool: make available for both players
+			node.ownerClientId = UnassignedOwnerClientId;
+			node.isSharedPoolTransition = true;
+			node.isSharedPoolAvailable = true;
+		}
+		else
+		{
+			// Partially in pool: keep it owned by current player
+			node.ownerClientId = actorClientId;
+			node.isSharedPoolTransition = false;
+			node.isSharedPoolAvailable = false;
+		}
+
+		// Position stays where it was dropped (already set by client)
 		return true;
 	}
 
@@ -644,6 +677,32 @@ public partial class GameManager
 
 		return worldPosition.x >= -halfWidth && worldPosition.x <= halfWidth
 			&& worldPosition.y >= sharedPoolY - halfHeight && worldPosition.y <= sharedPoolY + halfHeight;
+	}
+
+	private bool IsTransitionFullyInPoolZone(Vector2 transitionPosition)
+	{
+		// Check if the entire transition (with its collision radius) is inside the pool zone
+		// We need to check all four corners/edges of the transition's bounding box
+
+		// Get pool zone boundaries
+		int slotCount = Mathf.Max(1, sharedPoolTransitionCount);
+		float width = (slotCount - 1) * sharedPoolSlotSpacing + 2.2f;
+		float halfWidth = width * 0.5f;
+		float halfHeight = 1f;
+
+		float poolLeft = -halfWidth;
+		float poolRight = halfWidth;
+		float poolBottom = sharedPoolY - halfHeight;
+		float poolTop = sharedPoolY + halfHeight;
+
+		// Transition bounds (considering it's roughly square with transitionCollisionRadius)
+		float transLeft = transitionPosition.x - transitionCollisionRadius;
+		float transRight = transitionPosition.x + transitionCollisionRadius;
+		float transBottom = transitionPosition.y - transitionCollisionRadius;
+		float transTop = transitionPosition.y + transitionCollisionRadius;
+
+		// Check if all edges are inside the pool
+		return transLeft >= poolLeft && transRight <= poolRight && transBottom >= poolBottom && transTop <= poolTop;
 	}
 
 	private void UpdateVisibilityForLocalPlayer()
@@ -669,9 +728,14 @@ public partial class GameManager
 			NodeRuntime node = pair.Value;
 			bool visible = false;
 
-			if (node.isSharedPoolTransition)
+			if (node.type == NodeType.Place)
 			{
-				// Pool transitions: visible if available OR if I'm holding it right now
+				// Places are always visible to their owner
+				visible = node.ownerClientId == localClientId;
+			}
+			else if (node.isSharedPoolTransition)
+			{
+				// Pool transitions: visible if available (for all players) OR if I'm holding it
 				visible = node.isSharedPoolAvailable || node.id == heldTransitionId;
 			}
 			else
@@ -679,7 +743,7 @@ public partial class GameManager
 				// Regular transitions: visible if owned by me OR held by me (even if not owned yet)
 				bool ownedByLocal = node.ownerClientId == localClientId;
 				bool heldByLocal = node.id == heldTransitionId;
-				
+
 				visible = ownedByLocal || heldByLocal;
 			}
 

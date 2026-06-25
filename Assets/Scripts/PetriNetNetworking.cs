@@ -300,6 +300,7 @@ public partial class GameManager
 
 				if (nodesById.TryGetValue(state.id, out NodeRuntime node))
 				{
+					node.isSharedPoolTransition = state.isSharedPoolTransition;
 					node.isSharedPoolAvailable = state.isSharedPoolAvailable;
 					node.ownerClientId = (ulong)state.ownerClientId;
 					node.tokens = state.tokens;
@@ -309,7 +310,7 @@ public partial class GameManager
 					{
 						node.transform.position = new Vector3(state.x, state.y, 0f);
 					}
-					
+
 					// Clear pending claim flag if host confirmed this transition is ours
 					if (node.id == pendingClaimedTransitionId && node.ownerClientId == GetLocalActorClientId())
 					{

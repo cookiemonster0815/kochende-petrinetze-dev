@@ -157,41 +157,12 @@ public partial class GameManager
 		{
 			moveDirection = moveDirection.normalized;
 			Vector3 newPosition = avatarPosition + moveDirection * avatarSpeed * Time.deltaTime;
-
-			// Check for collisions with transitions before moving
-			float collisionCheckRadius = avatarCollisionRadius;
-			Collider2D[] colliders = Physics2D.OverlapCircleAll(newPosition, collisionCheckRadius);
-			bool canMove = true;
-			foreach (Collider2D col in colliders)
-			{
-				// Ignore arcs, avatars, held transitions and triggers
-				if (col.isTrigger) { continue; }
-				string objName = col.gameObject.name;
-				if (objName.StartsWith("A_") || objName.StartsWith("LocalAvatar") || objName.StartsWith("RemoteAvatar") || objName == heldTransitionId)
-				{
-					continue;
-				}
-
-				if (!string.IsNullOrEmpty(temporarilyIgnoredCollisionNodeId)
-					&& Time.unscaledTime <= temporarilyIgnoredCollisionUntilTime
-					&& objName == temporarilyIgnoredCollisionNodeId)
-				{
-					continue;
-				}
-
-				canMove = false;
-				break;
-			}
-
-			if (canMove)
-			{
-				avatarPosition = newPosition;
-			}
+			avatarPosition = GetAvatarCollisionSafePosition(avatarPosition, newPosition);
 
 			// Update rotation to face movement direction
 			float targetRotation = Mathf.Atan2(moveDirection.y, moveDirection.x) * Mathf.Rad2Deg;
 			avatarRotation = targetRotation;
-			
+
 			// Move held transition in front of avatar (already positioned at pickup above)
 			if (!string.IsNullOrEmpty(heldTransitionId) && nodesById.TryGetValue(heldTransitionId, out NodeRuntime heldNode))
 			{
@@ -298,28 +269,53 @@ public partial class GameManager
 			return;
 		}
 
-		// Check if avatar is in pool zone
-		Vector2 avatarPos2D = new Vector2(avatarPosition.x, avatarPosition.y);
-		if (IsInsideSharedPoolZone(avatarPos2D))
+		// Calculate drop position in front of avatar
+		float rad = avatarRotation * Mathf.Deg2Rad;
+		float dropOffset = avatarCollisionRadius + transitionCollisionRadius + 0.05f;
+		Vector3 dropPosition = avatarPosition + new Vector3(Mathf.Cos(rad), Mathf.Sin(rad), 0f) * dropOffset;
+
+		// Check if drop position is in pool zone
+		Vector2 dropPos2D = new Vector2(dropPosition.x, dropPosition.y);
+		if (IsInsideSharedPoolZone(dropPos2D))
 		{
-			// Return to pool
-			RequestReturnTransitionToPool(heldTransitionId);
-			transition.isSharedPoolAvailable = true;
-			transition.ownerClientId = UnassignedOwnerClientId;
+			if (IsPositionBlockedByTransition(dropPosition, heldTransitionId))
+			{
+				return;
+			}
+
+			string transitionId = heldTransitionId;
+			heldTransitionId = null;
+
 			if (transition.id == temporarilyIgnoredCollisionNodeId)
 			{
 				temporarilyIgnoredCollisionNodeId = null;
 			}
-			heldTransitionId = null;
-			RefreshPetriNetVisuals();
+
+			if (IsHostOrOffline())
+			{
+				// HOST: Let the authoritative command path update ownership/availability
+				// so it can validate against the current owner and broadcast the snapshot.
+				RequestReturnTransitionToPool(transitionId, dropPosition);
+			}
+			else
+			{
+				// CLIENT: Hide the transition temporarily until snapshot confirms
+				transition.transform.gameObject.SetActive(false);
+				RequestReturnTransitionToPool(transitionId, dropPosition);
+				// Position and flags will be updated when snapshot arrives
+				// RefreshPetriNetVisuals will be called in ApplySnapshot and make it visible again
+			}
 		}
 		else
 		{
-			// Place transition slightly in front of avatar so we don't clip into it
-			float rad = avatarRotation * Mathf.Deg2Rad;
-			float dropOffset = avatarCollisionRadius + transitionCollisionRadius + 0.05f;
-			Vector3 dropPosition = avatarPosition + new Vector3(Mathf.Cos(rad), Mathf.Sin(rad), 0f) * dropOffset;
+			// Check if another transition is already at this position
+			if (IsPositionBlockedByTransition(dropPosition, heldTransitionId))
+			{
+				// Cannot place here - position is occupied
+				return;
+			}
 
+			// Place transition outside pool
 			transition.transform.position = dropPosition;
 			transition.ownerClientId = GetLocalActorClientId();
 			transition.isSharedPoolAvailable = false;
@@ -330,6 +326,287 @@ public partial class GameManager
 			heldTransitionId = null;
 			RefreshPetriNetVisuals();
 		}
+	}
+
+	private bool IsPositionBlockedByTransition(Vector3 targetPosition, string ignoredTransitionId)
+	{
+		NodeRuntime movingNode = null;
+		nodesById.TryGetValue(ignoredTransitionId, out movingNode);
+		Rect targetBounds = GetTransitionPlacementBounds(movingNode, targetPosition);
+
+		foreach (KeyValuePair<string, NodeRuntime> pair in nodesById)
+		{
+			NodeRuntime node = pair.Value;
+
+			// Skip non-transitions
+			if (node.type != NodeType.Transition)
+			{
+				continue;
+			}
+
+			// Skip the transition we're trying to place
+			if (node.id == ignoredTransitionId)
+			{
+				continue;
+			}
+
+			Rect nodeBounds = GetTransitionPlacementBounds(node, node.transform.position);
+			if (DoTransitionBoundsOverlap(targetBounds, nodeBounds))
+			{
+				return true; // Position is blocked
+			}
+		}
+
+		return false; // Position is free
+	}
+
+	private Vector3 GetAvatarCollisionSafePosition(Vector3 currentPosition, Vector3 desiredPosition)
+	{
+		Vector3 cutPosition = CutAvatarMovementAtTransitionBounds(currentPosition, desiredPosition);
+		return ResolveAvatarTransitionOverlaps(cutPosition);
+	}
+
+	private Vector3 CutAvatarMovementAtTransitionBounds(Vector3 currentPosition, Vector3 desiredPosition)
+	{
+		Vector2 start = new Vector2(currentPosition.x, currentPosition.y);
+		Vector2 end = new Vector2(desiredPosition.x, desiredPosition.y);
+		Vector2 delta = end - start;
+		if (delta.sqrMagnitude <= 0.000001f)
+		{
+			return desiredPosition;
+		}
+
+		float earliestHit = 1f;
+		foreach (KeyValuePair<string, NodeRuntime> pair in nodesById)
+		{
+			NodeRuntime node = pair.Value;
+			if (!ShouldBlockAvatarWithTransition(node))
+			{
+				continue;
+			}
+
+			Rect expandedBounds = ExpandRect(GetTransitionPlacementBounds(node, node.transform.position), avatarCollisionRadius);
+			if (IsPointInsideOrOnRect(start, expandedBounds))
+			{
+				continue;
+			}
+
+			if (TryGetSegmentRectEntry(start, end, expandedBounds, out float hitT))
+			{
+				earliestHit = Mathf.Min(earliestHit, hitT);
+			}
+		}
+
+		if (earliestHit >= 1f)
+		{
+			return desiredPosition;
+		}
+
+		const float contactSkin = 0.002f;
+		float skinT = contactSkin / delta.magnitude;
+		Vector2 safePosition = start + delta * Mathf.Max(0f, earliestHit - skinT);
+		return new Vector3(safePosition.x, safePosition.y, desiredPosition.z);
+	}
+
+	private Vector3 ResolveAvatarTransitionOverlaps(Vector3 position)
+	{
+		Vector3 resolved = position;
+		for (int iteration = 0; iteration < 4; iteration++)
+		{
+			bool changed = false;
+			foreach (KeyValuePair<string, NodeRuntime> pair in nodesById)
+			{
+				NodeRuntime node = pair.Value;
+				if (!ShouldBlockAvatarWithTransition(node))
+				{
+					continue;
+				}
+
+				Rect bounds = GetTransitionPlacementBounds(node, node.transform.position);
+				if (TryGetAvatarPushOut(new Vector2(resolved.x, resolved.y), bounds, out Vector2 pushOut))
+				{
+					resolved.x += pushOut.x;
+					resolved.y += pushOut.y;
+					changed = true;
+				}
+			}
+
+			if (!changed)
+			{
+				break;
+			}
+		}
+
+		return resolved;
+	}
+
+	private bool ShouldBlockAvatarWithTransition(NodeRuntime node)
+	{
+		if (node == null || node.type != NodeType.Transition || node.transform == null)
+		{
+			return false;
+		}
+
+		if (!node.transform.gameObject.activeInHierarchy)
+		{
+			return false;
+		}
+
+		return node.id != heldTransitionId;
+	}
+
+	private bool TryGetAvatarPushOut(Vector2 avatarCenter, Rect transitionBounds, out Vector2 pushOut)
+	{
+		pushOut = Vector2.zero;
+		float closestX = Mathf.Clamp(avatarCenter.x, transitionBounds.xMin, transitionBounds.xMax);
+		float closestY = Mathf.Clamp(avatarCenter.y, transitionBounds.yMin, transitionBounds.yMax);
+		Vector2 closestPoint = new Vector2(closestX, closestY);
+		Vector2 awayFromTransition = avatarCenter - closestPoint;
+		float sqrDistance = awayFromTransition.sqrMagnitude;
+		float sqrRadius = avatarCollisionRadius * avatarCollisionRadius;
+
+		if (sqrDistance > sqrRadius)
+		{
+			return false;
+		}
+
+		if (sqrDistance > 0.000001f)
+		{
+			float distance = Mathf.Sqrt(sqrDistance);
+			pushOut = awayFromTransition / distance * (avatarCollisionRadius - distance);
+			return pushOut.sqrMagnitude > 0.000001f;
+		}
+
+		float leftDistance = avatarCenter.x - transitionBounds.xMin;
+		float rightDistance = transitionBounds.xMax - avatarCenter.x;
+		float bottomDistance = avatarCenter.y - transitionBounds.yMin;
+		float topDistance = transitionBounds.yMax - avatarCenter.y;
+		float minHorizontal = Mathf.Min(leftDistance, rightDistance);
+		float minVertical = Mathf.Min(bottomDistance, topDistance);
+
+		if (minHorizontal <= minVertical)
+		{
+			pushOut = leftDistance <= rightDistance
+				? new Vector2(-(leftDistance + avatarCollisionRadius), 0f)
+				: new Vector2(rightDistance + avatarCollisionRadius, 0f);
+		}
+		else
+		{
+			pushOut = bottomDistance <= topDistance
+				? new Vector2(0f, -(bottomDistance + avatarCollisionRadius))
+				: new Vector2(0f, topDistance + avatarCollisionRadius);
+		}
+
+		return true;
+	}
+
+	private Rect ExpandRect(Rect rect, float amount)
+	{
+		return new Rect(rect.xMin - amount, rect.yMin - amount, rect.width + amount * 2f, rect.height + amount * 2f);
+	}
+
+	private bool IsPointInsideOrOnRect(Vector2 point, Rect rect)
+	{
+		return point.x >= rect.xMin && point.x <= rect.xMax
+			&& point.y >= rect.yMin && point.y <= rect.yMax;
+	}
+
+	private bool TryGetSegmentRectEntry(Vector2 start, Vector2 end, Rect rect, out float entryT)
+	{
+		entryT = 0f;
+		Vector2 delta = end - start;
+		float tMin = 0f;
+		float tMax = 1f;
+
+		if (!UpdateSegmentSlab(start.x, delta.x, rect.xMin, rect.xMax, ref tMin, ref tMax))
+		{
+			return false;
+		}
+
+		if (!UpdateSegmentSlab(start.y, delta.y, rect.yMin, rect.yMax, ref tMin, ref tMax))
+		{
+			return false;
+		}
+
+		if (tMax < 0f || tMin > 1f)
+		{
+			return false;
+		}
+
+		entryT = Mathf.Clamp01(tMin);
+		return true;
+	}
+
+	private bool UpdateSegmentSlab(float start, float delta, float min, float max, ref float tMin, ref float tMax)
+	{
+		if (Mathf.Abs(delta) < 0.000001f)
+		{
+			return start >= min && start <= max;
+		}
+
+		float invDelta = 1f / delta;
+		float t1 = (min - start) * invDelta;
+		float t2 = (max - start) * invDelta;
+		if (t1 > t2)
+		{
+			float swap = t1;
+			t1 = t2;
+			t2 = swap;
+		}
+
+		tMin = Mathf.Max(tMin, t1);
+		tMax = Mathf.Min(tMax, t2);
+		return tMin <= tMax;
+	}
+
+	private Rect GetTransitionPlacementBounds(NodeRuntime node, Vector3 centerPosition)
+	{
+		Vector2 halfExtents = new Vector2(transitionCollisionRadius, transitionCollisionRadius);
+		Vector2 offset = Vector2.zero;
+
+		if (node != null && node.collider is BoxCollider2D boxCollider)
+		{
+			Vector3 scale = boxCollider.transform.lossyScale;
+			halfExtents = new Vector2(
+				Mathf.Abs(boxCollider.size.x * scale.x) * 0.5f,
+				Mathf.Abs(boxCollider.size.y * scale.y) * 0.5f);
+			offset = new Vector2(boxCollider.offset.x * scale.x, boxCollider.offset.y * scale.y);
+		}
+
+		Vector2 center = new Vector2(centerPosition.x + offset.x, centerPosition.y + offset.y);
+		return new Rect(center.x - halfExtents.x, center.y - halfExtents.y, halfExtents.x * 2f, halfExtents.y * 2f);
+	}
+
+	private bool DoTransitionBoundsOverlap(Rect a, Rect b)
+	{
+		return a.xMin < b.xMax && a.xMax > b.xMin
+			&& a.yMin < b.yMax && a.yMax > b.yMin;
+	}
+
+	private bool IsTransitionFullyInPoolZone(Vector3 transitionPosition)
+	{
+		// Check if the entire transition (with its collision radius) is inside the pool zone
+		// We need to check all four corners/edges of the transition's bounding box
+
+		// Get pool zone boundaries
+		int slotCount = Mathf.Max(1, sharedPoolTransitionCount);
+		float width = (slotCount - 1) * sharedPoolSlotSpacing + 2.2f;
+		float halfWidth = width * 0.5f;
+		float halfHeight = 1f;
+
+		float poolLeft = -halfWidth;
+		float poolRight = halfWidth;
+		float poolBottom = sharedPoolY - halfHeight;
+		float poolTop = sharedPoolY + halfHeight;
+
+		// Transition bounds (considering it's roughly square with transitionCollisionRadius)
+		float transLeft = transitionPosition.x - transitionCollisionRadius;
+		float transRight = transitionPosition.x + transitionCollisionRadius;
+		float transBottom = transitionPosition.y - transitionCollisionRadius;
+		float transTop = transitionPosition.y + transitionCollisionRadius;
+
+		// Check if all edges are inside the pool
+		return transLeft >= poolLeft && transRight <= poolRight && transBottom >= poolBottom && transTop <= poolTop;
 	}
 
 	private void RequestClaimTransition(string transitionId)
@@ -346,9 +623,9 @@ public partial class GameManager
 		ExecuteOrSendCommand(new CommandData { action = "MoveNode", id = transitionId, x = position.x, y = position.y });
 	}
 
-	private void RequestReturnTransitionToPool(string transitionId)
+	private void RequestReturnTransitionToPool(string transitionId, Vector3 position)
 	{
-		ExecuteOrSendCommand(new CommandData { action = "ReturnSharedTransition", id = transitionId });
+		ExecuteOrSendCommand(new CommandData { action = "ReturnSharedTransition", id = transitionId, x = position.x, y = position.y });
 	}
 
 	private void SendAvatarUpdate(Vector3 position, float rotation, string heldId)
