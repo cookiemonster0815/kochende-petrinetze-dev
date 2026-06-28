@@ -105,6 +105,16 @@ public partial class GameManager
 		public EdgeCollider2D collider;
 	}
 
+	private class CompositeBlockRuntime
+	{
+		public string id;
+		public GameObject gameObject;
+		public SpriteRenderer fill;
+		public LineRenderer border;
+		public BoxCollider2D collider;
+	}
+
 	private const string CommandMessageName = "PetriCommand";
 	private const string SnapshotMessageName = "PetriSnapshot";
+	private const string AvatarMessageName = "PetriAvatar";
 }

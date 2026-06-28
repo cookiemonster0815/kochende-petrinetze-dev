@@ -11,10 +11,17 @@ public partial class GameManager : NetworkBehaviour
 			gameObject.AddComponent<LobbyRelayManager>();
 		}
 
+		ConfigurePerformanceDefaults();
 		EnsureBaseSceneComponents();
 		gameplayInitialized = false;
 
 		Debug.Log("Petri-Net Editor active: 1 Select, 2 Place, 3 Transition, 4 Connect, 5 Delete, 6 +Token, 7 -Token");
+	}
+
+	private void ConfigurePerformanceDefaults()
+	{
+		QualitySettings.vSyncCount = 0;
+		Application.targetFrameRate = 60;
 	}
 
 	private void Update()
@@ -42,28 +49,20 @@ public partial class GameManager : NetworkBehaviour
 		HandleAvatarInput();
 	}
 
-	public override void OnDestroy()
+	private void LateUpdate()
 	{
-		UnregisterNetworkHandlers();
-		base.OnDestroy();
-	}
-
-	private void OnGUI()
-	{
-		if (!showEditorOverlay || !IsGameplayConnectionReady() || !gameplayInitialized)
+		if (!gameplayInitialized || mainCamera == null)
 		{
 			return;
 		}
 
-		GUI.Box(new Rect(12f, 12f, 560f, 240f), "Petri-Net Runtime Editor");
-		GUI.Label(new Rect(24f, 40f, 520f, 20f), "Mode: " + currentMode);
-		GUI.Label(new Rect(24f, 62f, 520f, 20f), "Role: " + GetNetworkRoleLabel());
-		GUI.Label(new Rect(24f, 84f, 520f, 20f), "1 Select | 2 Place | 4 Connect | 5 Delete | 6 +Token | 7 -Token");
-		GUI.Label(new Rect(24f, 106f, 520f, 20f), "Select mode: Pool-Transition klicken = nehmen, ins Poolfeld ziehen = zuruecklegen.");
-		GUI.Label(new Rect(24f, 128f, 520f, 20f), "Connect: Startnode klicken, dann Zielnode klicken.");
-		GUI.Label(new Rect(24f, 150f, 520f, 20f), "Kamera: Mausrad Zoom, MMB Pan, WASD/Pfeile bewegen.");
-		GUI.Label(new Rect(24f, 172f, 520f, 20f), "Network: Host autoritativ, Clients senden Commands.");
-		GUI.Label(new Rect(24f, 194f, 520f, 20f), "Jeder Spieler sieht nur seinen Bereich + gemeinsamen Transition-Pool.");
+		UpdateCameraFollowAvatar();
+	}
+
+	public override void OnDestroy()
+	{
+		UnregisterNetworkHandlers();
+		base.OnDestroy();
 	}
 
 	private bool IsGameplayConnectionReady()
@@ -100,12 +99,15 @@ public partial class GameManager : NetworkBehaviour
 			EnsureGraphRootExists();
 			BuildInitialPetriNet();
 			gameplayInitialized = true;
+			BroadcastSnapshotToClients();
 			return;
 		}
 
 		if (nodesById.Count > 0)
 		{
+			EnsureLocalAvatarStartPosition();
 			gameplayInitialized = true;
+			SendAvatarUpdate(avatarPosition, avatarRotation, heldTransitionId);
 		}
 	}
 }

@@ -8,6 +8,11 @@ public partial class GameManager
 		ExecuteOrSendCommand(new CommandData { action = "CreatePlace", x = world.x, y = world.y });
 	}
 
+	private void RequestCreateHeldPlace(Vector3 world)
+	{
+		ExecuteOrSendCommand(new CommandData { action = "CreateHeldPlace", x = world.x, y = world.y });
+	}
+
 	private void RequestCreateTransition(Vector3 world)
 	{
 		Debug.Log("CreateTransition is disabled. Use shared pool transitions.");
@@ -28,6 +33,11 @@ public partial class GameManager
 		ExecuteOrSendCommand(new CommandData { action = "DeleteArc", id = arcId });
 	}
 
+	private void RequestReverseArc(string arcId)
+	{
+		ExecuteOrSendCommand(new CommandData { action = "ReverseArc", id = arcId });
+	}
+
 	private void RequestChangeTokens(string nodeId, int delta)
 	{
 		ExecuteOrSendCommand(new CommandData { action = "ChangeTokens", id = nodeId, amount = delta });
@@ -46,6 +56,11 @@ public partial class GameManager
 	private void RequestMoveNode(string nodeId, Vector3 position)
 	{
 		ExecuteOrSendCommand(new CommandData { action = "MoveNode", id = nodeId, x = position.x, y = position.y });
+	}
+
+	private void RequestMoveCompositeBlock(string blockId, Vector3 centerPosition)
+	{
+		ExecuteOrSendCommand(new CommandData { action = "MoveCompositeBlock", id = blockId, x = centerPosition.x, y = centerPosition.y });
 	}
 
 	private void ExecuteOrSendCommand(CommandData cmd)
@@ -79,9 +94,20 @@ public partial class GameManager
 		{
 			case "CreatePlace":
 			{
-				string newId = GetNextPlaceId();
 				Vector2 clampedPosition = ClampPositionToPlayerZone(new Vector2(cmd.x, cmd.y), actorClientId);
+				if (IsNewPlacePositionBlocked(new Vector3(clampedPosition.x, clampedPosition.y, 0f)))
+				{
+					return false;
+				}
+
+				string newId = GetNextPlaceId();
 				CreatePlaceNode(newId, clampedPosition, 0, true, actorClientId, false, false);
+				return true;
+			}
+			case "CreateHeldPlace":
+			{
+				string newId = GetNextPlaceId();
+				CreatePlaceNode(newId, new Vector2(cmd.x, cmd.y), 0, true, actorClientId, false, false);
 				return true;
 			}
 			case "CreateTransition":
@@ -104,6 +130,11 @@ public partial class GameManager
 					return false;
 				}
 
+				if (IsProtectedInputPlace(node))
+				{
+					return false;
+				}
+
 				return RemoveNodeInternal(cmd.id);
 			}
 			case "DeleteArc":
@@ -113,7 +144,31 @@ public partial class GameManager
 					return false;
 				}
 
+				if (IsIngredientSourceArc(arc) || IsCompositeBlockInternalArc(arc))
+				{
+					return false;
+				}
+
 				return RemoveArcInternal(cmd.id);
+			}
+			case "ReverseArc":
+			{
+				if (!arcsById.TryGetValue(cmd.id, out ArcRuntime arc))
+				{
+					return false;
+				}
+
+				if (!CanActorReverseArc(arc, actorClientId))
+				{
+					return false;
+				}
+
+				string oldFromId = arc.fromId;
+				arc.fromId = arc.toId;
+				arc.toId = oldFromId;
+				UpdateAllArcVisuals();
+				RefreshPetriNetVisuals();
+				return true;
 			}
 			case "ChangeTokens":
 			{
@@ -147,6 +202,11 @@ public partial class GameManager
 					return false;
 				}
 
+				if (!CanActorMoveNode(node, actorClientId))
+				{
+					return false;
+				}
+
 				Vector2 desired = new Vector2(cmd.x, cmd.y);
 				if (TryReturnSharedTransitionToPool(node, actorClientId, desired))
 				{
@@ -155,13 +215,13 @@ public partial class GameManager
 					return true;
 				}
 
-				Vector2 targetPosition = desired;
-				if (node.type == NodeType.Place)
+				desired = ClampPositionToActorArea(desired, actorClientId, 0f);
+				if (IsPositionBlockedByNode(new Vector3(desired.x, desired.y, 0f), node.id))
 				{
-					targetPosition = ClampPositionToPlayerZone(desired, actorClientId);
+					return false;
 				}
 
-				node.transform.position = new Vector3(targetPosition.x, targetPosition.y, 0f);
+				node.transform.position = new Vector3(desired.x, desired.y, 0f);
 				// Placing a pool transition outside the pool makes it a regular owned transition
 				if (node.isSharedPoolTransition && !node.isSharedPoolAvailable)
 				{
@@ -169,6 +229,17 @@ public partial class GameManager
 					node.ownerClientId = actorClientId;
 				}
 				UpdateAllArcVisuals();
+				RefreshPetriNetVisuals();
+				return true;
+			}
+			case "MoveCompositeBlock":
+			{
+				Vector2 desired = ClampCompositeBlockCenterToActorArea(cmd.id, new Vector2(cmd.x, cmd.y), actorClientId);
+				if (!MoveCompositeBlockInternal(cmd.id, desired))
+				{
+					return false;
+				}
+
 				RefreshPetriNetVisuals();
 				return true;
 			}
@@ -190,8 +261,7 @@ public partial class GameManager
 			}
 			case "UpdateAvatar":
 			{
-				// Avatar position syncing disabled - remote display is off.
-				// Return false so no snapshot broadcast is triggered.
+				// Legacy command ignored; avatar sync now uses lightweight PetriAvatar messages.
 				return false;
 			}
 			default:
@@ -282,7 +352,7 @@ public partial class GameManager
 		transition.isSharedPoolAvailable = false;
 		transition.ownerClientId = actorClientId;
 
-		Vector2 claimedPosition = desiredPosition;
+		Vector2 claimedPosition = ClampPositionToActorArea(desiredPosition, actorClientId, 0f);
 		transition.transform.position = new Vector3(claimedPosition.x, claimedPosition.y, 0f);
 		RefreshPetriNetVisuals();
 		return true;
@@ -290,9 +360,21 @@ public partial class GameManager
 
 	private bool IsTransitionEnabled(string transitionId)
 	{
+		if (!nodesById.TryGetValue(transitionId, out NodeRuntime transition) || transition.type != NodeType.Transition)
+		{
+			return false;
+		}
+
+		bool hasInputPlace = false;
+		bool hasOutputPlace = false;
 		foreach (KeyValuePair<string, ArcRuntime> pair in arcsById)
 		{
 			ArcRuntime arc = pair.Value;
+			if (arc.fromId == transitionId && nodesById.TryGetValue(arc.toId, out NodeRuntime outputPlace) && outputPlace.type == NodeType.Place)
+			{
+				hasOutputPlace = true;
+			}
+
 			if (arc.toId != transitionId)
 			{
 				continue;
@@ -303,10 +385,21 @@ public partial class GameManager
 				continue;
 			}
 
+			hasInputPlace = true;
 			if (place.tokens < arc.weight)
 			{
 				return false;
 			}
+		}
+
+		if (!IsIngredientTransition(transition) && !hasInputPlace)
+		{
+			return false;
+		}
+
+		if (!IsIngredientTransition(transition) && !IsDeliveryTransition(transition) && !hasOutputPlace)
+		{
+			return false;
 		}
 
 		return true;
@@ -329,12 +422,52 @@ public partial class GameManager
 			return false;
 		}
 
+		if (IsCompositeBlockNode(node))
+		{
+			return true;
+		}
+
 		if (node.isSharedPoolTransition && node.isSharedPoolAvailable)
 		{
 			return false;
 		}
 
 		return node.ownerClientId == actorClientId;
+	}
+
+	private bool IsProtectedInputPlace(NodeRuntime node)
+	{
+		if (node == null || string.IsNullOrEmpty(node.id))
+		{
+			return false;
+		}
+
+		if (IsIngredientSourceNode(node) || IsDeliveryTransition(node) || IsCompositeBlockNode(node))
+		{
+			return true;
+		}
+
+		return node.type == NodeType.Place && (node.id == "P_Input" || node.id.EndsWith("_In"));
+	}
+
+	private bool CanActorMoveNode(NodeRuntime node, ulong actorClientId)
+	{
+		if (node == null || !CanActorEditNode(node, actorClientId))
+		{
+			return false;
+		}
+
+		if (IsDeliveryTransition(node) || IsCompositeBlockNode(node))
+		{
+			return false;
+		}
+
+		if (IsIngredientTransition(node))
+		{
+			return false;
+		}
+
+		return true;
 	}
 
 	private bool CanActorCreateArc(string fromId, string toId, ulong actorClientId)
@@ -344,7 +477,43 @@ public partial class GameManager
 			return false;
 		}
 
+		if (fromNode.type == toNode.type)
+		{
+			return false;
+		}
+
+		if (!IsArcAllowedByIngredientRules(fromId, toId))
+		{
+			return false;
+		}
+
 		return CanActorEditNode(fromNode, actorClientId) && CanActorEditNode(toNode, actorClientId);
+	}
+
+	private bool CanActorReverseArc(ArcRuntime arc, ulong actorClientId)
+	{
+		if (arc == null || arc.ownerClientId != actorClientId || IsIngredientSourceArc(arc) || IsCompositeBlockInternalArc(arc))
+		{
+			return false;
+		}
+
+		string newFromId = arc.toId;
+		string newToId = arc.fromId;
+		if (!CanActorCreateArc(newFromId, newToId, actorClientId))
+		{
+			return false;
+		}
+
+		foreach (KeyValuePair<string, ArcRuntime> pair in arcsById)
+		{
+			ArcRuntime existing = pair.Value;
+			if (existing.id != arc.id && existing.fromId == newFromId && existing.toId == newToId)
+			{
+				return false;
+			}
+		}
+
+		return true;
 	}
 
 	private bool IsSharedTransitionAvailable(NodeRuntime node)

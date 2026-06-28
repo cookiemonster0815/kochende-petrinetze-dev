@@ -21,9 +21,10 @@ public partial class GameManager
 		Unity.Netcode.NetworkManager.Singleton.OnClientConnectedCallback += OnClientConnected;
 		Unity.Netcode.NetworkManager.Singleton.CustomMessagingManager.RegisterNamedMessageHandler(CommandMessageName, OnCommandMessageReceived);
 		Unity.Netcode.NetworkManager.Singleton.CustomMessagingManager.RegisterNamedMessageHandler(SnapshotMessageName, OnSnapshotMessageReceived);
+		Unity.Netcode.NetworkManager.Singleton.CustomMessagingManager.RegisterNamedMessageHandler(AvatarMessageName, OnAvatarMessageReceived);
 		networkHandlersRegistered = true;
 
-		if (Unity.Netcode.NetworkManager.Singleton.IsHost)
+		if (Unity.Netcode.NetworkManager.Singleton.IsHost && nodesById.Count > 0)
 		{
 			BroadcastSnapshotToClients();
 		}
@@ -41,6 +42,7 @@ public partial class GameManager
 		{
 			Unity.Netcode.NetworkManager.Singleton.CustomMessagingManager.UnregisterNamedMessageHandler(CommandMessageName);
 			Unity.Netcode.NetworkManager.Singleton.CustomMessagingManager.UnregisterNamedMessageHandler(SnapshotMessageName);
+			Unity.Netcode.NetworkManager.Singleton.CustomMessagingManager.UnregisterNamedMessageHandler(AvatarMessageName);
 		}
 
 		networkHandlersRegistered = false;
@@ -64,6 +66,7 @@ public partial class GameManager
 			BuildCollaborativeTwoPlayerLayout(NetworkManager.ServerClientId, otherClientId);
 		}
 
+		SeedRemoteAvatarStartPosition(clientId);
 		SendSnapshotToClient(clientId);
 		BroadcastSnapshotToClients();
 	}
@@ -112,6 +115,35 @@ public partial class GameManager
 		ApplySnapshot(snapshot);
 	}
 
+	private void OnAvatarMessageReceived(ulong senderClientId, FastBufferReader reader)
+	{
+		if (!enableNetworkAuthoritativeSync || Unity.Netcode.NetworkManager.Singleton == null)
+		{
+			return;
+		}
+
+		AvatarState state = ReadAvatarState(reader);
+		if (state == null)
+		{
+			return;
+		}
+
+		if (Unity.Netcode.NetworkManager.Singleton.IsHost)
+		{
+			state.clientId = (long)senderClientId;
+			StoreRemoteAvatarState(state);
+			BroadcastAvatarState(state, senderClientId);
+			return;
+		}
+
+		if ((ulong)state.clientId == GetLocalActorClientId())
+		{
+			return;
+		}
+
+		StoreRemoteAvatarState(state);
+	}
+
 	private void SendCommandToHost(CommandData cmd)
 	{
 		if (Unity.Netcode.NetworkManager.Singleton == null || !Unity.Netcode.NetworkManager.Singleton.IsListening)
@@ -147,6 +179,74 @@ public partial class GameManager
 		}
 	}
 
+	private void SendAvatarUpdate(Vector3 position, float rotation, string heldId)
+	{
+		if (Unity.Netcode.NetworkManager.Singleton == null || !Unity.Netcode.NetworkManager.Singleton.IsListening)
+		{
+			return;
+		}
+
+		AvatarState state = new AvatarState
+		{
+			clientId = (long)GetLocalActorClientId(),
+			x = position.x,
+			y = position.y,
+			rotation = rotation,
+			heldTransitionId = heldId ?? ""
+		};
+
+		if (Unity.Netcode.NetworkManager.Singleton.IsHost)
+		{
+			BroadcastAvatarState(state, GetLocalActorClientId());
+			return;
+		}
+
+		SendAvatarStateToClient(NetworkManager.ServerClientId, state);
+	}
+
+	private void BroadcastAvatarState(AvatarState state, ulong exceptClientId)
+	{
+		if (Unity.Netcode.NetworkManager.Singleton == null || !Unity.Netcode.NetworkManager.Singleton.IsHost)
+		{
+			return;
+		}
+
+		foreach (ulong clientId in Unity.Netcode.NetworkManager.Singleton.ConnectedClientsIds)
+		{
+			if (clientId == exceptClientId || clientId == GetLocalActorClientId())
+			{
+				continue;
+			}
+
+			SendAvatarStateToClient(clientId, state);
+		}
+	}
+
+	private void SendAvatarStateToClient(ulong clientId, AvatarState state)
+	{
+		string json = JsonUtility.ToJson(state);
+		byte[] bytes = Encoding.UTF8.GetBytes(json);
+		using (FastBufferWriter writer = new FastBufferWriter(sizeof(int) + bytes.Length, Allocator.Temp))
+		{
+			writer.WriteValueSafe(bytes.Length);
+			writer.WriteBytesSafe(bytes);
+			Unity.Netcode.NetworkManager.Singleton.CustomMessagingManager.SendNamedMessage(AvatarMessageName, clientId, writer, NetworkDelivery.Unreliable);
+		}
+	}
+
+	private void StoreRemoteAvatarState(AvatarState state)
+	{
+		ulong clientId = (ulong)state.clientId;
+		if (clientId == GetLocalActorClientId())
+		{
+			return;
+		}
+
+		remoteAvatarPositions[clientId] = new Vector3(state.x, state.y, 0f);
+		remoteAvatarRotations[clientId] = state.rotation;
+		remoteAvatarInventories[clientId] = state.heldTransitionId ?? "";
+	}
+
 	private void BroadcastSnapshotToClients()
 	{
 		if (Unity.Netcode.NetworkManager.Singleton == null || !Unity.Netcode.NetworkManager.Singleton.IsHost)
@@ -179,9 +279,9 @@ public partial class GameManager
 				tokens = node.tokens,
 				x = node.transform.position.x,
 				y = node.transform.position.y,
-					ownerClientId = (long)node.ownerClientId,
-					isSharedPoolTransition = node.isSharedPoolTransition,
-					isSharedPoolAvailable = node.isSharedPoolAvailable,
+				ownerClientId = (long)node.ownerClientId,
+				isSharedPoolTransition = node.isSharedPoolTransition,
+				isSharedPoolAvailable = node.isSharedPoolAvailable,
 			});
 		}
 
@@ -239,6 +339,7 @@ public partial class GameManager
 			return;
 		}
 
+		ApplySharedScreenLayoutDefaults();
 		suppressNetworkSend = true;
 
 		// Process avatar states first
@@ -288,14 +389,29 @@ public partial class GameManager
 			}
 		}
 
-		if (!string.IsNullOrEmpty(draggedNodeId) || !string.IsNullOrEmpty(pendingClaimedTransitionId) || hasPoolTransitions)
+		if (!string.IsNullOrEmpty(draggedNodeId) || !string.IsNullOrEmpty(heldCompositeBlockId) || !string.IsNullOrEmpty(pendingClaimedTransitionId) || hasPoolTransitions)
 		{
+			int mergeMaxPlace = 0;
+			int mergeMaxTransition = 0;
+			int mergeMaxArc = 0;
+			HashSet<string> snapshotNodeIds = new HashSet<string>();
+
 			for (int i = 0; i < snapshot.nodes.Count; i++)
 			{
 				NodeState state = snapshot.nodes[i];
 				if (state == null || string.IsNullOrEmpty(state.id))
 				{
 					continue;
+				}
+
+				snapshotNodeIds.Add(state.id);
+				if ((NodeType)state.type == NodeType.Place)
+				{
+					mergeMaxPlace = Mathf.Max(mergeMaxPlace, ExtractTrailingNumber(state.id));
+				}
+				else
+				{
+					mergeMaxTransition = Mathf.Max(mergeMaxTransition, ExtractTrailingNumber(state.id));
 				}
 
 				if (nodesById.TryGetValue(state.id, out NodeRuntime node))
@@ -306,7 +422,8 @@ public partial class GameManager
 					node.tokens = state.tokens;
 					// Only update position for nodes that don't belong to me or aren't being dragged
 					// Nodes I own (or am dragging) keep their local position
-					if (node.id != draggedNodeId && node.ownerClientId != GetLocalActorClientId())
+					bool heldByLocal = node.id == heldTransitionId || node.id == heldPlaceId || IsHeldCompositeBlockNode(node);
+					if (node.id != draggedNodeId && !heldByLocal && node.ownerClientId != GetLocalActorClientId())
 					{
 						node.transform.position = new Vector3(state.x, state.y, 0f);
 					}
@@ -317,7 +434,86 @@ public partial class GameManager
 						pendingClaimedTransitionId = null;
 					}
 				}
+				else if ((NodeType)state.type == NodeType.Place)
+				{
+					CreatePlaceNode(state.id, new Vector2(state.x, state.y), state.tokens, false, (ulong)state.ownerClientId, state.isSharedPoolTransition, state.isSharedPoolAvailable);
+				}
+				else
+				{
+					CreateTransitionNode(state.id, new Vector2(state.x, state.y), false, (ulong)state.ownerClientId, state.isSharedPoolTransition, state.isSharedPoolAvailable);
+				}
 			}
+
+			List<string> nodeIdsToRemove = new List<string>();
+			foreach (KeyValuePair<string, NodeRuntime> pair in nodesById)
+			{
+				if (!snapshotNodeIds.Contains(pair.Key))
+				{
+					nodeIdsToRemove.Add(pair.Key);
+				}
+			}
+
+			for (int i = 0; i < nodeIdsToRemove.Count; i++)
+			{
+				string nodeId = nodeIdsToRemove[i];
+				if (heldTransitionId == nodeId)
+				{
+					heldTransitionId = null;
+				}
+
+				if (heldPlaceId == nodeId)
+				{
+					heldPlaceId = null;
+				}
+
+				RemoveNodeInternal(nodeId);
+			}
+
+			HashSet<string> snapshotArcIds = new HashSet<string>();
+			for (int i = 0; i < snapshot.arcs.Count; i++)
+			{
+				ArcState state = snapshot.arcs[i];
+				if (state == null || string.IsNullOrEmpty(state.id))
+				{
+					continue;
+				}
+
+				snapshotArcIds.Add(state.id);
+				mergeMaxArc = Mathf.Max(mergeMaxArc, ExtractTrailingNumber(state.id));
+				if (arcsById.TryGetValue(state.id, out ArcRuntime arc))
+				{
+					arc.fromId = state.fromId;
+					arc.toId = state.toId;
+					arc.weight = Mathf.Max(1, state.weight);
+					arc.ownerClientId = (ulong)state.ownerClientId;
+					UpdateArcVisual(arc);
+				}
+				else
+				{
+					CreateArcInternal(state.id, state.fromId, state.toId, state.weight, false, (ulong)state.ownerClientId);
+				}
+			}
+
+			List<string> arcIdsToRemove = new List<string>();
+			foreach (KeyValuePair<string, ArcRuntime> pair in arcsById)
+			{
+				if (!snapshotArcIds.Contains(pair.Key))
+				{
+					arcIdsToRemove.Add(pair.Key);
+				}
+			}
+
+			for (int i = 0; i < arcIdsToRemove.Count; i++)
+			{
+				RemoveArcInternal(arcIdsToRemove[i]);
+			}
+
+			placeCounter = Mathf.Max(placeCounter, mergeMaxPlace + 1);
+			transitionCounter = Mathf.Max(transitionCounter, mergeMaxTransition + 1);
+			arcCounter = Mathf.Max(arcCounter, mergeMaxArc + 1);
+
+			TryAttachPendingCreatedPlace();
+			EnsureLocalAvatarStartPosition();
 			RefreshPetriNetVisuals();
 			suppressNetworkSend = false;
 			return;
@@ -371,8 +567,10 @@ public partial class GameManager
 		arcCounter = Mathf.Max(1, maxArc + 1);
 
 		RefreshPetriNetVisuals();
+		EnsureLocalAvatarStartPosition();
 		gameplayInitialized = true;
 		pendingClaimedTransitionId = null;
+		TryAttachPendingCreatedPlace();
 		suppressNetworkSend = false;
 	}
 
@@ -402,6 +600,20 @@ public partial class GameManager
 		reader.ReadBytesSafe(ref bytes, length);
 		string json = Encoding.UTF8.GetString(bytes);
 		return JsonUtility.FromJson<SnapshotData>(json);
+	}
+
+	private AvatarState ReadAvatarState(FastBufferReader reader)
+	{
+		reader.ReadValueSafe(out int length);
+		if (length <= 0)
+		{
+			return null;
+		}
+
+		byte[] bytes = new byte[length];
+		reader.ReadBytesSafe(ref bytes, length);
+		string json = Encoding.UTF8.GetString(bytes);
+		return JsonUtility.FromJson<AvatarState>(json);
 	}
 
 	private bool IsHostOrOffline()

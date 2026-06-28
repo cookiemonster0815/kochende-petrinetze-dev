@@ -40,6 +40,7 @@ public partial class GameManager
 		if (keyboard.escapeKey.wasPressedThisFrame)
 		{
 			connectStartNodeId = null;
+			CancelCraneConnectPreview();
 			draggedNodeId = null;
 		}
 	}
@@ -86,11 +87,6 @@ public partial class GameManager
 			isMiddlePanning = false;
 		}
 
-		// Follow avatar with rest area
-		if (gameplayInitialized)
-		{
-			UpdateCameraFollowAvatar();
-		}
 	}
 
 	private float cameraVelocityX = 0f;
@@ -98,6 +94,46 @@ public partial class GameManager
 
 	private void UpdateCameraFollowAvatar()
 	{
+		if (enableSharedTransitionPool)
+		{
+			float requiredSize = GetSharedScreenCameraSize();
+			if (mainCamera.orthographicSize < requiredSize)
+			{
+				mainCamera.orthographicSize = requiredSize;
+			}
+
+			Vector3 sharedCamPos = mainCamera.transform.position;
+			float sharedScreenHeight = mainCamera.orthographicSize * 2f;
+			float sharedScreenWidth = sharedScreenHeight * mainCamera.aspect;
+			float sharedRestMarginX = sharedScreenWidth * cameraRestAreaMargin;
+			float sharedRestMarginY = sharedScreenHeight * cameraRestAreaMargin;
+			float sharedNewX = sharedCamPos.x;
+			float sharedNewY = sharedCamPos.y;
+
+			if (avatarPosition.x > sharedCamPos.x + sharedRestMarginX)
+			{
+				sharedNewX = avatarPosition.x - sharedRestMarginX;
+			}
+			else if (avatarPosition.x < sharedCamPos.x - sharedRestMarginX)
+			{
+				sharedNewX = avatarPosition.x + sharedRestMarginX;
+			}
+
+			if (avatarPosition.y > sharedCamPos.y + sharedRestMarginY)
+			{
+				sharedNewY = avatarPosition.y - sharedRestMarginY;
+			}
+			else if (avatarPosition.y < sharedCamPos.y - sharedRestMarginY)
+			{
+				sharedNewY = avatarPosition.y + sharedRestMarginY;
+			}
+
+			mainCamera.transform.position = new Vector3(sharedNewX, sharedNewY, sharedCamPos.z);
+			cameraVelocityX = 0f;
+			cameraVelocityY = 0f;
+			return;
+		}
+
 		// Rest area: only start moving camera once avatar leaves the inner margin
 		float screenHeight = mainCamera.orthographicSize * 2f;
 		float screenWidth = screenHeight * mainCamera.aspect;
@@ -147,48 +183,85 @@ public partial class GameManager
 		if (keyboard.leftArrowKey.isPressed || keyboard.aKey.isPressed) { moveDirection.x -= 1f; }
 		if (keyboard.rightArrowKey.isPressed || keyboard.dKey.isPressed) { moveDirection.x += 1f; }
 
-		if (!string.IsNullOrEmpty(temporarilyIgnoredCollisionNodeId) && Time.unscaledTime > temporarilyIgnoredCollisionUntilTime)
+		if (keyboard.eKey.wasPressedThisFrame)
 		{
-			temporarilyIgnoredCollisionNodeId = null;
+			HandleCreatePlaceAction();
+			UpdateAvatarVisuals();
+			return;
+		}
+
+		if (keyboard.rKey.wasPressedThisFrame)
+		{
+			HandlePlaceDeleteAction();
+			UpdateAvatarVisuals();
+			return;
+		}
+
+		if (keyboard.qKey.wasPressedThisFrame)
+		{
+			HandleCraneConnectAction();
+			UpdateAvatarVisuals();
+			return;
+		}
+
+		if (keyboard.fKey.wasPressedThisFrame)
+		{
+			HandleCraneFireAction();
+			UpdateAvatarVisuals();
+			return;
 		}
 
 		// Update avatar position
 		if (moveDirection.sqrMagnitude > 0.1f)
 		{
 			moveDirection = moveDirection.normalized;
-			Vector3 newPosition = avatarPosition + moveDirection * avatarSpeed * Time.deltaTime;
-			avatarPosition = GetAvatarCollisionSafePosition(avatarPosition, newPosition);
+			bool sprinting = keyboard.leftShiftKey.isPressed || keyboard.rightShiftKey.isPressed;
+			float currentSpeed = sprinting ? avatarSpeed * avatarSprintMultiplier : avatarSpeed;
+			Vector3 newPosition = avatarPosition + moveDirection * currentSpeed * Time.deltaTime;
+			avatarPosition = ClampAvatarPositionToAllowedArea(newPosition, GetLocalActorClientId());
 
 			// Update rotation to face movement direction
 			float targetRotation = Mathf.Atan2(moveDirection.y, moveDirection.x) * Mathf.Rad2Deg;
 			avatarRotation = targetRotation;
 
-			// Move held transition in front of avatar (already positioned at pickup above)
-			if (!string.IsNullOrEmpty(heldTransitionId) && nodesById.TryGetValue(heldTransitionId, out NodeRuntime heldNode))
+			if (!string.IsNullOrEmpty(heldTransitionId))
 			{
-				float rad = avatarRotation * Mathf.Deg2Rad;
-				float holdOffset = avatarCollisionRadius + transitionCollisionRadius + 0.05f;
-				Vector3 front = new Vector3(Mathf.Cos(rad), Mathf.Sin(rad), 0f) * holdOffset;
-				heldNode.transform.position = avatarPosition + front;
-				UpdateAllArcVisuals();
+				UpdateHeldTransitionVisual();
+			}
+
+			if (!string.IsNullOrEmpty(heldPlaceId))
+			{
+				UpdateHeldPlaceVisual();
+			}
+
+			if (!string.IsNullOrEmpty(heldCompositeBlockId))
+			{
+				UpdateHeldCompositeBlockVisual();
 			}
 		}
 
 		// Pickup/Drop with spacebar
 		if (keyboard.spaceKey.wasPressedThisFrame)
 		{
+			StartCraneDipAnimation();
 			HandleAvatarInteraction();
 		}
 
-		// Send position update to host periodically
-		// (disabled - remote avatar rendering is off, no need to flood network)
-		// if (Time.unscaledTime >= nextAvatarNetworkSyncTime || Vector3.Distance(lastAvatarPosition, avatarPosition) > 0.1f)
-		// {
-		// 	nextAvatarNetworkSyncTime = Time.unscaledTime + 0.08f;
-		// 	lastAvatarPosition = avatarPosition;
-		// 	lastAvatarRotation = avatarRotation;
-		// 	SendAvatarUpdate(avatarPosition, avatarRotation, heldTransitionId);
-		// }
+		string currentHeldTransitionId = heldTransitionId ?? "";
+		float movedDistance = Vector3.Distance(lastAvatarPosition, avatarPosition);
+		bool heldTransitionChanged = lastAvatarNetworkSyncHeldId != currentHeldTransitionId;
+		bool rotationChanged = Mathf.Abs(Mathf.DeltaAngle(lastAvatarNetworkSyncRotation, avatarRotation)) > 2f;
+		bool shouldSendAvatarUpdate = heldTransitionChanged
+			|| movedDistance > 0.65f
+			|| ((movedDistance > 0.05f || rotationChanged) && Time.unscaledTime >= nextAvatarNetworkSyncTime);
+		if (shouldSendAvatarUpdate)
+		{
+			nextAvatarNetworkSyncTime = Time.unscaledTime + avatarNetworkSyncInterval;
+			lastAvatarPosition = avatarPosition;
+			lastAvatarNetworkSyncRotation = avatarRotation;
+			lastAvatarNetworkSyncHeldId = currentHeldTransitionId;
+			SendAvatarUpdate(avatarPosition, avatarRotation, heldTransitionId);
+		}
 
 		// Update avatar visual every frame
 		UpdateAvatarVisuals();
@@ -196,20 +269,44 @@ public partial class GameManager
 
 	private void HandleAvatarInteraction()
 	{
-		if (string.IsNullOrEmpty(heldTransitionId))
+		if (!string.IsNullOrEmpty(heldCompositeBlockId))
 		{
-			// Try to pick up a transition
-			TryPickupTransition();
+			DropHeldCompositeBlock();
+			return;
 		}
-		else
+
+		if (!string.IsNullOrEmpty(heldPlaceId))
 		{
-			// Drop the held transition
+			DropHeldPlace();
+			return;
+		}
+
+		if (!string.IsNullOrEmpty(heldTransitionId))
+		{
 			TryDropTransition();
+			return;
 		}
+
+		if (TryPickupCompositeBlockAtCraneTarget())
+		{
+			return;
+		}
+
+		if (TryPickupPlaceAtCraneTarget())
+		{
+			return;
+		}
+
+		TryPickupTransition();
 	}
 
 	private void TryPickupTransition()
 	{
+		if (!string.IsNullOrEmpty(heldPlaceId))
+		{
+			return;
+		}
+
 		// Find closest available transition in pool nearby
 		// Pickup range = touching distance (sum of radii) + small buffer
 		float pickupRange = avatarCollisionRadius + transitionCollisionRadius + 0.2f;
@@ -220,6 +317,11 @@ public partial class GameManager
 		{
 			NodeRuntime node = pair.Value;
 			if (node.type != NodeType.Transition)
+			{
+				continue;
+			}
+
+			if (IsIngredientTransition(node) || IsDeliveryTransition(node) || IsCompositeBlockNode(node))
 			{
 				continue;
 			}
@@ -241,22 +343,15 @@ public partial class GameManager
 
 		if (closestTransition != null)
 		{
-			if (closestTransition.id == temporarilyIgnoredCollisionNodeId)
-			{
-				temporarilyIgnoredCollisionNodeId = null;
-			}
-
 			heldTransitionId = closestTransition.id;
-			// Position held transition immediately in front (don't wait for next HandleAvatarInput frame)
-			float rad = avatarRotation * Mathf.Deg2Rad;
-			float pickupOffset = avatarCollisionRadius + transitionCollisionRadius + 0.05f;
-			Vector3 front = new Vector3(Mathf.Cos(rad), Mathf.Sin(rad), 0f) * pickupOffset;
-			closestTransition.transform.position = avatarPosition + front;
+			closestTransition.transform.position = avatarPosition;
 			if (closestTransition.isSharedPoolTransition)
 			{
 				RequestClaimTransition(closestTransition.id);
 				closestTransition.isSharedPoolAvailable = false;
 			}
+			StartCraneDipAnimation();
+			UpdateHeldTransitionVisual();
 			RefreshPetriNetVisuals();
 		}
 	}
@@ -269,27 +364,24 @@ public partial class GameManager
 			return;
 		}
 
-		// Calculate drop position in front of avatar
-		float rad = avatarRotation * Mathf.Deg2Rad;
-		float dropOffset = avatarCollisionRadius + transitionCollisionRadius + 0.05f;
-		Vector3 dropPosition = avatarPosition + new Vector3(Mathf.Cos(rad), Mathf.Sin(rad), 0f) * dropOffset;
+		Vector3 dropPosition = avatarPosition;
 
 		// Check if drop position is in pool zone
 		Vector2 dropPos2D = new Vector2(dropPosition.x, dropPosition.y);
 		if (IsInsideSharedPoolZone(dropPos2D))
 		{
-			if (IsPositionBlockedByTransition(dropPosition, heldTransitionId))
+			if (!IsTransitionFullyInPoolZone(dropPosition))
+			{
+				return;
+			}
+
+			if (IsPositionBlockedByNode(dropPosition, heldTransitionId))
 			{
 				return;
 			}
 
 			string transitionId = heldTransitionId;
 			heldTransitionId = null;
-
-			if (transition.id == temporarilyIgnoredCollisionNodeId)
-			{
-				temporarilyIgnoredCollisionNodeId = null;
-			}
 
 			if (IsHostOrOffline())
 			{
@@ -305,11 +397,12 @@ public partial class GameManager
 				// Position and flags will be updated when snapshot arrives
 				// RefreshPetriNetVisuals will be called in ApplySnapshot and make it visible again
 			}
+			StartCraneDipAnimation();
 		}
 		else
 		{
-			// Check if another transition is already at this position
-			if (IsPositionBlockedByTransition(dropPosition, heldTransitionId))
+			// Check if another node is already at this position
+			if (IsPositionBlockedByNode(dropPosition, heldTransitionId))
 			{
 				// Cannot place here - position is occupied
 				return;
@@ -321,37 +414,701 @@ public partial class GameManager
 			transition.isSharedPoolAvailable = false;
 			transition.isSharedPoolTransition = false; // No longer a pool transition once placed
 			RequestPlaceTransition(heldTransitionId, dropPosition);
-			temporarilyIgnoredCollisionNodeId = transition.id;
-			temporarilyIgnoredCollisionUntilTime = Time.unscaledTime + postDropCollisionIgnoreDuration;
 			heldTransitionId = null;
+			StartCraneDipAnimation();
 			RefreshPetriNetVisuals();
 		}
 	}
 
-	private bool IsPositionBlockedByTransition(Vector3 targetPosition, string ignoredTransitionId)
+	private void HandleCreatePlaceAction()
 	{
-		NodeRuntime movingNode = null;
-		nodesById.TryGetValue(ignoredTransitionId, out movingNode);
-		Rect targetBounds = GetTransitionPlacementBounds(movingNode, targetPosition);
+		if (!string.IsNullOrEmpty(heldPlaceId))
+		{
+			DropHeldPlace();
+			return;
+		}
+
+		if (!string.IsNullOrEmpty(heldTransitionId) || !string.IsNullOrEmpty(heldCompositeBlockId))
+		{
+			return;
+		}
+
+		CreateAndHoldPlaceAtCraneTarget();
+	}
+
+	private void HandleCraneConnectAction()
+	{
+		if (!string.IsNullOrEmpty(heldCompositeBlockId))
+		{
+			return;
+		}
+
+		if (!TryGetNodeAtCraneTarget(out NodeRuntime targetNode))
+		{
+			if (!string.IsNullOrEmpty(craneConnectStartNodeId))
+			{
+				ToggleCraneConnectDirection();
+				return;
+			}
+
+			if (TryGetArcAtCraneTarget(out ArcRuntime arc))
+			{
+				TryReverseArcWithCrane(arc);
+			}
+
+			return;
+		}
+
+		if (!CanUseNodeAsExternalConnectionEndpoint(targetNode))
+		{
+			if (!string.IsNullOrEmpty(craneConnectStartNodeId))
+			{
+				ToggleCraneConnectDirection();
+			}
+
+			return;
+		}
+
+		if (string.IsNullOrEmpty(craneConnectStartNodeId))
+		{
+			craneConnectStartNodeId = targetNode.id;
+			craneConnectReversed = false;
+			UpdateCraneConnectPreviewVisual();
+			return;
+		}
+
+		if (!nodesById.TryGetValue(craneConnectStartNodeId, out NodeRuntime startNode) || !CanActorEditNode(startNode, GetLocalActorClientId()))
+		{
+			CancelCraneConnectPreview();
+			return;
+		}
+
+		if (startNode.id == targetNode.id)
+		{
+			ToggleCraneConnectDirection();
+			return;
+		}
+
+		string fromId = craneConnectReversed ? targetNode.id : startNode.id;
+		string toId = craneConnectReversed ? startNode.id : targetNode.id;
+		if (!CanCreatePendingCraneArc(fromId, toId))
+		{
+			ToggleCraneConnectDirection();
+			return;
+		}
+
+		RequestCreateArc(fromId, toId);
+		CancelCraneConnectPreview();
+	}
+
+	private void TryReverseArcWithCrane(ArcRuntime arc)
+	{
+		if (!CanActorReverseArc(arc, GetLocalActorClientId()))
+		{
+			return;
+		}
+
+		RequestReverseArc(arc.id);
+	}
+
+	private void ToggleCraneConnectDirection()
+	{
+		if (string.IsNullOrEmpty(craneConnectStartNodeId))
+		{
+			return;
+		}
+
+		craneConnectReversed = !craneConnectReversed;
+		UpdateCraneConnectPreviewVisual();
+	}
+
+	private void CancelCraneConnectPreview()
+	{
+		craneConnectStartNodeId = null;
+		craneConnectReversed = false;
+		HideCraneConnectPreviewVisual();
+	}
+
+	private bool CanCreatePendingCraneArc(string fromId, string toId)
+	{
+		if (!CanActorCreateArc(fromId, toId, GetLocalActorClientId()))
+		{
+			return false;
+		}
+
+		foreach (KeyValuePair<string, ArcRuntime> pair in arcsById)
+		{
+			ArcRuntime arc = pair.Value;
+			if (arc.fromId == fromId && arc.toId == toId)
+			{
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	private void HandleCraneFireAction()
+	{
+		if (!string.IsNullOrEmpty(heldCompositeBlockId))
+		{
+			return;
+		}
+
+		if (!TryGetTransitionAtCraneTarget(out NodeRuntime transition))
+		{
+			return;
+		}
+
+		RequestFireTransition(transition.id);
+	}
+
+	private bool TryPickupCompositeBlockAtCraneTarget()
+	{
+		if (TryGetCompositeBlockAtCraneTarget(out CompositeBlockRuntime block))
+		{
+			Vector2 blockCenter = GetCompositeBlockCenter(block.id);
+			heldCompositeBlockId = block.id;
+			heldCompositeBlockOffset = blockCenter - new Vector2(avatarPosition.x, avatarPosition.y);
+			StartCraneDipAnimation();
+			UpdateHeldCompositeBlockVisual();
+			RefreshPetriNetVisuals();
+			return true;
+		}
+
+		return false;
+	}
+
+	private bool TryPickupPlaceAtCraneTarget()
+	{
+		if (TryGetPlaceAtCraneTarget(out NodeRuntime place))
+		{
+			heldPlaceId = place.id;
+			StartCraneDipAnimation();
+			UpdateHeldPlaceVisual();
+			RefreshPetriNetVisuals();
+			return true;
+		}
+
+		return false;
+	}
+
+	private void DropHeldCompositeBlock()
+	{
+		if (string.IsNullOrEmpty(heldCompositeBlockId) || !compositeBlocksById.ContainsKey(heldCompositeBlockId))
+		{
+			heldCompositeBlockId = null;
+			heldCompositeBlockOffset = Vector2.zero;
+			return;
+		}
+
+		string blockId = heldCompositeBlockId;
+		Vector2 desiredCenter = ClampCompositeBlockCenterToActorArea(blockId, GetHeldCompositeBlockGroundCenter(), GetLocalActorClientId());
+		if (!MoveCompositeBlockInternal(blockId, desiredCenter))
+		{
+			return;
+		}
+
+		RequestMoveCompositeBlock(blockId, new Vector3(desiredCenter.x, desiredCenter.y, 0f));
+		SetCompositeBlockSorting(blockId, false);
+		heldCompositeBlockId = null;
+		heldCompositeBlockOffset = Vector2.zero;
+		StartCraneDipAnimation();
+		RefreshPetriNetVisuals();
+	}
+
+	private void HandlePlaceDeleteAction()
+	{
+		if (!string.IsNullOrEmpty(craneConnectStartNodeId))
+		{
+			CancelCraneConnectPreview();
+			return;
+		}
+
+		if (!string.IsNullOrEmpty(heldTransitionId))
+		{
+			return;
+		}
+
+		if (!string.IsNullOrEmpty(heldCompositeBlockId))
+		{
+			return;
+		}
+
+		if (!string.IsNullOrEmpty(heldPlaceId) && nodesById.TryGetValue(heldPlaceId, out NodeRuntime heldPlace))
+		{
+			TryDeletePlaceWithCrane(heldPlace);
+			return;
+		}
+
+		if (TryGetPlaceAtCraneTarget(out NodeRuntime place))
+		{
+			TryDeletePlaceWithCrane(place);
+			return;
+		}
+
+		if (TryGetArcAtCraneTarget(out ArcRuntime arc))
+		{
+			TryDeleteArcWithCrane(arc);
+		}
+	}
+
+	private void CreateAndHoldPlaceAtCraneTarget()
+	{
+		if (pendingCreatedPlacePickup)
+		{
+			return;
+		}
+
+		pendingCreatedPlacePickup = true;
+		pendingCreatedPlacePickupPosition = avatarPosition;
+		pendingCreatedPlaceExistingIds.Clear();
+		foreach (KeyValuePair<string, NodeRuntime> pair in nodesById)
+		{
+			if (pair.Value.type == NodeType.Place)
+			{
+				pendingCreatedPlaceExistingIds.Add(pair.Key);
+			}
+		}
+
+		RequestCreateHeldPlace(avatarPosition);
+		TryAttachPendingCreatedPlace();
+	}
+
+	private void DropHeldPlace()
+	{
+		if (!nodesById.TryGetValue(heldPlaceId, out NodeRuntime place))
+		{
+			heldPlaceId = null;
+			return;
+		}
+
+		Vector3 dropPosition = avatarPosition;
+		if (IsPositionBlockedByNode(dropPosition, heldPlaceId))
+		{
+			return;
+		}
+
+		place.transform.position = dropPosition;
+		RequestMoveNode(heldPlaceId, dropPosition);
+		heldPlaceId = null;
+		StartCraneDipAnimation();
+		RefreshPetriNetVisuals();
+	}
+
+	private void TryDeletePlaceWithCrane(NodeRuntime place)
+	{
+		if (place == null || place.type != NodeType.Place || IsProtectedInputPlace(place))
+		{
+			return;
+		}
+
+		if (!CanActorEditNode(place, GetLocalActorClientId()))
+		{
+			return;
+		}
+
+		string placeId = place.id;
+		if (heldPlaceId == placeId)
+		{
+			heldPlaceId = null;
+		}
+
+		RequestDeleteNode(placeId);
+		if (!IsHostOrOffline() && place.transform != null)
+		{
+			place.transform.gameObject.SetActive(false);
+		}
+
+		RefreshPetriNetVisuals();
+	}
+
+	private void TryDeleteArcWithCrane(ArcRuntime arc)
+	{
+		if (!CanActorSelectArc(arc))
+		{
+			return;
+		}
+
+		string arcId = arc.id;
+		RequestDeleteArc(arcId);
+		if (!IsHostOrOffline() && arc.gameObject != null)
+		{
+			arc.gameObject.SetActive(false);
+		}
+
+		HideCraneHoverSelectionVisual();
+		RefreshPetriNetVisuals();
+	}
+
+	private bool TryGetPlaceAtCraneTarget(out NodeRuntime closestPlace)
+	{
+		closestPlace = null;
+		float closestDistance = float.MaxValue;
 
 		foreach (KeyValuePair<string, NodeRuntime> pair in nodesById)
 		{
 			NodeRuntime node = pair.Value;
-
-			// Skip non-transitions
-			if (node.type != NodeType.Transition)
+			if (node.type != NodeType.Place || node.transform == null || !node.transform.gameObject.activeInHierarchy || !CanActorMoveNode(node, GetLocalActorClientId()))
 			{
 				continue;
 			}
 
-			// Skip the transition we're trying to place
-			if (node.id == ignoredTransitionId)
+			float pickupRange = avatarCollisionRadius + GetPlaceInteractionRadius(node) + 0.08f;
+			float distance = Vector2.Distance(avatarPosition, node.transform.position);
+			if (distance <= pickupRange && distance < closestDistance)
+			{
+				closestDistance = distance;
+				closestPlace = node;
+			}
+		}
+
+		return closestPlace != null;
+	}
+
+	private bool TryGetNodeAtCraneTarget(out NodeRuntime closestNode)
+	{
+		closestNode = null;
+		Vector2 craneTarget = new Vector2(avatarPosition.x, avatarPosition.y);
+		float closestDistance = float.MaxValue;
+
+		foreach (KeyValuePair<string, NodeRuntime> pair in nodesById)
+		{
+			NodeRuntime node = pair.Value;
+			if (node == null || node.transform == null || !node.transform.gameObject.activeInHierarchy || !CanActorEditNode(node, GetLocalActorClientId()))
 			{
 				continue;
 			}
 
-			Rect nodeBounds = GetTransitionPlacementBounds(node, node.transform.position);
-			if (DoTransitionBoundsOverlap(targetBounds, nodeBounds))
+			float distance;
+			bool withinRange;
+			if (node.type == NodeType.Place)
+			{
+				distance = Vector2.Distance(craneTarget, node.transform.position);
+				withinRange = distance <= avatarCollisionRadius + GetPlaceInteractionRadius(node) + 0.08f;
+			}
+			else
+			{
+				Rect expandedBounds = ExpandRect(GetTransitionPlacementBounds(node, node.transform.position), avatarCollisionRadius + 0.08f);
+				distance = GetPointRectDistance(craneTarget, expandedBounds);
+				withinRange = distance <= 0f;
+			}
+
+			if (withinRange && distance < closestDistance)
+			{
+				closestDistance = distance;
+				closestNode = node;
+			}
+		}
+
+		return closestNode != null;
+	}
+
+	private bool TryGetHoverSelectableNodeAtCraneTarget(out NodeRuntime closestNode)
+	{
+		closestNode = null;
+		Vector2 craneTarget = new Vector2(avatarPosition.x, avatarPosition.y);
+		float closestDistance = float.MaxValue;
+
+		foreach (KeyValuePair<string, NodeRuntime> pair in nodesById)
+		{
+			NodeRuntime node = pair.Value;
+			if (!CanActorHoverSelectNode(node))
+			{
+				continue;
+			}
+
+			float distance;
+			bool withinRange;
+			if (node.type == NodeType.Place)
+			{
+				distance = Vector2.Distance(craneTarget, node.transform.position);
+				withinRange = distance <= avatarCollisionRadius + GetPlaceInteractionRadius(node) + 0.08f;
+			}
+			else
+			{
+				Rect expandedBounds = ExpandRect(GetTransitionPlacementBounds(node, node.transform.position), avatarCollisionRadius + 0.08f);
+				distance = GetPointRectDistance(craneTarget, expandedBounds);
+				withinRange = distance <= 0f;
+			}
+
+			if (withinRange && distance < closestDistance)
+			{
+				closestDistance = distance;
+				closestNode = node;
+			}
+		}
+
+		return closestNode != null;
+	}
+
+	private bool TryGetCompositeBlockAtCraneTarget(out CompositeBlockRuntime closestBlock)
+	{
+		closestBlock = null;
+		Vector2 craneTarget = new Vector2(avatarPosition.x, avatarPosition.y);
+		float closestDistance = float.MaxValue;
+
+		foreach (KeyValuePair<string, CompositeBlockRuntime> pair in compositeBlocksById)
+		{
+			CompositeBlockRuntime block = pair.Value;
+			if (block == null || block.gameObject == null || !block.gameObject.activeInHierarchy)
+			{
+				continue;
+			}
+
+			if (!TryGetCompositeBlockBounds(block.id, out Rect bounds))
+			{
+				continue;
+			}
+
+			if (!DoesCraneShadowTouchRect(bounds))
+			{
+				continue;
+			}
+
+			float distance = GetPointRectDistance(craneTarget, bounds);
+			if (distance < closestDistance)
+			{
+				closestDistance = distance;
+				closestBlock = block;
+			}
+		}
+
+		return closestBlock != null;
+	}
+
+	private bool DoesCraneShadowTouchRect(Rect rect)
+	{
+		Vector2 shadowCenter = new Vector2(avatarPosition.x, avatarPosition.y);
+		float halfWidth = Mathf.Max(0.001f, GetAvatarBoundaryShadowHalfWidth());
+		float halfHeight = Mathf.Max(0.001f, GetAvatarBoundaryShadowHalfHeight());
+		float closestX = Mathf.Clamp(shadowCenter.x, rect.xMin, rect.xMax);
+		float closestY = Mathf.Clamp(shadowCenter.y, rect.yMin, rect.yMax);
+		float normalizedX = (shadowCenter.x - closestX) / halfWidth;
+		float normalizedY = (shadowCenter.y - closestY) / halfHeight;
+		return normalizedX * normalizedX + normalizedY * normalizedY <= 1f;
+	}
+
+	private bool CanActorHoverSelectNode(NodeRuntime node)
+	{
+		if (node == null || node.transform == null || !node.transform.gameObject.activeInHierarchy)
+		{
+			return false;
+		}
+
+		if (IsCompositeBlockNode(node))
+		{
+			return false;
+		}
+
+		if (node.type == NodeType.Transition && IsSharedTransitionAvailable(node))
+		{
+			return true;
+		}
+
+		return CanActorEditNode(node, GetLocalActorClientId());
+	}
+
+	private bool TryGetTransitionAtCraneTarget(out NodeRuntime closestTransition)
+	{
+		closestTransition = null;
+		Vector2 craneTarget = new Vector2(avatarPosition.x, avatarPosition.y);
+		float closestDistance = float.MaxValue;
+
+		foreach (KeyValuePair<string, NodeRuntime> pair in nodesById)
+		{
+			NodeRuntime node = pair.Value;
+			if (node == null || node.type != NodeType.Transition || node.transform == null || !node.transform.gameObject.activeInHierarchy)
+			{
+				continue;
+			}
+
+			if (node.id == heldTransitionId || !CanActorEditNode(node, GetLocalActorClientId()))
+			{
+				continue;
+			}
+
+			Rect expandedBounds = ExpandRect(GetTransitionPlacementBounds(node, node.transform.position), avatarCollisionRadius + 0.08f);
+			float distance = GetPointRectDistance(craneTarget, expandedBounds);
+			if (distance <= 0f && distance < closestDistance)
+			{
+				closestDistance = distance;
+				closestTransition = node;
+			}
+		}
+
+		return closestTransition != null;
+	}
+
+	private bool TryGetArcAtCraneTarget(out ArcRuntime closestArc)
+	{
+		closestArc = null;
+		Vector2 craneTarget = new Vector2(avatarPosition.x, avatarPosition.y);
+		float closestDistance = float.MaxValue;
+		float selectionDistance = Mathf.Max(0.2f, avatarCollisionRadius * 0.55f);
+
+		foreach (KeyValuePair<string, ArcRuntime> pair in arcsById)
+		{
+			ArcRuntime arc = pair.Value;
+			if (!CanActorSelectArc(arc))
+			{
+				continue;
+			}
+
+			if (!TryGetArcSegment(arc, out Vector3 start, out Vector3 end))
+			{
+				continue;
+			}
+
+			float distance = GetPointSegmentDistance(craneTarget, new Vector2(start.x, start.y), new Vector2(end.x, end.y));
+			if (distance <= selectionDistance && distance < closestDistance)
+			{
+				closestDistance = distance;
+				closestArc = arc;
+			}
+		}
+
+		return closestArc != null;
+	}
+
+	private bool CanActorSelectArc(ArcRuntime arc)
+	{
+		return arc != null
+			&& arc.gameObject != null
+			&& arc.gameObject.activeInHierarchy
+			&& arc.ownerClientId == GetLocalActorClientId()
+			&& !IsIngredientSourceArc(arc)
+			&& !IsCompositeBlockInternalArc(arc);
+	}
+
+	private bool TryGetArcSegment(ArcRuntime arc, out Vector3 start, out Vector3 end)
+	{
+		start = Vector3.zero;
+		end = Vector3.zero;
+		if (arc == null)
+		{
+			return false;
+		}
+
+		if (arc.body != null && arc.body.positionCount >= 2)
+		{
+			start = arc.body.GetPosition(0);
+			end = arc.body.GetPosition(1);
+			start.z = 0f;
+			end.z = 0f;
+			return (end - start).sqrMagnitude > 0.0001f;
+		}
+
+		if (arc.collider != null && arc.collider.points != null && arc.collider.points.Length >= 2)
+		{
+			Vector2[] points = arc.collider.points;
+			start = arc.collider.transform.TransformPoint(points[0]);
+			end = arc.collider.transform.TransformPoint(points[1]);
+			start.z = 0f;
+			end.z = 0f;
+			return (end - start).sqrMagnitude > 0.0001f;
+		}
+
+		return false;
+	}
+
+	private float GetPointSegmentDistance(Vector2 point, Vector2 segmentStart, Vector2 segmentEnd)
+	{
+		Vector2 segment = segmentEnd - segmentStart;
+		float lengthSquared = segment.sqrMagnitude;
+		if (lengthSquared <= 0.000001f)
+		{
+			return Vector2.Distance(point, segmentStart);
+		}
+
+		float t = Mathf.Clamp01(Vector2.Dot(point - segmentStart, segment) / lengthSquared);
+		Vector2 closest = segmentStart + segment * t;
+		return Vector2.Distance(point, closest);
+	}
+
+	private void TryAttachPendingCreatedPlace()
+	{
+		if (!pendingCreatedPlacePickup)
+		{
+			return;
+		}
+
+		NodeRuntime bestPlace = null;
+		float bestDistance = float.MaxValue;
+		int bestTrailingNumber = -1;
+
+		foreach (KeyValuePair<string, NodeRuntime> pair in nodesById)
+		{
+			NodeRuntime node = pair.Value;
+			if (node.type != NodeType.Place || node.transform == null || !node.transform.gameObject.activeInHierarchy || !CanActorEditNode(node, GetLocalActorClientId()) || IsProtectedInputPlace(node) || pendingCreatedPlaceExistingIds.Contains(node.id))
+			{
+				continue;
+			}
+
+			float distance = Vector2.Distance(pendingCreatedPlacePickupPosition, node.transform.position);
+			int trailingNumber = ExtractTrailingNumber(node.id);
+			if (distance < bestDistance - 0.001f || (Mathf.Abs(distance - bestDistance) <= 0.001f && trailingNumber > bestTrailingNumber))
+			{
+				bestPlace = node;
+				bestDistance = distance;
+				bestTrailingNumber = trailingNumber;
+			}
+		}
+
+		if (bestPlace == null || bestDistance > avatarCollisionRadius + GetPlaceInteractionRadius(bestPlace) + 0.08f)
+		{
+			return;
+		}
+
+		heldPlaceId = bestPlace.id;
+		pendingCreatedPlacePickup = false;
+		pendingCreatedPlaceExistingIds.Clear();
+		UpdateHeldPlaceVisual();
+		RefreshPetriNetVisuals();
+	}
+
+	private float GetPlaceInteractionRadius(NodeRuntime node)
+	{
+		if (node == null)
+		{
+			return 0.6f;
+		}
+
+		if (node.collider is CircleCollider2D circleCollider)
+		{
+			Vector3 scale = node.transform != null ? node.transform.lossyScale : Vector3.one;
+			float maxScale = Mathf.Max(Mathf.Abs(scale.x), Mathf.Abs(scale.y));
+			return circleCollider.radius * maxScale;
+		}
+
+		if (node.collider != null)
+		{
+			Bounds bounds = node.collider.bounds;
+			return Mathf.Max(bounds.extents.x, bounds.extents.y);
+		}
+
+		return 0.6f;
+	}
+
+	private bool IsPositionBlockedByNode(Vector3 targetPosition, string ignoredNodeId)
+	{
+		NodeRuntime movingNode = null;
+		nodesById.TryGetValue(ignoredNodeId, out movingNode);
+
+		foreach (KeyValuePair<string, NodeRuntime> pair in nodesById)
+		{
+			NodeRuntime node = pair.Value;
+			if (node == null || node.transform == null || !node.transform.gameObject.activeInHierarchy)
+			{
+				continue;
+			}
+
+			if (node.id == ignoredNodeId)
+			{
+				continue;
+			}
+
+			if (DoNodePlacementBoundsOverlap(movingNode, targetPosition, node, node.transform.position))
 			{
 				return true; // Position is blocked
 			}
@@ -360,144 +1117,35 @@ public partial class GameManager
 		return false; // Position is free
 	}
 
-	private Vector3 GetAvatarCollisionSafePosition(Vector3 currentPosition, Vector3 desiredPosition)
+	private bool IsNewPlacePositionBlocked(Vector3 targetPosition)
 	{
-		Vector3 cutPosition = CutAvatarMovementAtTransitionBounds(currentPosition, desiredPosition);
-		return ResolveAvatarTransitionOverlaps(cutPosition);
-	}
+		Vector2 placeCenter = new Vector2(targetPosition.x, targetPosition.y);
+		float placeRadius = 0.6f;
 
-	private Vector3 CutAvatarMovementAtTransitionBounds(Vector3 currentPosition, Vector3 desiredPosition)
-	{
-		Vector2 start = new Vector2(currentPosition.x, currentPosition.y);
-		Vector2 end = new Vector2(desiredPosition.x, desiredPosition.y);
-		Vector2 delta = end - start;
-		if (delta.sqrMagnitude <= 0.000001f)
-		{
-			return desiredPosition;
-		}
-
-		float earliestHit = 1f;
 		foreach (KeyValuePair<string, NodeRuntime> pair in nodesById)
 		{
 			NodeRuntime node = pair.Value;
-			if (!ShouldBlockAvatarWithTransition(node))
+			if (node == null || node.transform == null || !node.transform.gameObject.activeInHierarchy)
 			{
 				continue;
 			}
 
-			Rect expandedBounds = ExpandRect(GetTransitionPlacementBounds(node, node.transform.position), avatarCollisionRadius);
-			if (IsPointInsideOrOnRect(start, expandedBounds))
+			if (node.type == NodeType.Place)
 			{
-				continue;
-			}
-
-			if (TryGetSegmentRectEntry(start, end, expandedBounds, out float hitT))
-			{
-				earliestHit = Mathf.Min(earliestHit, hitT);
-			}
-		}
-
-		if (earliestHit >= 1f)
-		{
-			return desiredPosition;
-		}
-
-		const float contactSkin = 0.002f;
-		float skinT = contactSkin / delta.magnitude;
-		Vector2 safePosition = start + delta * Mathf.Max(0f, earliestHit - skinT);
-		return new Vector3(safePosition.x, safePosition.y, desiredPosition.z);
-	}
-
-	private Vector3 ResolveAvatarTransitionOverlaps(Vector3 position)
-	{
-		Vector3 resolved = position;
-		for (int iteration = 0; iteration < 4; iteration++)
-		{
-			bool changed = false;
-			foreach (KeyValuePair<string, NodeRuntime> pair in nodesById)
-			{
-				NodeRuntime node = pair.Value;
-				if (!ShouldBlockAvatarWithTransition(node))
+				GetPlacePlacementCircle(node, node.transform.position, out Vector2 existingCenter, out float existingRadius);
+				float combinedRadius = placeRadius + existingRadius;
+				if ((placeCenter - existingCenter).sqrMagnitude < combinedRadius * combinedRadius)
 				{
-					continue;
-				}
-
-				Rect bounds = GetTransitionPlacementBounds(node, node.transform.position);
-				if (TryGetAvatarPushOut(new Vector2(resolved.x, resolved.y), bounds, out Vector2 pushOut))
-				{
-					resolved.x += pushOut.x;
-					resolved.y += pushOut.y;
-					changed = true;
+					return true;
 				}
 			}
-
-			if (!changed)
+			else if (DoCircleRectOverlap(placeCenter, placeRadius, GetTransitionPlacementBounds(node, node.transform.position)))
 			{
-				break;
+				return true;
 			}
 		}
 
-		return resolved;
-	}
-
-	private bool ShouldBlockAvatarWithTransition(NodeRuntime node)
-	{
-		if (node == null || node.type != NodeType.Transition || node.transform == null)
-		{
-			return false;
-		}
-
-		if (!node.transform.gameObject.activeInHierarchy)
-		{
-			return false;
-		}
-
-		return node.id != heldTransitionId;
-	}
-
-	private bool TryGetAvatarPushOut(Vector2 avatarCenter, Rect transitionBounds, out Vector2 pushOut)
-	{
-		pushOut = Vector2.zero;
-		float closestX = Mathf.Clamp(avatarCenter.x, transitionBounds.xMin, transitionBounds.xMax);
-		float closestY = Mathf.Clamp(avatarCenter.y, transitionBounds.yMin, transitionBounds.yMax);
-		Vector2 closestPoint = new Vector2(closestX, closestY);
-		Vector2 awayFromTransition = avatarCenter - closestPoint;
-		float sqrDistance = awayFromTransition.sqrMagnitude;
-		float sqrRadius = avatarCollisionRadius * avatarCollisionRadius;
-
-		if (sqrDistance > sqrRadius)
-		{
-			return false;
-		}
-
-		if (sqrDistance > 0.000001f)
-		{
-			float distance = Mathf.Sqrt(sqrDistance);
-			pushOut = awayFromTransition / distance * (avatarCollisionRadius - distance);
-			return pushOut.sqrMagnitude > 0.000001f;
-		}
-
-		float leftDistance = avatarCenter.x - transitionBounds.xMin;
-		float rightDistance = transitionBounds.xMax - avatarCenter.x;
-		float bottomDistance = avatarCenter.y - transitionBounds.yMin;
-		float topDistance = transitionBounds.yMax - avatarCenter.y;
-		float minHorizontal = Mathf.Min(leftDistance, rightDistance);
-		float minVertical = Mathf.Min(bottomDistance, topDistance);
-
-		if (minHorizontal <= minVertical)
-		{
-			pushOut = leftDistance <= rightDistance
-				? new Vector2(-(leftDistance + avatarCollisionRadius), 0f)
-				: new Vector2(rightDistance + avatarCollisionRadius, 0f);
-		}
-		else
-		{
-			pushOut = bottomDistance <= topDistance
-				? new Vector2(0f, -(bottomDistance + avatarCollisionRadius))
-				: new Vector2(0f, topDistance + avatarCollisionRadius);
-		}
-
-		return true;
+		return false;
 	}
 
 	private Rect ExpandRect(Rect rect, float amount)
@@ -505,58 +1153,68 @@ public partial class GameManager
 		return new Rect(rect.xMin - amount, rect.yMin - amount, rect.width + amount * 2f, rect.height + amount * 2f);
 	}
 
-	private bool IsPointInsideOrOnRect(Vector2 point, Rect rect)
+	private float GetPointRectDistance(Vector2 point, Rect rect)
 	{
-		return point.x >= rect.xMin && point.x <= rect.xMax
-			&& point.y >= rect.yMin && point.y <= rect.yMax;
+		float dx = Mathf.Max(rect.xMin - point.x, 0f, point.x - rect.xMax);
+		float dy = Mathf.Max(rect.yMin - point.y, 0f, point.y - rect.yMax);
+		return Mathf.Sqrt(dx * dx + dy * dy);
 	}
 
-	private bool TryGetSegmentRectEntry(Vector2 start, Vector2 end, Rect rect, out float entryT)
+	private bool DoNodePlacementBoundsOverlap(NodeRuntime movingNode, Vector3 movingPosition, NodeRuntime existingNode, Vector3 existingPosition)
 	{
-		entryT = 0f;
-		Vector2 delta = end - start;
-		float tMin = 0f;
-		float tMax = 1f;
-
-		if (!UpdateSegmentSlab(start.x, delta.x, rect.xMin, rect.xMax, ref tMin, ref tMax))
+		if (movingNode == null || existingNode == null)
 		{
 			return false;
 		}
 
-		if (!UpdateSegmentSlab(start.y, delta.y, rect.yMin, rect.yMax, ref tMin, ref tMax))
+		if (movingNode.type == NodeType.Place && existingNode.type == NodeType.Place)
 		{
-			return false;
+			GetPlacePlacementCircle(movingNode, movingPosition, out Vector2 movingCenter, out float movingRadius);
+			GetPlacePlacementCircle(existingNode, existingPosition, out Vector2 existingCenter, out float existingRadius);
+			float combinedRadius = movingRadius + existingRadius;
+			return (movingCenter - existingCenter).sqrMagnitude < combinedRadius * combinedRadius;
 		}
 
-		if (tMax < 0f || tMin > 1f)
+		if (movingNode.type == NodeType.Transition && existingNode.type == NodeType.Transition)
 		{
-			return false;
+			return DoTransitionBoundsOverlap(
+				GetTransitionPlacementBounds(movingNode, movingPosition),
+				GetTransitionPlacementBounds(existingNode, existingPosition));
 		}
 
-		entryT = Mathf.Clamp01(tMin);
-		return true;
+		if (movingNode.type == NodeType.Place)
+		{
+			GetPlacePlacementCircle(movingNode, movingPosition, out Vector2 placeCenter, out float placeRadius);
+			return DoCircleRectOverlap(placeCenter, placeRadius, GetTransitionPlacementBounds(existingNode, existingPosition));
+		}
+
+		GetPlacePlacementCircle(existingNode, existingPosition, out Vector2 existingPlaceCenter, out float existingPlaceRadius);
+		return DoCircleRectOverlap(existingPlaceCenter, existingPlaceRadius, GetTransitionPlacementBounds(movingNode, movingPosition));
 	}
 
-	private bool UpdateSegmentSlab(float start, float delta, float min, float max, ref float tMin, ref float tMax)
+	private void GetPlacePlacementCircle(NodeRuntime node, Vector3 centerPosition, out Vector2 center, out float radius)
 	{
-		if (Mathf.Abs(delta) < 0.000001f)
+		center = new Vector2(centerPosition.x, centerPosition.y);
+		radius = 0.6f;
+
+		if (node == null)
 		{
-			return start >= min && start <= max;
+			return;
 		}
 
-		float invDelta = 1f / delta;
-		float t1 = (min - start) * invDelta;
-		float t2 = (max - start) * invDelta;
-		if (t1 > t2)
+		if (node.collider is CircleCollider2D circleCollider)
 		{
-			float swap = t1;
-			t1 = t2;
-			t2 = swap;
+			Vector3 scale = node.transform != null ? node.transform.lossyScale : Vector3.one;
+			center += new Vector2(circleCollider.offset.x * scale.x, circleCollider.offset.y * scale.y);
+			radius = circleCollider.radius * Mathf.Max(Mathf.Abs(scale.x), Mathf.Abs(scale.y));
+			return;
 		}
 
-		tMin = Mathf.Max(tMin, t1);
-		tMax = Mathf.Min(tMax, t2);
-		return tMin <= tMax;
+		if (node.collider != null)
+		{
+			Bounds bounds = node.collider.bounds;
+			radius = Mathf.Max(bounds.extents.x, bounds.extents.y);
+		}
 	}
 
 	private Rect GetTransitionPlacementBounds(NodeRuntime node, Vector3 centerPosition)
@@ -583,16 +1241,21 @@ public partial class GameManager
 			&& a.yMin < b.yMax && a.yMax > b.yMin;
 	}
 
+	private bool DoCircleRectOverlap(Vector2 circleCenter, float circleRadius, Rect rect)
+	{
+		float closestX = Mathf.Clamp(circleCenter.x, rect.xMin, rect.xMax);
+		float closestY = Mathf.Clamp(circleCenter.y, rect.yMin, rect.yMax);
+		Vector2 closestPoint = new Vector2(closestX, closestY);
+		return (circleCenter - closestPoint).sqrMagnitude < circleRadius * circleRadius;
+	}
+
 	private bool IsTransitionFullyInPoolZone(Vector3 transitionPosition)
 	{
 		// Check if the entire transition (with its collision radius) is inside the pool zone
 		// We need to check all four corners/edges of the transition's bounding box
 
-		// Get pool zone boundaries
-		int slotCount = Mathf.Max(1, sharedPoolTransitionCount);
-		float width = (slotCount - 1) * sharedPoolSlotSpacing + 2.2f;
-		float halfWidth = width * 0.5f;
-		float halfHeight = 1f;
+		float halfWidth = GetSharedPoolHalfWidth();
+		float halfHeight = sharedPoolHalfHeight;
 
 		float poolLeft = -halfWidth;
 		float poolRight = halfWidth;
@@ -611,11 +1274,7 @@ public partial class GameManager
 
 	private void RequestClaimTransition(string transitionId)
 	{
-		// Send the position the transition should be at (in front of avatar), not just avatar position
-		float rad = avatarRotation * Mathf.Deg2Rad;
-		float pickupOffset = avatarCollisionRadius + transitionCollisionRadius + 0.05f;
-		Vector3 pickupPosition = avatarPosition + new Vector3(Mathf.Cos(rad), Mathf.Sin(rad), 0f) * pickupOffset;
-		ExecuteOrSendCommand(new CommandData { action = "ClaimSharedTransition", id = transitionId, x = pickupPosition.x, y = pickupPosition.y });
+		ExecuteOrSendCommand(new CommandData { action = "ClaimSharedTransition", id = transitionId, x = avatarPosition.x, y = avatarPosition.y });
 	}
 
 	private void RequestPlaceTransition(string transitionId, Vector3 position)
@@ -628,28 +1287,44 @@ public partial class GameManager
 		ExecuteOrSendCommand(new CommandData { action = "ReturnSharedTransition", id = transitionId, x = position.x, y = position.y });
 	}
 
-	private void SendAvatarUpdate(Vector3 position, float rotation, string heldId)
-	{
-		ExecuteOrSendCommand(new CommandData { action = "UpdateAvatar", x = position.x, y = position.y, rotation = rotation, id = heldId });
-	}
-
 	private void BeginSelectPress(Vector3 worldPosition)
 	{
 		pointerDownNodeId = null;
+		pointerDownCompositeBlockId = null;
 		pointerDragActive = false;
 		draggedNodeId = null;
+		draggedCompositeBlockId = null;
 
-		if (!TryGetNodeAtPoint(worldPosition, out NodeRuntime node))
+		if (TryGetNodeAtPoint(worldPosition, out NodeRuntime node))
 		{
+			if (IsCompositeBlockNode(node))
+			{
+				pointerDownCompositeBlockId = GetCompositeBlockIdForNodeId(node.id);
+				pointerDownWorld = worldPosition;
+				return;
+			}
+
+			pointerDownNodeId = node.id;
+			pointerDownWorld = worldPosition;
 			return;
 		}
 
-		pointerDownNodeId = node.id;
-		pointerDownWorld = worldPosition;
+		if (TryGetCompositeBlockAtPoint(worldPosition, out CompositeBlockRuntime block))
+		{
+			pointerDownCompositeBlockId = block.id;
+			pointerDownWorld = worldPosition;
+			return;
+		}
 	}
 
 	private void HandleSelectHold(Vector3 worldPosition)
 	{
+		if (!string.IsNullOrEmpty(pointerDownCompositeBlockId))
+		{
+			HandleCompositeBlockSelectHold(worldPosition);
+			return;
+		}
+
 		if (string.IsNullOrEmpty(pointerDownNodeId))
 		{
 			return;
@@ -689,22 +1364,79 @@ public partial class GameManager
 
 		if (pointerDragActive && draggedNodeId != null && nodesById.TryGetValue(draggedNodeId, out NodeRuntime node))
 		{
-			node.transform.position = new Vector3(worldPosition.x + dragOffset.x, worldPosition.y + dragOffset.y, 0f);
+			Vector2 clampedDragPosition = ClampPositionToActorArea(new Vector2(worldPosition.x + dragOffset.x, worldPosition.y + dragOffset.y), GetLocalActorClientId(), 0f);
+			Vector3 desiredPosition = new Vector3(clampedDragPosition.x, clampedDragPosition.y, 0f);
+			if (IsPositionBlockedByNode(desiredPosition, node.id))
+			{
+				return;
+			}
+
+			node.transform.position = desiredPosition;
 			UpdateAllArcVisuals();
 
 			Vector3 currentPosition = node.transform.position;
-			if (Time.unscaledTime >= nextDragNetworkSyncTime || Vector3.Distance(lastDragNetworkSyncPosition, currentPosition) > 0.18f)
+			if (Time.unscaledTime >= nextDragNetworkSyncTime || Vector3.Distance(lastDragNetworkSyncPosition, currentPosition) > 0.45f)
 			{
-				nextDragNetworkSyncTime = Time.unscaledTime + 0.06f;
+				nextDragNetworkSyncTime = Time.unscaledTime + 0.2f;
 				lastDragNetworkSyncPosition = currentPosition;
 				RequestMoveNode(node.id, currentPosition);
 			}
 		}
 	}
 
+	private void HandleCompositeBlockSelectHold(Vector3 worldPosition)
+	{
+		if (!pointerDragActive)
+		{
+			if (Vector2.Distance(new Vector2(pointerDownWorld.x, pointerDownWorld.y), new Vector2(worldPosition.x, worldPosition.y)) < sharedPoolDragThreshold)
+			{
+				return;
+			}
+
+			if (!compositeBlocksById.ContainsKey(pointerDownCompositeBlockId))
+			{
+				pointerDownCompositeBlockId = null;
+				return;
+			}
+
+			pointerDragActive = true;
+			draggedCompositeBlockId = pointerDownCompositeBlockId;
+			Vector2 blockCenter = GetCompositeBlockCenter(draggedCompositeBlockId);
+			dragOffset = new Vector3(blockCenter.x - worldPosition.x, blockCenter.y - worldPosition.y, 0f);
+			nextDragNetworkSyncTime = 0f;
+			lastDragNetworkSyncPosition = new Vector3(blockCenter.x, blockCenter.y, 0f);
+		}
+
+		if (!pointerDragActive || string.IsNullOrEmpty(draggedCompositeBlockId))
+		{
+			return;
+		}
+
+		Vector2 desiredCenter = new Vector2(worldPosition.x + dragOffset.x, worldPosition.y + dragOffset.y);
+		desiredCenter = ClampCompositeBlockCenterToActorArea(draggedCompositeBlockId, desiredCenter, GetLocalActorClientId());
+		if (!MoveCompositeBlockInternal(draggedCompositeBlockId, desiredCenter))
+		{
+			return;
+		}
+
+		Vector2 currentCenter = GetCompositeBlockCenter(draggedCompositeBlockId);
+		Vector3 currentPosition = new Vector3(currentCenter.x, currentCenter.y, 0f);
+		if (Time.unscaledTime >= nextDragNetworkSyncTime || Vector3.Distance(lastDragNetworkSyncPosition, currentPosition) > 0.45f)
+		{
+			nextDragNetworkSyncTime = Time.unscaledTime + 0.2f;
+			lastDragNetworkSyncPosition = currentPosition;
+			RequestMoveCompositeBlock(draggedCompositeBlockId, currentPosition);
+		}
+	}
+
 	private void HandleSelectRelease(Vector3 worldPosition)
 	{
-		if (pointerDragActive && draggedNodeId != null && nodesById.TryGetValue(draggedNodeId, out NodeRuntime draggedNode))
+		if (pointerDragActive && !string.IsNullOrEmpty(draggedCompositeBlockId))
+		{
+			Vector2 center = GetCompositeBlockCenter(draggedCompositeBlockId);
+			RequestMoveCompositeBlock(draggedCompositeBlockId, new Vector3(center.x, center.y, 0f));
+		}
+		else if (pointerDragActive && draggedNodeId != null && nodesById.TryGetValue(draggedNodeId, out NodeRuntime draggedNode))
 		{
 			RequestMoveNode(draggedNode.id, draggedNode.transform.position);
 		}
@@ -714,8 +1446,10 @@ public partial class GameManager
 		}
 
 		pointerDownNodeId = null;
+		pointerDownCompositeBlockId = null;
 		pointerDragActive = false;
 		draggedNodeId = null;
+		draggedCompositeBlockId = null;
 		nextDragNetworkSyncTime = 0f;
 		// Don't clear pendingClaimedTransitionId here - let ApplySnapshot() do it when host confirms
 	}
@@ -742,7 +1476,7 @@ public partial class GameManager
 			return false;
 		}
 
-		if (!CanActorEditNode(node, GetLocalActorClientId()))
+		if (!CanActorMoveNode(node, GetLocalActorClientId()))
 		{
 			return false;
 		}
@@ -772,7 +1506,7 @@ public partial class GameManager
 			case EditMode.Select:
 				break;
 			case EditMode.CreatePlace:
-				if (!TryGetNodeAtPoint(worldPosition, out _))
+				if (!IsNewPlacePositionBlocked(worldPosition))
 				{
 					RequestCreatePlace(worldPosition);
 				}
@@ -801,6 +1535,11 @@ public partial class GameManager
 			return;
 		}
 
+		if (!CanUseNodeAsExternalConnectionEndpoint(node))
+		{
+			return;
+		}
+
 		if (connectStartNodeId == null)
 		{
 			connectStartNodeId = node.id;
@@ -822,12 +1561,22 @@ public partial class GameManager
 	{
 		if (TryGetNodeAtPoint(worldPosition, out NodeRuntime node))
 		{
+			if (IsProtectedInputPlace(node))
+			{
+				return;
+			}
+
 			RequestDeleteNode(node.id);
 			return;
 		}
 
 		if (TryGetArcAtPoint(worldPosition, out ArcRuntime arc))
 		{
+			if (IsIngredientSourceArc(arc) || IsCompositeBlockInternalArc(arc))
+			{
+				return;
+			}
+
 			RequestDeleteArc(arc.id);
 		}
 	}
@@ -879,6 +1628,23 @@ public partial class GameManager
 		}
 
 		return arcsById.TryGetValue(arcId, out arc);
+	}
+
+	private bool TryGetCompositeBlockAtPoint(Vector3 worldPosition, out CompositeBlockRuntime block)
+	{
+		block = null;
+		Collider2D hit = Physics2D.OverlapPoint(new Vector2(worldPosition.x, worldPosition.y));
+		if (hit == null)
+		{
+			return false;
+		}
+
+		if (!compositeBlockByCollider.TryGetValue(hit, out string blockId))
+		{
+			return false;
+		}
+
+		return compositeBlocksById.TryGetValue(blockId, out block);
 	}
 
 	private Vector3 GetMouseWorldPosition()

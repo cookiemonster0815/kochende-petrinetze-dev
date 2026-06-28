@@ -24,17 +24,16 @@ public partial class GameManager
 	[SerializeField] private float arrowHeadAngle = 30f;
 
 	[Header("Editor")]
-	[SerializeField] private bool showEditorOverlay = true;
 	[SerializeField] private float zoomSpeed = 0.5f;
 	[SerializeField] private float minZoom = 1.8f;
 	[SerializeField] private float maxZoom = 12f;
-	[SerializeField] private float panSpeed = 6f; // For future UI panning
 
 	[Header("Networking")]
 	[SerializeField] private bool enableNetworkAuthoritativeSync = true;
 	[SerializeField] private bool enableSharedTransitionPool = true;
 	[SerializeField] private int sharedPoolTransitionCount = 4;
-	[SerializeField] private float sharedPoolY = 4.2f;
+	[SerializeField] private float sharedPoolY = 0f;
+	[SerializeField] private float sharedPoolHalfHeight = 1f;
 	[SerializeField] private float sharedPoolDragThreshold = 0.22f;
 	[SerializeField] private float playerZoneXOffset = 6.5f;
 	[SerializeField] private float playerZoneYSpacing = 2.7f;
@@ -43,11 +42,15 @@ public partial class GameManager
 	private readonly Dictionary<string, ArcRuntime> arcsById = new Dictionary<string, ArcRuntime>();
 	private readonly Dictionary<Collider2D, string> nodeByCollider = new Dictionary<Collider2D, string>();
 	private readonly Dictionary<Collider2D, string> arcByCollider = new Dictionary<Collider2D, string>();
+	private readonly Dictionary<string, CompositeBlockRuntime> compositeBlocksById = new Dictionary<string, CompositeBlockRuntime>();
+	private readonly Dictionary<Collider2D, string> compositeBlockByCollider = new Dictionary<Collider2D, string>();
 
 	private Transform petriNetRoot;
 	private Camera mainCamera;
 	private EditMode currentMode = EditMode.Select;
 	private string connectStartNodeId;
+	private string craneConnectStartNodeId;
+	private bool craneConnectReversed;
 	private string draggedNodeId;
 	private Vector3 dragOffset;
 	private bool isMiddlePanning;
@@ -60,6 +63,8 @@ public partial class GameManager
 	private Material runtimeArcMaterial;
 	private Transform sharedPoolVisualRoot;
 	private float sharedPoolSlotSpacing = 1.25f;
+	private int ingredientTransitionCount = 3;
+	private float ingredientTransitionSpacing = 1.65f;
 	private bool networkHandlersRegistered;
 	private bool suppressNetworkSend;
 	private bool collaborativeLayoutApplied;
@@ -67,24 +72,38 @@ public partial class GameManager
 	private float nextDragNetworkSyncTime;
 	private Vector3 lastDragNetworkSyncPosition;
 	private string pointerDownNodeId;
+	private string pointerDownCompositeBlockId;
 	private Vector3 pointerDownWorld;
 	private bool pointerDragActive;
 	private string pendingClaimedTransitionId;
+	private string draggedCompositeBlockId;
 
 	// Avatar system
 	private Vector3 avatarPosition;
 	private float avatarRotation;
+	private bool avatarStartPositionApplied;
 	private string heldTransitionId;
+	private string heldPlaceId;
+	private string heldCompositeBlockId;
+	private Vector2 heldCompositeBlockOffset;
+	private bool pendingCreatedPlacePickup;
+	private Vector3 pendingCreatedPlacePickupPosition;
+	private HashSet<string> pendingCreatedPlaceExistingIds = new HashSet<string>();
 	private Vector3 lastAvatarPosition;
-	private float lastAvatarRotation;
+	private float lastAvatarNetworkSyncRotation;
+	private string lastAvatarNetworkSyncHeldId = "";
 	private float nextAvatarNetworkSyncTime;
+	private float avatarNetworkSyncInterval = 0.05f;
 	private float avatarSpeed = 5f;
+	private float avatarSprintMultiplier = 1.75f;
 	private float avatarCollisionRadius = 0.4f; // Matches CircleCollider2D radius on avatar visual
 	private float transitionCollisionRadius = 0.45f; // Approximate radius of transition collider
 	private float cameraRestAreaMargin = 0.3f; // Rest area margin as % of screen
-	private string temporarilyIgnoredCollisionNodeId;
-	private float temporarilyIgnoredCollisionUntilTime;
-	private float postDropCollisionIgnoreDuration = 0.18f;
+	private float avatarCraneRestHeight = 0.65f;
+	private float avatarCraneLoweredHeight = 0.12f;
+	private float avatarCraneCurrentHeight = 0.65f;
+	private float avatarCraneAnimationStartTime = -10f;
+	private float avatarCraneAnimationDuration = 0.36f;
 
 	// Remote avatar (other player)
 	private Dictionary<ulong, Vector3> remoteAvatarPositions = new Dictionary<ulong, Vector3>();
