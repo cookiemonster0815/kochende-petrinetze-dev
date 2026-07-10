@@ -10,6 +10,7 @@ public partial class GameManager
 	[Header("Initial Net")]
 	[SerializeField] private bool buildPetriNetOnStart = true;
 	[SerializeField] private string petriNetRootName = "GeneratedPetriNet";
+	[SerializeField] private bool showLevelSelection = true;
 
 	[Header("Visuals")]
 	[SerializeField] private Material placeMaterial;
@@ -31,12 +32,51 @@ public partial class GameManager
 	[Header("Networking")]
 	[SerializeField] private bool enableNetworkAuthoritativeSync = true;
 	[SerializeField] private bool enableSharedTransitionPool = true;
-	[SerializeField] private int sharedPoolTransitionCount = 4;
 	[SerializeField] private float sharedPoolY = 0f;
 	[SerializeField] private float sharedPoolHalfHeight = 1f;
 	[SerializeField] private float sharedPoolDragThreshold = 0.22f;
 	[SerializeField] private float playerZoneXOffset = 6.5f;
 	[SerializeField] private float playerZoneYSpacing = 2.7f;
+
+	[System.Serializable]
+	private class PoolBlockDefinition
+	{
+		public string firstTransitionName = "Start";
+		public string secondTransitionName = "Ende";
+		public float processingSeconds = 5f;
+		public string resultState = "";
+
+		public PoolBlockDefinition()
+		{
+		}
+
+		public PoolBlockDefinition(string firstTransitionName, string secondTransitionName, float processingSeconds, string resultState)
+		{
+			this.firstTransitionName = firstTransitionName;
+			this.secondTransitionName = secondTransitionName;
+			this.processingSeconds = processingSeconds;
+			this.resultState = resultState;
+		}
+	}
+
+	[Header("Blocks")]
+	[SerializeField] private List<PoolBlockDefinition> sharedPoolBlocks = new List<PoolBlockDefinition>
+	{
+		new PoolBlockDefinition("Kochen Start", "Kochen Ende", 5f, "gekocht"),
+		new PoolBlockDefinition("Schneiden Start", "Schneiden Ende", 10f, "geschnitten"),
+	};
+	[SerializeField] private List<PoolBlockDefinition> topPlayerBlocks = new List<PoolBlockDefinition>();
+	[SerializeField] private List<PoolBlockDefinition> bottomPlayerBlocks = new List<PoolBlockDefinition>();
+	[SerializeField] private string sharedPoolTrashTransitionName = "Müll";
+	[SerializeField] private float sharedPoolItemGap = 0.65f;
+
+	private static readonly string[] DefaultTopIngredientNames = { "Käse", "Tomate" };
+	private static readonly string[] DefaultBottomIngredientNames = { "Traube", "Ananas", "Wirsing", "Paprika", "Zwiebel", "Salat", "Aubergine", "Pilz" };
+
+	[Header("Ingredients")]
+	[SerializeField] private List<string> topIngredientNames = new List<string>(DefaultTopIngredientNames);
+	[SerializeField] private List<string> bottomIngredientNames = new List<string>(DefaultBottomIngredientNames);
+	[SerializeField] private float ingredientTransitionSpacing = 1.65f;
 
 	private readonly Dictionary<string, NodeRuntime> nodesById = new Dictionary<string, NodeRuntime>();
 	private readonly Dictionary<string, ArcRuntime> arcsById = new Dictionary<string, ArcRuntime>();
@@ -62,9 +102,6 @@ public partial class GameManager
 	private Sprite squareSprite;
 	private Material runtimeArcMaterial;
 	private Transform sharedPoolVisualRoot;
-	private float sharedPoolSlotSpacing = 1.25f;
-	private int ingredientTransitionCount = 3;
-	private float ingredientTransitionSpacing = 1.65f;
 	private bool networkHandlersRegistered;
 	private bool suppressNetworkSend;
 	private bool collaborativeLayoutApplied;
@@ -94,8 +131,8 @@ public partial class GameManager
 	private string lastAvatarNetworkSyncHeldId = "";
 	private float nextAvatarNetworkSyncTime;
 	private float avatarNetworkSyncInterval = 0.05f;
-	private float avatarSpeed = 5f;
-	private float avatarSprintMultiplier = 1.75f;
+	private float avatarSpeed = 8f;
+	private float avatarSprintMultiplier = 1.5f;
 	private float avatarCollisionRadius = 0.4f; // Matches CircleCollider2D radius on avatar visual
 	private float transitionCollisionRadius = 0.45f; // Approximate radius of transition collider
 	private float cameraRestAreaMargin = 0.3f; // Rest area margin as % of screen

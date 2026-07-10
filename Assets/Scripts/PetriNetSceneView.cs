@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using Unity.Netcode;
 using UnityEngine;
@@ -113,11 +114,10 @@ public partial class GameManager
 		ApplySharedScreenLayoutDefaults();
 		RebuildSharedPoolVisual();
 
-		for (int i = 0; i < Mathf.Max(1, sharedPoolTransitionCount); i++)
-		{
-			Vector2 slot = GetSharedPoolSlotPositionByIndex(i);
-			CreateTransitionNode("T_POOL_" + (i + 1), slot, false, UnassignedOwnerClientId, true, true);
-		}
+		CreateSharedPoolCompositeBlocks(UnassignedOwnerClientId);
+		CreateSharedPoolTrashTransition(UnassignedOwnerClientId);
+		CreatePlayerCompositeBlocks(true, topOwnerClientId);
+		CreatePlayerCompositeBlocks(false, bottomOwnerClientId);
 
 		float topY = sharedPoolY + playerZoneYSpacing;
 		float bottomY = sharedPoolY - playerZoneYSpacing;
@@ -135,7 +135,6 @@ public partial class GameManager
 		CreateIngredientSourceNodes(true, topOwnerClientId);
 		CreateIngredientSourceNodes(false, bottomOwnerClientId);
 		CreateTransitionNode("T_Bottom_Ausliefern", GetDeliveryTransitionPosition(), false, bottomOwnerClientId, false, false);
-		CreateCompositeSequenceBlock(bottomOwnerClientId);
 
 		placeCounter = 1;
 		transitionCounter = 1;
@@ -163,28 +162,98 @@ public partial class GameManager
 	private void CreateIngredientSourceNodes(bool topSide, ulong ownerClientId)
 	{
 		string side = topSide ? "Top" : "Bottom";
-		int count = Mathf.Max(1, ingredientTransitionCount);
+		int count = GetIngredientCount(topSide);
 		for (int i = 0; i < count; i++)
 		{
 			int number = i + 1;
 			string transitionId = "T_" + side + "_Zutat_" + number;
 			string placeId = "P_" + side + "_Zutat_" + number;
 			CreateTransitionNode(transitionId, GetIngredientTransitionPosition(topSide, i), false, ownerClientId, false, false);
+			if (nodesById.TryGetValue(transitionId, out NodeRuntime transitionNode))
+			{
+				transitionNode.displayName = GetIngredientDisplayName(topSide, i);
+			}
+
 			CreatePlaceNode(placeId, GetIngredientPlacePosition(topSide, i), 0, false, ownerClientId, false, false);
 			CreateArcInternal("A_" + side + "_Zutat_" + number, transitionId, placeId, 1, false, ownerClientId);
 		}
 	}
 
-	private void CreateCompositeSequenceBlock(ulong ownerClientId)
+	private void CreateSharedPoolCompositeBlocks(ulong ownerClientId)
 	{
-		Vector2 center = GetCompositeSequenceBlockStartPosition();
-		string[] nodeIds = GetCompositeBlockNodeIds();
-		CreateTransitionNode(nodeIds[0], center + new Vector2(-2.25f, 0f), false, ownerClientId, false, false);
+		int count = GetPoolBlockCount();
+		for (int i = 0; i < count; i++)
+		{
+			CreateCompositeSequenceBlock(
+				GetCompositeBlockIdByIndex(i),
+				GetPoolBlockDefinition(i),
+				GetSharedPoolBlockSlotPositionByIndex(i),
+				ownerClientId,
+				true,
+				true);
+		}
+	}
+
+	private void CreateSharedPoolTrashTransition(ulong ownerClientId)
+	{
+		if (!HasSharedPoolTrashTransition())
+		{
+			return;
+		}
+
+		string transitionId = GetSharedPoolTrashTransitionId();
+		CreateTransitionNode(transitionId, GetSharedPoolTrashTransitionPosition(), false, ownerClientId, true, true);
+		if (nodesById.TryGetValue(transitionId, out NodeRuntime transitionNode))
+		{
+			transitionNode.displayName = GetSharedPoolTrashTransitionDisplayName();
+		}
+	}
+
+	private void CreatePlayerCompositeBlocks(bool topSide, ulong ownerClientId)
+	{
+		int count = GetPlayerBlockCount(topSide);
+		for (int i = 0; i < count; i++)
+		{
+			CreateCompositeSequenceBlock(
+				GetPlayerCompositeBlockIdByIndex(topSide, i),
+				GetPlayerBlockDefinition(topSide, i),
+				GetPlayerCompositeBlockPosition(topSide, i),
+				ownerClientId,
+				false,
+				false);
+		}
+	}
+
+	private void CreateCompositeSequenceBlock(string blockId, PoolBlockDefinition definition, Vector2 center, ulong ownerClientId, bool isSharedPoolBlock, bool isSharedPoolAvailable)
+	{
+		string[] nodeIds = GetCompositeBlockNodeIds(blockId);
+		string[] arcIds = GetCompositeBlockArcIds(blockId);
+		if (nodeIds == null || arcIds == null)
+		{
+			return;
+		}
+
+		CreateTransitionNode(nodeIds[0], center + new Vector2(-2.25f, 0f), false, ownerClientId, isSharedPoolBlock, isSharedPoolAvailable);
 		CreatePlaceNode(nodeIds[1], center + new Vector2(-0.75f, 0f), 0, false, ownerClientId, false, false);
-		CreateTransitionNode(nodeIds[2], center + new Vector2(0.75f, 0f), false, ownerClientId, false, false);
+		CreateTransitionNode(nodeIds[2], center + new Vector2(0.75f, 0f), false, ownerClientId, isSharedPoolBlock, isSharedPoolAvailable);
 		CreatePlaceNode(nodeIds[3], center + new Vector2(2.25f, 0f), 0, false, ownerClientId, false, false);
 
-		string[] arcIds = GetCompositeBlockArcIds();
+		if (nodesById.TryGetValue(nodeIds[0], out NodeRuntime firstTransition))
+		{
+			firstTransition.displayName = GetPoolBlockFirstTransitionName(definition);
+		}
+
+		if (nodesById.TryGetValue(nodeIds[2], out NodeRuntime secondTransition))
+		{
+			secondTransition.displayName = GetPoolBlockSecondTransitionName(definition);
+		}
+
+		if (nodesById.TryGetValue(nodeIds[1], out NodeRuntime bufferPlace))
+		{
+			bufferPlace.processingDuration = GetPoolBlockProcessingSeconds(definition);
+			EnsureTimedPlaceProcessingVisual(bufferPlace);
+		}
+
 		CreateArcInternal(arcIds[0], nodeIds[0], nodeIds[1], 1, false, ownerClientId);
 		CreateArcInternal(arcIds[1], nodeIds[1], nodeIds[2], 1, false, ownerClientId);
 		CreateArcInternal(arcIds[2], nodeIds[2], nodeIds[3], 1, false, ownerClientId);
@@ -307,6 +376,52 @@ public partial class GameManager
 		DestroyCraneHoverSelectionVisual();
 	}
 
+	private void DestroyAvatarVisuals()
+	{
+		if (localAvatarVisual != null)
+		{
+			Destroy(localAvatarVisual);
+			localAvatarVisual = null;
+		}
+
+		if (localAvatarArrow != null)
+		{
+			Destroy(localAvatarArrow);
+			localAvatarArrow = null;
+		}
+
+		if (localAvatarShadow != null)
+		{
+			Destroy(localAvatarShadow);
+			localAvatarShadow = null;
+		}
+
+		if (localAvatarCable != null)
+		{
+			Destroy(localAvatarCable);
+			localAvatarCable = null;
+		}
+
+		if (localHeldNodeShadow != null)
+		{
+			Destroy(localHeldNodeShadow);
+			localHeldNodeShadow = null;
+		}
+
+		foreach (KeyValuePair<ulong, GameObject> pair in remoteAvatarVisuals)
+		{
+			if (pair.Value != null)
+			{
+				Destroy(pair.Value);
+			}
+		}
+
+		remoteAvatarVisuals.Clear();
+		remoteAvatarPositions.Clear();
+		remoteAvatarRotations.Clear();
+		remoteAvatarInventories.Clear();
+	}
+
 	private void CreatePlaceNode(string id, Vector2 position, int initialTokens, bool refreshVisuals, ulong ownerClientId, bool isSharedPoolTransition, bool isSharedPoolAvailable)
 	{
 		if (nodesById.ContainsKey(id))
@@ -340,10 +455,10 @@ public partial class GameManager
 		{
 			id = id,
 			type = NodeType.Place,
-			tokens = Mathf.Max(0, initialTokens),
 			ownerClientId = ownerClientId,
 			isSharedPoolTransition = isSharedPoolTransition,
 			isSharedPoolAvailable = isSharedPoolAvailable,
+			processingDuration = GetTimedPlaceProcessingDuration(id),
 			transform = nodeObject.transform,
 			renderer = renderer,
 			collider = collider,
@@ -351,8 +466,10 @@ public partial class GameManager
 			tokenRoot = tokenRoot,
 		};
 
+		SetUntypedTokenCount(node, Mathf.Max(0, initialTokens));
 		nodesById[id] = node;
 		nodeByCollider[collider] = id;
+		EnsureTimedPlaceProcessingVisual(node);
 
 		if (refreshVisuals)
 		{
@@ -571,15 +688,18 @@ public partial class GameManager
 			NodeRuntime node = pair.Value;
 			if (node.type == NodeType.Place)
 			{
-				node.label.text = "";
-				node.label.characterSize = 0.08f;
+				node.label.text = GetPlaceDebugLabel(node);
+				node.label.color = Color.black;
+				node.label.characterSize = 0.04f;
+				node.label.lineSpacing = 0.78f;
 				RefreshTokenVisuals(node);
 				SetPlaceSorting(node, node.id == heldPlaceId || IsHeldCompositeBlockNode(node));
 			}
 			else
 			{
-				string transitionLabel = FormatTransitionLabel(HumanizeId(node.id));
+				string transitionLabel = FormatTransitionLabel(GetNodeDisplayName(node));
 				node.label.text = transitionLabel;
+				node.label.color = Color.black;
 				node.label.characterSize = GetTransitionLabelCharacterSize(transitionLabel);
 				node.label.lineSpacing = transitionLabel.Contains("\n") ? 0.78f : 1f;
 				FitTransitionLabelInsideNode(node);
@@ -590,6 +710,7 @@ public partial class GameManager
 
 		EnsureCompositeBlockVisuals();
 		UpdateAllArcVisuals();
+		UpdateTimedPlaceProcessingVisuals();
 		UpdateVisibilityForLocalPlayer();
 	}
 
@@ -644,7 +765,7 @@ public partial class GameManager
 			localAvatarShadow = new GameObject("LocalAvatarShadow");
 			localAvatarShadow.transform.SetParent(petriNetRoot);
 			SpriteRenderer shadowRenderer = localAvatarShadow.AddComponent<SpriteRenderer>();
-			shadowRenderer.sprite = circleSprite;
+			shadowRenderer.sprite = GetCircleSprite();
 			shadowRenderer.color = new Color(0.02f, 0.03f, 0.04f, 0.28f);
 			shadowRenderer.sortingOrder = 49;
 			localAvatarShadow.transform.localScale = new Vector3(0.72f, 0.38f, 1f);
@@ -682,7 +803,7 @@ public partial class GameManager
 			localAvatarVisual = new GameObject("LocalAvatar");
 			localAvatarVisual.transform.SetParent(petriNetRoot);
 			SpriteRenderer spriteRenderer = localAvatarVisual.AddComponent<SpriteRenderer>();
-			spriteRenderer.sprite = circleSprite;
+			spriteRenderer.sprite = GetCircleSprite();
 			spriteRenderer.color = GetAvatarColor(GetLocalActorClientId());
 			spriteRenderer.sortingOrder = 60;
 			localAvatarVisual.transform.localScale = new Vector3(0.8f, 0.8f, 1f);
@@ -698,6 +819,7 @@ public partial class GameManager
 	{
 		EnsureAvatarVisuals();
 		UpdateCraneHeightAnimation();
+		UpdateTimedPlaceProcessingVisuals();
 
 		Vector3 craneVisualPosition = GetCraneVisualPosition();
 		bool isHoldingTransition = !string.IsNullOrEmpty(heldTransitionId) && nodesById.ContainsKey(heldTransitionId);
@@ -1122,7 +1244,7 @@ public partial class GameManager
 
 	private void ShowCraneHoverArcVisual(ArcRuntime arc)
 	{
-		if (!TryGetArcSegment(arc, out Vector3 start, out Vector3 end))
+		if (!TryGetArcHoverSegment(arc, out Vector3 start, out Vector3 end, out bool showArrowHead))
 		{
 			HideCraneHoverArcVisual();
 			return;
@@ -1138,7 +1260,48 @@ public partial class GameManager
 		dir.Normalize();
 		EnsureCraneHoverArcVisual();
 		localCraneHoverArcHighlight.SetActive(true);
-		SetLineWithArrow(localCraneHoverArcBody, localCraneHoverArcArrow, start, end, dir);
+		if (showArrowHead)
+		{
+			SetLineWithArrow(localCraneHoverArcBody, localCraneHoverArcArrow, start, end, dir);
+		}
+		else
+		{
+			localCraneHoverArcBody.SetPosition(0, start + new Vector3(0f, 0f, 0.1f));
+			localCraneHoverArcBody.SetPosition(1, end + new Vector3(0f, 0f, 0.1f));
+			localCraneHoverArcArrow.SetPosition(0, end + new Vector3(0f, 0f, 0.1f));
+			localCraneHoverArcArrow.SetPosition(1, end + new Vector3(0f, 0f, 0.1f));
+			localCraneHoverArcArrow.SetPosition(2, end + new Vector3(0f, 0f, 0.1f));
+		}
+	}
+
+	private bool TryGetArcHoverSegment(ArcRuntime arc, out Vector3 segmentStart, out Vector3 segmentEnd, out bool showArrowHead)
+	{
+		segmentStart = Vector3.zero;
+		segmentEnd = Vector3.zero;
+		showArrowHead = false;
+		if (!TryGetArcSegment(arc, out Vector3 start, out Vector3 end))
+		{
+			return false;
+		}
+
+		Vector3 middle = (start + end) * 0.5f;
+		Vector2 craneTarget = new Vector2(avatarPosition.x, avatarPosition.y);
+		float distanceToStart = Vector2.Distance(craneTarget, new Vector2(start.x, start.y));
+		float distanceToEnd = Vector2.Distance(craneTarget, new Vector2(end.x, end.y));
+		if (distanceToStart <= distanceToEnd)
+		{
+			segmentStart = start;
+			segmentEnd = middle;
+			showArrowHead = false;
+		}
+		else
+		{
+			segmentStart = middle;
+			segmentEnd = end;
+			showArrowHead = true;
+		}
+
+		return true;
 	}
 
 	private void HideCraneHoverSelectionVisual()
@@ -1317,7 +1480,12 @@ public partial class GameManager
 
 	private void SetCompositeBlockSorting(string blockId, bool lifted)
 	{
-		string[] nodeIds = GetCompositeBlockNodeIds();
+		string[] nodeIds = GetCompositeBlockNodeIds(blockId);
+		if (nodeIds == null)
+		{
+			return;
+		}
+
 		for (int i = 0; i < nodeIds.Length; i++)
 		{
 			if (!nodesById.TryGetValue(nodeIds[i], out NodeRuntime node))
@@ -1335,22 +1503,25 @@ public partial class GameManager
 			}
 		}
 
-		string[] arcIds = GetCompositeBlockArcIds();
-		for (int i = 0; i < arcIds.Length; i++)
+		string[] arcIds = GetCompositeBlockArcIds(blockId);
+		if (arcIds != null)
 		{
-			if (!arcsById.TryGetValue(arcIds[i], out ArcRuntime arc))
+			for (int i = 0; i < arcIds.Length; i++)
 			{
-				continue;
-			}
+				if (!arcsById.TryGetValue(arcIds[i], out ArcRuntime arc))
+				{
+					continue;
+				}
 
-			if (arc.body != null)
-			{
-				arc.body.sortingOrder = lifted ? 54 : 24;
-			}
+				if (arc.body != null)
+				{
+					arc.body.sortingOrder = lifted ? 54 : 24;
+				}
 
-			if (arc.arrow != null)
-			{
-				arc.arrow.sortingOrder = lifted ? 55 : 25;
+				if (arc.arrow != null)
+				{
+					arc.arrow.sortingOrder = lifted ? 55 : 25;
+				}
 			}
 		}
 
@@ -1362,7 +1533,7 @@ public partial class GameManager
 				continue;
 			}
 
-			if (!IsCompositeBlockNodeId(arc.fromId) && !IsCompositeBlockNodeId(arc.toId))
+			if (GetCompositeBlockIdForNodeId(arc.fromId) != blockId && GetCompositeBlockIdForNodeId(arc.toId) != blockId)
 			{
 				continue;
 			}
@@ -1407,20 +1578,33 @@ public partial class GameManager
 		sharedPoolVisualRoot = new GameObject("SharedTransitionPool").transform;
 		sharedPoolVisualRoot.SetParent(petriNetRoot, false);
 
-		int slotCount = Mathf.Max(1, sharedPoolTransitionCount);
 		float width = GetSharedPoolWidth();
 		CreateSharedBoundaryLine(10000f);
 		CreatePoolZoneVisual("PoolAvailable", sharedPoolY, width, new Color(0.82f, 0.92f, 1f, 0.35f));
 		CreateIngredientAreaVisual(true);
 		CreateIngredientAreaVisual(false);
 
-		for (int i = 0; i < slotCount; i++)
+		for (int i = 0; i < GetPoolBlockCount(); i++)
 		{
-			Vector2 slot = GetSharedPoolSlotPositionByIndex(i);
-			GameObject slotObject = new GameObject("SlotAvailable_" + (i + 1));
+			Vector2 slot = GetSharedPoolBlockSlotPositionByIndex(i);
+			GameObject slotObject = new GameObject("BlockSlot_" + (i + 1));
 			slotObject.transform.SetParent(sharedPoolVisualRoot, false);
 			slotObject.transform.position = new Vector3(slot.x, slot.y, 0.2f);
-			slotObject.transform.localScale = new Vector3(0.95f, 1.1f, 1f);
+			slotObject.transform.localScale = new Vector3(GetCompositeBlockTemplateWidth(), GetCompositeBlockTemplateHeight(), 1f);
+
+			SpriteRenderer slotRenderer = slotObject.AddComponent<SpriteRenderer>();
+			slotRenderer.sprite = GetSquareSprite();
+			slotRenderer.color = new Color(1f, 1f, 1f, 0.22f);
+			slotRenderer.sortingOrder = 10;
+		}
+
+		if (HasSharedPoolTrashTransition())
+		{
+			Vector2 slot = GetSharedPoolTrashTransitionPosition();
+			GameObject slotObject = new GameObject("TrashSlot");
+			slotObject.transform.SetParent(sharedPoolVisualRoot, false);
+			slotObject.transform.position = new Vector3(slot.x, slot.y, 0.2f);
+			slotObject.transform.localScale = new Vector3(GetSharedPoolTrashSlotWidth(), 1.1f, 1f);
 
 			SpriteRenderer slotRenderer = slotObject.AddComponent<SpriteRenderer>();
 			slotRenderer.sprite = GetSquareSprite();
@@ -1499,13 +1683,12 @@ public partial class GameManager
 
 	private void CreateIngredientAreaVisual(bool topSide)
 	{
-		int count = Mathf.Max(1, ingredientTransitionCount);
-		Vector2 first = GetIngredientTransitionPosition(topSide, 0);
-		Vector2 last = GetIngredientTransitionPosition(topSide, count - 1);
-		float centerY = first.y;
-		float height = 1.2f;
-		float width = Mathf.Abs(last.x - first.x) + 1.25f;
-		float centerX = (first.x + last.x) * 0.5f;
+		if (GetIngredientCount(topSide) <= 0)
+		{
+			return;
+		}
+
+		Rect bounds = GetIngredientAreaBounds(topSide);
 
 		GameObject boxObject = new GameObject((topSide ? "Top" : "Bottom") + "IngredientBox");
 		boxObject.transform.SetParent(sharedPoolVisualRoot, false);
@@ -1520,12 +1703,10 @@ public partial class GameManager
 		border.startColor = new Color(0.24f, 0.18f, 0.08f, 0.9f);
 		border.endColor = border.startColor;
 
-		float halfWidth = width * 0.5f;
-		float halfHeight = height * 0.5f;
-		Vector3 topLeft = new Vector3(centerX - halfWidth, centerY + halfHeight, 0.12f);
-		Vector3 topRight = new Vector3(centerX + halfWidth, centerY + halfHeight, 0.12f);
-		Vector3 bottomRight = new Vector3(centerX + halfWidth, centerY - halfHeight, 0.12f);
-		Vector3 bottomLeft = new Vector3(centerX - halfWidth, centerY - halfHeight, 0.12f);
+		Vector3 topLeft = new Vector3(bounds.xMin, bounds.yMax, 0.12f);
+		Vector3 topRight = new Vector3(bounds.xMax, bounds.yMax, 0.12f);
+		Vector3 bottomRight = new Vector3(bounds.xMax, bounds.yMin, 0.12f);
+		Vector3 bottomLeft = new Vector3(bounds.xMin, bounds.yMin, 0.12f);
 		border.SetPosition(0, topLeft);
 		border.SetPosition(1, topRight);
 		border.SetPosition(2, bottomRight);
@@ -1534,8 +1715,8 @@ public partial class GameManager
 
 		GameObject labelObject = new GameObject("ZutatenLabel");
 		labelObject.transform.SetParent(sharedPoolVisualRoot, false);
-		float labelY = topSide ? centerY - halfHeight - 0.12f : centerY + halfHeight + 0.12f;
-		labelObject.transform.position = new Vector3(centerX - halfWidth + 0.16f, labelY, 0.1f);
+		float labelY = topSide ? bounds.yMin - 0.12f : bounds.yMax + 0.12f;
+		labelObject.transform.position = new Vector3(bounds.xMin, labelY, 0.1f);
 		TextMesh label = labelObject.AddComponent<TextMesh>();
 		label.text = "Zutaten";
 		label.characterSize = 0.046f;
@@ -1550,42 +1731,204 @@ public partial class GameManager
 		}
 	}
 
-	private Vector2 GetSharedPoolSlotPositionByIndex(int index)
+	private Rect GetIngredientAreaBounds(bool topSide)
 	{
-		int slotCount = Mathf.Max(1, sharedPoolTransitionCount);
-		int safeIndex = Mathf.Clamp(index, 0, slotCount - 1);
-		float startX = -0.5f * (slotCount - 1) * sharedPoolSlotSpacing;
-		return new Vector2(startX + safeIndex * sharedPoolSlotSpacing, sharedPoolY);
+		int count = GetIngredientCount(topSide);
+		if (count <= 0)
+		{
+			return new Rect();
+		}
+
+		Vector2 first = GetIngredientTransitionPosition(topSide, 0);
+		Vector2 last = GetIngredientTransitionPosition(topSide, count - 1);
+		float horizontalPadding = 0.58f;
+		float verticalPadding = 0.58f;
+		float minX = Mathf.Min(first.x, last.x) - horizontalPadding;
+		float maxX = Mathf.Max(first.x, last.x) + horizontalPadding;
+		float minY = Mathf.Min(first.y, last.y) - verticalPadding;
+		float maxY = Mathf.Max(first.y, last.y) + verticalPadding;
+
+		return Rect.MinMaxRect(minX, minY, maxX, maxY);
 	}
 
 	private Vector2 GetIngredientTransitionPosition(bool topSide, int index)
 	{
-		int count = Mathf.Max(1, ingredientTransitionCount);
+		int count = Mathf.Max(1, GetIngredientCount(topSide));
 		int safeIndex = Mathf.Clamp(index, 0, count - 1);
-		float rowWidth = (count - 1) * ingredientTransitionSpacing;
-		float rightMostX = -GetSharedPoolHalfWidth() - 1.75f;
-		float startX = rightMostX - rowWidth;
 		float yDirection = topSide ? 1f : -1f;
-		float y = sharedPoolY + yDirection * (sharedPoolHalfHeight + 0.9f);
-		return new Vector2(startX + safeIndex * ingredientTransitionSpacing, y);
+		float x = -GetSharedPoolHalfWidth() - 3.15f;
+		float y = sharedPoolY + yDirection * (sharedPoolHalfHeight + 0.95f + safeIndex * ingredientTransitionSpacing);
+		return new Vector2(x, y);
 	}
 
 	private Vector2 GetIngredientPlacePosition(bool topSide, int index)
 	{
 		Vector2 transitionPosition = GetIngredientTransitionPosition(topSide, index);
-		float yDirection = topSide ? 1f : -1f;
-		return transitionPosition + new Vector2(0f, yDirection * 1.55f);
+		return transitionPosition + new Vector2(1.55f, 0f);
+	}
+
+	private int GetIngredientCount(bool topSide)
+	{
+		IList<string> names = GetIngredientNames(topSide);
+		return names != null ? names.Count : 0;
+	}
+
+	private IList<string> GetIngredientNames(bool topSide)
+	{
+		List<string> names = topSide ? topIngredientNames : bottomIngredientNames;
+		if (names == null || IsPlaceholderIngredientNameList(names))
+		{
+			return topSide ? DefaultTopIngredientNames : DefaultBottomIngredientNames;
+		}
+
+		return names;
+	}
+
+	private string GetIngredientDisplayName(bool topSide, int index)
+	{
+		IList<string> names = GetIngredientNames(topSide);
+		if (names != null && index >= 0 && index < names.Count)
+		{
+			string name = names[index] != null ? names[index].Trim() : "";
+			if (!string.IsNullOrEmpty(name))
+			{
+				return name;
+			}
+		}
+
+		return "Zutat " + (index + 1);
+	}
+
+	private bool IsPlaceholderIngredientNameList(IList<string> names)
+	{
+		if (names == null || names.Count == 0)
+		{
+			return false;
+		}
+
+		for (int i = 0; i < names.Count; i++)
+		{
+			string actual = names[i] != null ? names[i].Trim() : "";
+			string number = (i + 1).ToString();
+			if (actual != "Zutat " + number && actual != "Zutat" + number)
+			{
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	private string GetIngredientDisplayNameForNodeId(string nodeId)
+	{
+		if (string.IsNullOrEmpty(nodeId))
+		{
+			return null;
+		}
+
+		bool topSide;
+		if (nodeId.StartsWith("T_Top_Zutat_") || nodeId.StartsWith("P_Top_Zutat_"))
+		{
+			topSide = true;
+		}
+		else if (nodeId.StartsWith("T_Bottom_Zutat_") || nodeId.StartsWith("P_Bottom_Zutat_"))
+		{
+			topSide = false;
+		}
+		else
+		{
+			return null;
+		}
+
+		return GetIngredientDisplayName(topSide, ExtractTrailingNumber(nodeId) - 1);
 	}
 
 	private float GetSharedPoolWidth()
 	{
-		int slotCount = Mathf.Max(1, sharedPoolTransitionCount);
-		return (slotCount - 1) * sharedPoolSlotSpacing + 2.2f;
+		return Mathf.Max(2.2f, GetSharedPoolContentWidth() + 0.9f);
 	}
 
 	private float GetSharedPoolHalfWidth()
 	{
 		return GetSharedPoolWidth() * 0.5f;
+	}
+
+	private float GetSharedPoolContentWidth()
+	{
+		int blockCount = GetPoolBlockCount();
+		bool hasTrash = HasSharedPoolTrashTransition();
+		int itemCount = blockCount + (hasTrash ? 1 : 0);
+		if (itemCount <= 0)
+		{
+			return 0f;
+		}
+
+		float width = blockCount * GetCompositeBlockTemplateWidth();
+		if (hasTrash)
+		{
+			width += GetSharedPoolTrashSlotWidth();
+		}
+
+		width += Mathf.Max(0, itemCount - 1) * sharedPoolItemGap;
+		return width;
+	}
+
+	private Vector2 GetSharedPoolBlockSlotPositionByIndex(int index)
+	{
+		int count = GetPoolBlockCount();
+		int safeIndex = Mathf.Clamp(index, 0, Mathf.Max(0, count - 1));
+		float x = -GetSharedPoolContentWidth() * 0.5f + GetCompositeBlockTemplateWidth() * 0.5f;
+		x += safeIndex * (GetCompositeBlockTemplateWidth() + sharedPoolItemGap);
+		return new Vector2(x, sharedPoolY);
+	}
+
+	private Vector2 GetSharedPoolTrashTransitionPosition()
+	{
+		float x = -GetSharedPoolContentWidth() * 0.5f;
+		int blockCount = GetPoolBlockCount();
+		if (blockCount > 0)
+		{
+			x += blockCount * GetCompositeBlockTemplateWidth();
+			x += blockCount * sharedPoolItemGap;
+		}
+
+		x += GetSharedPoolTrashSlotWidth() * 0.5f;
+		return new Vector2(x, sharedPoolY);
+	}
+
+	private float GetCompositeBlockTemplateWidth()
+	{
+		return 5.7f;
+	}
+
+	private float GetCompositeBlockTemplateHeight()
+	{
+		return 1.35f;
+	}
+
+	private float GetSharedPoolTrashSlotWidth()
+	{
+		return 1.1f;
+	}
+
+	private bool HasSharedPoolTrashTransition()
+	{
+		return !string.IsNullOrEmpty(GetSharedPoolTrashTransitionDisplayName());
+	}
+
+	private string GetSharedPoolTrashTransitionId()
+	{
+		return "T_POOL_Trash";
+	}
+
+	private string GetSharedPoolTrashTransitionDisplayName()
+	{
+		return sharedPoolTrashTransitionName != null ? sharedPoolTrashTransitionName.Trim() : "";
+	}
+
+	private bool IsSharedPoolTrashTransitionId(string nodeId)
+	{
+		return nodeId == GetSharedPoolTrashTransitionId();
 	}
 
 	private bool IsActorTopSide(ulong actorClientId)
@@ -1627,6 +1970,28 @@ public partial class GameManager
 			&& arc.toId == GetIngredientPlaceIdForTransition(arc.fromId);
 	}
 
+	private bool IsPlayerExchangeArc(ArcRuntime arc)
+	{
+		return arc != null
+			&& ((arc.fromId == "T_Top_Out" && arc.toId == "P_Bottom_In")
+				|| (arc.fromId == "T_Bottom_Out" && arc.toId == "P_Top_In"));
+	}
+
+	private bool IsArcAllowedByPlayerExchangeRules(string fromId, string toId)
+	{
+		if (fromId == "T_Top_Out")
+		{
+			return toId == "P_Bottom_In";
+		}
+
+		if (fromId == "T_Bottom_Out")
+		{
+			return toId == "P_Top_In";
+		}
+
+		return true;
+	}
+
 	private bool IsDeliveryTransitionId(string nodeId)
 	{
 		return nodeId == "T_Bottom_Ausliefern";
@@ -1642,38 +2007,263 @@ public partial class GameManager
 		return new Vector2(playerZoneXOffset, sharedPoolY - playerZoneYSpacing - 1.7f);
 	}
 
-	private Vector2 GetCompositeSequenceBlockStartPosition()
+	private int GetPoolBlockCount()
 	{
-		return new Vector2(-1.15f, sharedPoolY - playerZoneYSpacing - 1.7f);
+		return sharedPoolBlocks != null ? sharedPoolBlocks.Count : 0;
 	}
 
-	private string[] GetCompositeBlockNodeIds()
+	private PoolBlockDefinition GetPoolBlockDefinition(int index)
 	{
-		return new[] { "T_Block_Input", "P_Block_Buffer", "T_Block_Process", "P_Block_Output" };
+		if (sharedPoolBlocks != null && index >= 0 && index < sharedPoolBlocks.Count && sharedPoolBlocks[index] != null)
+		{
+			return sharedPoolBlocks[index];
+		}
+
+		return new PoolBlockDefinition("Start", "Ende", 5f, "");
 	}
 
-	private string[] GetCompositeBlockArcIds()
+	private int GetPlayerBlockCount(bool topSide)
 	{
-		return new[] { "A_Block_1", "A_Block_2", "A_Block_3" };
+		List<PoolBlockDefinition> blocks = topSide ? topPlayerBlocks : bottomPlayerBlocks;
+		return blocks != null ? blocks.Count : 0;
+	}
+
+	private PoolBlockDefinition GetPlayerBlockDefinition(bool topSide, int index)
+	{
+		List<PoolBlockDefinition> blocks = topSide ? topPlayerBlocks : bottomPlayerBlocks;
+		if (blocks != null && index >= 0 && index < blocks.Count && blocks[index] != null)
+		{
+			return blocks[index];
+		}
+
+		return new PoolBlockDefinition("Start", "Ende", 5f, "");
+	}
+
+	private string GetPlayerCompositeBlockIdByIndex(bool topSide, int index)
+	{
+		return topSide ? "B_TopBlock_" + (index + 1) : "B_BottomBlock_" + (index + 1);
+	}
+
+	private int GetPlayerCompositeBlockIndex(string blockId, bool topSide)
+	{
+		string prefix = topSide ? "B_TopBlock_" : "B_BottomBlock_";
+		if (string.IsNullOrEmpty(blockId) || !blockId.StartsWith(prefix))
+		{
+			return -1;
+		}
+
+		int index = ExtractTrailingNumber(blockId) - 1;
+		return index >= 0 && index < GetPlayerBlockCount(topSide) ? index : -1;
+	}
+
+	private Vector2 GetPlayerCompositeBlockPosition(bool topSide, int index)
+	{
+		int safeIndex = Mathf.Clamp(index, 0, Mathf.Max(0, GetPlayerBlockCount(topSide) - 1));
+		float x = GetSharedPoolHalfWidth() + 0.95f + GetCompositeBlockTemplateWidth() * 0.5f;
+		x += safeIndex * (GetCompositeBlockTemplateWidth() + sharedPoolItemGap);
+		float y = topSide ? sharedPoolY + playerZoneYSpacing : sharedPoolY - playerZoneYSpacing;
+		return new Vector2(x, y);
+	}
+
+	private List<string> GetAllCompositeBlockIds()
+	{
+		List<string> blockIds = new List<string>();
+		for (int i = 0; i < GetPoolBlockCount(); i++)
+		{
+			blockIds.Add(GetCompositeBlockIdByIndex(i));
+		}
+
+		for (int i = 0; i < GetPlayerBlockCount(true); i++)
+		{
+			blockIds.Add(GetPlayerCompositeBlockIdByIndex(true, i));
+		}
+
+		for (int i = 0; i < GetPlayerBlockCount(false); i++)
+		{
+			blockIds.Add(GetPlayerCompositeBlockIdByIndex(false, i));
+		}
+
+		return blockIds;
+	}
+
+	private bool IsKnownCompositeBlockId(string blockId)
+	{
+		return GetCompositeBlockIndex(blockId) >= 0
+			|| GetPlayerCompositeBlockIndex(blockId, true) >= 0
+			|| GetPlayerCompositeBlockIndex(blockId, false) >= 0;
+	}
+
+	private bool IsPlayerBoundCompositeBlock(string blockId)
+	{
+		return GetPlayerCompositeBlockIndex(blockId, true) >= 0
+			|| GetPlayerCompositeBlockIndex(blockId, false) >= 0;
+	}
+
+	private PoolBlockDefinition GetCompositeBlockDefinition(string blockId)
+	{
+		int poolIndex = GetCompositeBlockIndex(blockId);
+		if (poolIndex >= 0)
+		{
+			return GetPoolBlockDefinition(poolIndex);
+		}
+
+		int topIndex = GetPlayerCompositeBlockIndex(blockId, true);
+		if (topIndex >= 0)
+		{
+			return GetPlayerBlockDefinition(true, topIndex);
+		}
+
+		int bottomIndex = GetPlayerCompositeBlockIndex(blockId, false);
+		if (bottomIndex >= 0)
+		{
+			return GetPlayerBlockDefinition(false, bottomIndex);
+		}
+
+		return null;
+	}
+
+	private string GetPoolBlockFirstTransitionName(PoolBlockDefinition definition)
+	{
+		string name = definition != null && definition.firstTransitionName != null ? definition.firstTransitionName.Trim() : "";
+		if (!string.IsNullOrEmpty(name))
+		{
+			return name;
+		}
+
+		return "Start";
+	}
+
+	private string GetPoolBlockSecondTransitionName(PoolBlockDefinition definition)
+	{
+		string name = definition != null && definition.secondTransitionName != null ? definition.secondTransitionName.Trim() : "";
+		if (!string.IsNullOrEmpty(name))
+		{
+			return name;
+		}
+
+		return "Ende";
+	}
+
+	private float GetPoolBlockProcessingSeconds(PoolBlockDefinition definition)
+	{
+		return definition != null ? Mathf.Max(0f, definition.processingSeconds) : 0f;
+	}
+
+	private string GetPoolBlockResultState(PoolBlockDefinition definition)
+	{
+		string configuredState = definition != null && definition.resultState != null ? definition.resultState.Trim() : "";
+		if (!string.IsNullOrEmpty(configuredState))
+		{
+			return configuredState;
+		}
+
+		string name = ((definition != null ? definition.firstTransitionName : "") + " " + (definition != null ? definition.secondTransitionName : "")).ToLowerInvariant();
+		if (name.Contains("koch"))
+		{
+			return "gekocht";
+		}
+
+		if (name.Contains("schneid"))
+		{
+			return "geschnitten";
+		}
+
+		return "";
+	}
+
+	private string GetCompositeBlockIdByIndex(int index)
+	{
+		return "B_PoolBlock_" + (index + 1);
+	}
+
+	private int GetCompositeBlockIndex(string blockId)
+	{
+		if (string.IsNullOrEmpty(blockId) || !blockId.StartsWith("B_PoolBlock_"))
+		{
+			return -1;
+		}
+
+		int index = ExtractTrailingNumber(blockId) - 1;
+		return index >= 0 && index < GetPoolBlockCount() ? index : -1;
+	}
+
+	private string GetCompositeBlockNodePrefix(string blockId)
+	{
+		return blockId != null && blockId.StartsWith("B_") ? blockId.Substring(2) : blockId;
+	}
+
+	private string GetCompositeBlockDisplayNameForNodeId(string nodeId)
+	{
+		string blockId = GetCompositeBlockIdForNodeId(nodeId);
+		PoolBlockDefinition definition = GetCompositeBlockDefinition(blockId);
+		if (definition == null)
+		{
+			return null;
+		}
+
+		string[] nodeIds = GetCompositeBlockNodeIds(blockId);
+		if (nodeIds == null)
+		{
+			return null;
+		}
+
+		if (nodeId == nodeIds[0])
+		{
+			return GetPoolBlockFirstTransitionName(definition);
+		}
+
+		if (nodeId == nodeIds[2])
+		{
+			return GetPoolBlockSecondTransitionName(definition);
+		}
+
+		return null;
+	}
+
+	private string[] GetCompositeBlockNodeIds(string blockId)
+	{
+		if (!IsKnownCompositeBlockId(blockId))
+		{
+			return null;
+		}
+
+		string prefix = GetCompositeBlockNodePrefix(blockId);
+		return new[] { "T_" + prefix + "_Start", "P_" + prefix + "_Buffer", "T_" + prefix + "_End", "P_" + prefix + "_Output" };
+	}
+
+	private bool IsCompositeBlockBufferPlaceId(string nodeId)
+	{
+		string blockId = GetCompositeBlockIdForNodeId(nodeId);
+		string[] nodeIds = GetCompositeBlockNodeIds(blockId);
+		return nodeIds != null && nodeId == nodeIds[1];
+	}
+
+	private float GetTimedPlaceProcessingDuration(string nodeId)
+	{
+		string blockId = GetCompositeBlockIdForNodeId(nodeId);
+		string[] nodeIds = GetCompositeBlockNodeIds(blockId);
+		if (nodeIds == null || nodeId != nodeIds[1])
+		{
+			return 0f;
+		}
+
+		return GetPoolBlockProcessingSeconds(GetCompositeBlockDefinition(blockId));
+	}
+
+	private string[] GetCompositeBlockArcIds(string blockId)
+	{
+		if (!IsKnownCompositeBlockId(blockId))
+		{
+			return null;
+		}
+
+		string prefix = GetCompositeBlockNodePrefix(blockId);
+		return new[] { "A_" + prefix + "_1", "A_" + prefix + "_2", "A_" + prefix + "_3" };
 	}
 
 	private bool IsCompositeBlockNodeId(string nodeId)
 	{
-		if (string.IsNullOrEmpty(nodeId))
-		{
-			return false;
-		}
-
-		string[] nodeIds = GetCompositeBlockNodeIds();
-		for (int i = 0; i < nodeIds.Length; i++)
-		{
-			if (nodeId == nodeIds[i])
-			{
-				return true;
-			}
-		}
-
-		return false;
+		return GetCompositeBlockIdForNodeId(nodeId) != null;
 	}
 
 	private bool IsCompositeBlockNode(NodeRuntime node)
@@ -1689,7 +2279,31 @@ public partial class GameManager
 
 	private string GetCompositeBlockIdForNodeId(string nodeId)
 	{
-		return IsCompositeBlockNodeId(nodeId) ? "B_Sequence" : null;
+		if (string.IsNullOrEmpty(nodeId))
+		{
+			return null;
+		}
+
+		List<string> blockIds = GetAllCompositeBlockIds();
+		for (int i = 0; i < blockIds.Count; i++)
+		{
+			string blockId = blockIds[i];
+			string[] nodeIds = GetCompositeBlockNodeIds(blockId);
+			if (nodeIds == null)
+			{
+				continue;
+			}
+
+			for (int j = 0; j < nodeIds.Length; j++)
+			{
+				if (nodeId == nodeIds[j])
+				{
+					return blockId;
+				}
+			}
+		}
+
+		return null;
 	}
 
 	private bool IsCompositeBlockInternalArcId(string arcId)
@@ -1699,12 +2313,21 @@ public partial class GameManager
 			return false;
 		}
 
-		string[] arcIds = GetCompositeBlockArcIds();
-		for (int i = 0; i < arcIds.Length; i++)
+		List<string> blockIds = GetAllCompositeBlockIds();
+		for (int blockIndex = 0; blockIndex < blockIds.Count; blockIndex++)
 		{
-			if (arcId == arcIds[i])
+			string[] arcIds = GetCompositeBlockArcIds(blockIds[blockIndex]);
+			if (arcIds == null)
 			{
-				return true;
+				continue;
+			}
+
+			for (int i = 0; i < arcIds.Length; i++)
+			{
+				if (arcId == arcIds[i])
+				{
+					return true;
+				}
 			}
 		}
 
@@ -1718,25 +2341,39 @@ public partial class GameManager
 
 	private bool IsCompositeBlockFirstTransitionId(string nodeId)
 	{
-		return nodeId == "T_Block_Input";
+		string blockId = GetCompositeBlockIdForNodeId(nodeId);
+		string[] nodeIds = GetCompositeBlockNodeIds(blockId);
+		return nodeIds != null && nodeId == nodeIds[0];
 	}
 
 	private bool IsCompositeBlockLastPlaceId(string nodeId)
 	{
-		return nodeId == "P_Block_Output";
+		string blockId = GetCompositeBlockIdForNodeId(nodeId);
+		string[] nodeIds = GetCompositeBlockNodeIds(blockId);
+		return nodeIds != null && nodeId == nodeIds[3];
 	}
 
 	private bool IsCompositeBlockInternalConnection(string fromId, string toId)
 	{
-		return (fromId == "T_Block_Input" && toId == "P_Block_Buffer")
-			|| (fromId == "P_Block_Buffer" && toId == "T_Block_Process")
-			|| (fromId == "T_Block_Process" && toId == "P_Block_Output");
+		string blockId = GetCompositeBlockIdForNodeId(fromId);
+		if (blockId == null || GetCompositeBlockIdForNodeId(toId) != blockId)
+		{
+			return false;
+		}
+
+		string[] nodeIds = GetCompositeBlockNodeIds(blockId);
+		return nodeIds != null
+			&& ((fromId == nodeIds[0] && toId == nodeIds[1])
+				|| (fromId == nodeIds[1] && toId == nodeIds[2])
+				|| (fromId == nodeIds[2] && toId == nodeIds[3]));
 	}
 
 	private bool IsArcAllowedByCompositeBlockRules(string fromId, string toId)
 	{
-		bool fromComposite = IsCompositeBlockNodeId(fromId);
-		bool toComposite = IsCompositeBlockNodeId(toId);
+		string fromBlockId = GetCompositeBlockIdForNodeId(fromId);
+		string toBlockId = GetCompositeBlockIdForNodeId(toId);
+		bool fromComposite = fromBlockId != null;
+		bool toComposite = toBlockId != null;
 		if (!fromComposite && !toComposite)
 		{
 			return true;
@@ -1745,6 +2382,13 @@ public partial class GameManager
 		if (IsCompositeBlockInternalConnection(fromId, toId))
 		{
 			return true;
+		}
+
+		if (fromComposite && toComposite)
+		{
+			return fromBlockId != toBlockId
+				&& IsCompositeBlockLastPlaceId(fromId)
+				&& IsCompositeBlockFirstTransitionId(toId);
 		}
 
 		if (toComposite)
@@ -1762,24 +2406,52 @@ public partial class GameManager
 
 	private void EnsureCompositeBlockVisuals()
 	{
-		string blockId = "B_Sequence";
-		string[] nodeIds = GetCompositeBlockNodeIds();
-		for (int i = 0; i < nodeIds.Length; i++)
+		List<string> expectedBlockIds = GetAllCompositeBlockIds();
+		for (int blockIndex = 0; blockIndex < expectedBlockIds.Count; blockIndex++)
 		{
-			if (!nodesById.ContainsKey(nodeIds[i]))
+			string blockId = expectedBlockIds[blockIndex];
+			string[] nodeIds = GetCompositeBlockNodeIds(blockId);
+			bool hasAllNodes = nodeIds != null;
+			if (nodeIds != null)
+			{
+				for (int i = 0; i < nodeIds.Length; i++)
+				{
+					if (!nodesById.ContainsKey(nodeIds[i]))
+					{
+						hasAllNodes = false;
+						break;
+					}
+				}
+			}
+
+			if (!hasAllNodes)
 			{
 				RemoveCompositeBlockVisual(blockId);
-				return;
+				continue;
+			}
+
+			if (!compositeBlocksById.TryGetValue(blockId, out CompositeBlockRuntime block) || block == null || block.gameObject == null)
+			{
+				block = CreateCompositeBlockVisual(blockId);
+				compositeBlocksById[blockId] = block;
+			}
+
+			UpdateCompositeBlockVisual(block);
+		}
+
+		List<string> staleBlockIds = new List<string>();
+		foreach (KeyValuePair<string, CompositeBlockRuntime> pair in compositeBlocksById)
+		{
+			if (!expectedBlockIds.Contains(pair.Key))
+			{
+				staleBlockIds.Add(pair.Key);
 			}
 		}
 
-		if (!compositeBlocksById.TryGetValue(blockId, out CompositeBlockRuntime block) || block == null || block.gameObject == null)
+		for (int i = 0; i < staleBlockIds.Count; i++)
 		{
-			block = CreateCompositeBlockVisual(blockId);
-			compositeBlocksById[blockId] = block;
+			RemoveCompositeBlockVisual(staleBlockIds[i]);
 		}
-
-		UpdateCompositeBlockVisual(block);
 	}
 
 	private CompositeBlockRuntime CreateCompositeBlockVisual(string blockId)
@@ -1874,12 +2546,12 @@ public partial class GameManager
 	private bool TryGetCompositeBlockBounds(string blockId, out Rect bounds)
 	{
 		bounds = new Rect();
-		if (blockId != "B_Sequence")
+		string[] nodeIds = GetCompositeBlockNodeIds(blockId);
+		if (nodeIds == null)
 		{
 			return false;
 		}
 
-		string[] nodeIds = GetCompositeBlockNodeIds();
 		bool initialized = false;
 		float xMin = 0f;
 		float xMax = 0f;
@@ -1934,7 +2606,12 @@ public partial class GameManager
 		}
 
 		Vector2 delta = desiredCenter - bounds.center;
-		string[] nodeIds = GetCompositeBlockNodeIds();
+		string[] nodeIds = GetCompositeBlockNodeIds(blockId);
+		if (nodeIds == null)
+		{
+			return false;
+		}
+
 		for (int i = 0; i < nodeIds.Length; i++)
 		{
 			if (!nodesById.TryGetValue(nodeIds[i], out NodeRuntime node) || node.transform == null)
@@ -1976,7 +2653,71 @@ public partial class GameManager
 		return ClampPositionToActorArea(desiredCenter, actorClientId, boundaryMargin);
 	}
 
+	private bool TryClaimSharedCompositeBlock(string blockId, ulong actorClientId)
+	{
+		if (!IsCompositeBlockAvailableInSharedPool(blockId))
+		{
+			return false;
+		}
+
+		SetCompositeBlockSharedPoolState(blockId, actorClientId, false, true);
+		RefreshPetriNetVisuals();
+		return true;
+	}
+
+	private bool TryReturnSharedCompositeBlockToPool(string blockId, ulong actorClientId)
+	{
+		int poolIndex = GetCompositeBlockIndex(blockId);
+		if (poolIndex < 0)
+		{
+			return false;
+		}
+
+		if (GetCompositeBlockOwner(blockId) != actorClientId)
+		{
+			return false;
+		}
+
+		Vector2 poolCenter = GetSharedPoolBlockSlotPositionByIndex(poolIndex);
+		if (!IsCompositeBlockFullyInPoolZone(blockId, poolCenter))
+		{
+			return false;
+		}
+
+		if (IsCompositeBlockOverlappingOtherNodes(blockId, poolCenter))
+		{
+			return false;
+		}
+
+		RemoveExternalArcsForCompositeBlock(blockId);
+		if (!MoveCompositeBlockInternal(blockId, poolCenter, false))
+		{
+			return false;
+		}
+
+		SetCompositeBlockSharedPoolState(blockId, UnassignedOwnerClientId, true, true);
+		RefreshPetriNetVisuals();
+		return true;
+	}
+
 	private bool IsCompositeBlockPositionBlocked(string blockId, Vector2 desiredCenter)
+	{
+		if (!TryGetCompositeBlockBounds(blockId, out Rect bounds))
+		{
+			return true;
+		}
+
+		Vector2 delta = desiredCenter - bounds.center;
+		Rect desiredBounds = new Rect(bounds.x + delta.x, bounds.y + delta.y, bounds.width, bounds.height);
+		if (enableSharedTransitionPool && DoTransitionBoundsOverlap(desiredBounds, GetSharedTransitionPoolRect()))
+		{
+			return true;
+		}
+
+		return IsCompositeBlockOverlappingOtherNodes(blockId, desiredCenter);
+	}
+
+	private bool IsCompositeBlockOverlappingOtherNodes(string blockId, Vector2 desiredCenter)
 	{
 		if (!TryGetCompositeBlockBounds(blockId, out Rect bounds))
 		{
@@ -1993,7 +2734,7 @@ public partial class GameManager
 				continue;
 			}
 
-			if (IsCompositeBlockNode(node))
+			if (GetCompositeBlockIdForNodeId(node.id) == blockId)
 			{
 				continue;
 			}
@@ -2016,6 +2757,146 @@ public partial class GameManager
 		}
 
 		return false;
+	}
+
+	private bool IsCompositeBlockFullyInPoolZone(string blockId, Vector2 desiredCenter)
+	{
+		if (!TryGetCompositeBlockBounds(blockId, out Rect bounds))
+		{
+			return false;
+		}
+
+		Vector2 delta = desiredCenter - bounds.center;
+		Rect desiredBounds = new Rect(bounds.x + delta.x, bounds.y + delta.y, bounds.width, bounds.height);
+		Rect poolRect = GetSharedTransitionPoolRect();
+		return desiredBounds.xMin >= poolRect.xMin
+			&& desiredBounds.xMax <= poolRect.xMax
+			&& desiredBounds.yMin >= poolRect.yMin
+			&& desiredBounds.yMax <= poolRect.yMax;
+	}
+
+	private bool IsCompositeBlockAvailableInSharedPool(string blockId)
+	{
+		string[] nodeIds = GetCompositeBlockNodeIds(blockId);
+		if (nodeIds == null)
+		{
+			return false;
+		}
+
+		for (int i = 0; i < nodeIds.Length; i++)
+		{
+			if (!nodesById.TryGetValue(nodeIds[i], out NodeRuntime node))
+			{
+				return false;
+			}
+
+			if (node.type == NodeType.Transition && (!node.isSharedPoolTransition || !node.isSharedPoolAvailable))
+			{
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	private bool IsCompositeBlockInSharedPool(string blockId)
+	{
+		string[] nodeIds = GetCompositeBlockNodeIds(blockId);
+		if (nodeIds == null)
+		{
+			return false;
+		}
+
+		for (int i = 0; i < nodeIds.Length; i++)
+		{
+			if (nodesById.TryGetValue(nodeIds[i], out NodeRuntime node) && node.type == NodeType.Transition && node.isSharedPoolTransition)
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	private ulong GetCompositeBlockOwner(string blockId)
+	{
+		string[] nodeIds = GetCompositeBlockNodeIds(blockId);
+		if (nodeIds == null)
+		{
+			return UnassignedOwnerClientId;
+		}
+
+		for (int i = 0; i < nodeIds.Length; i++)
+		{
+			if (nodesById.TryGetValue(nodeIds[i], out NodeRuntime node))
+			{
+				return node.ownerClientId;
+			}
+		}
+
+		return UnassignedOwnerClientId;
+	}
+
+	private bool CanActorPickupCompositeBlock(string blockId, ulong actorClientId)
+	{
+		if (IsPlayerBoundCompositeBlock(blockId))
+		{
+			return GetCompositeBlockOwner(blockId) == actorClientId;
+		}
+
+		if (IsCompositeBlockAvailableInSharedPool(blockId))
+		{
+			return true;
+		}
+
+		return GetCompositeBlockOwner(blockId) == actorClientId;
+	}
+
+	private void SetCompositeBlockSharedPoolState(string blockId, ulong ownerClientId, bool isAvailable, bool isInSharedPool)
+	{
+		string[] nodeIds = GetCompositeBlockNodeIds(blockId);
+		if (nodeIds == null)
+		{
+			return;
+		}
+
+		for (int i = 0; i < nodeIds.Length; i++)
+		{
+			if (!nodesById.TryGetValue(nodeIds[i], out NodeRuntime node))
+			{
+				continue;
+			}
+
+			node.ownerClientId = ownerClientId;
+			if (node.type == NodeType.Transition)
+			{
+				node.isSharedPoolTransition = isInSharedPool;
+				node.isSharedPoolAvailable = isInSharedPool && isAvailable;
+			}
+		}
+	}
+
+	private void RemoveExternalArcsForCompositeBlock(string blockId)
+	{
+		List<string> arcIdsToRemove = new List<string>();
+		foreach (KeyValuePair<string, ArcRuntime> pair in arcsById)
+		{
+			ArcRuntime arc = pair.Value;
+			if (arc == null || IsCompositeBlockInternalArc(arc))
+			{
+				continue;
+			}
+
+			if (GetCompositeBlockIdForNodeId(arc.fromId) == blockId || GetCompositeBlockIdForNodeId(arc.toId) == blockId)
+			{
+				arcIdsToRemove.Add(arc.id);
+			}
+		}
+
+		for (int i = 0; i < arcIdsToRemove.Count; i++)
+		{
+			RemoveArcInternal(arcIdsToRemove[i]);
+		}
 	}
 
 	private bool CanUseNodeAsExternalConnectionEndpoint(NodeRuntime node)
@@ -2055,6 +2936,11 @@ public partial class GameManager
 
 	private bool IsArcAllowedByIngredientRules(string fromId, string toId)
 	{
+		if (!IsArcAllowedByPlayerExchangeRules(fromId, toId))
+		{
+			return false;
+		}
+
 		if (!IsArcAllowedByCompositeBlockRules(fromId, toId))
 		{
 			return false;
@@ -2206,8 +3092,12 @@ public partial class GameManager
 
 	private Vector2 GetSharedPoolSlotPosition(string transitionId)
 	{
-		int numericIndex = Mathf.Max(1, ExtractTrailingNumber(transitionId));
-		return GetSharedPoolSlotPositionByIndex(numericIndex - 1);
+		if (IsSharedPoolTrashTransitionId(transitionId))
+		{
+			return GetSharedPoolTrashTransitionPosition();
+		}
+
+		return new Vector2(0f, sharedPoolY);
 	}
 
 	private bool TryReturnSharedTransitionToPool(NodeRuntime node, ulong actorClientId, Vector2 desiredPosition)
@@ -2233,18 +3123,18 @@ public partial class GameManager
 			return false;
 		}
 
-		// Only transitions from the pool can be returned (must have T_POOL_ prefix)
-		if (!node.id.StartsWith("T_POOL_"))
+		if (!IsSharedPoolTrashTransitionId(node.id))
 		{
 			return false;
 		}
 
-		if (IsPositionBlockedByNode(new Vector3(desiredPosition.x, desiredPosition.y, 0f), node.id))
+		Vector2 poolPosition = GetSharedPoolSlotPosition(node.id);
+		if (IsPositionBlockedByNode(new Vector3(poolPosition.x, poolPosition.y, 0f), node.id))
 		{
 			return false;
 		}
 
-		if (!IsTransitionFullyInPoolZone(desiredPosition))
+		if (!IsTransitionFullyInPoolZone(poolPosition))
 		{
 			return false;
 		}
@@ -2264,7 +3154,7 @@ public partial class GameManager
 			RemoveArcInternal(arcIdsToRemove[i]);
 		}
 
-		node.transform.position = new Vector3(desiredPosition.x, desiredPosition.y, 0f);
+		node.transform.position = new Vector3(poolPosition.x, poolPosition.y, 0f);
 
 		node.ownerClientId = UnassignedOwnerClientId;
 		node.isSharedPoolTransition = true;
@@ -2275,11 +3165,17 @@ public partial class GameManager
 
 	private bool IsInsideSharedPoolZone(Vector2 worldPosition)
 	{
+		Rect poolRect = GetSharedTransitionPoolRect();
+
+		return worldPosition.x >= poolRect.xMin && worldPosition.x <= poolRect.xMax
+			&& worldPosition.y >= poolRect.yMin && worldPosition.y <= poolRect.yMax;
+	}
+
+	private Rect GetSharedTransitionPoolRect()
+	{
 		float halfWidth = GetSharedPoolHalfWidth();
 		float halfHeight = sharedPoolHalfHeight;
-
-		return worldPosition.x >= -halfWidth && worldPosition.x <= halfWidth
-			&& worldPosition.y >= sharedPoolY - halfHeight && worldPosition.y <= sharedPoolY + halfHeight;
+		return Rect.MinMaxRect(-halfWidth, sharedPoolY - halfHeight, halfWidth, sharedPoolY + halfHeight);
 	}
 
 	private bool IsTransitionFullyInPoolZone(Vector2 transitionPosition)
@@ -2357,7 +3253,8 @@ public partial class GameManager
 			}
 		}
 
-		float x = -0.5f * Mathf.Max(0, ownedClaimedCount - 1) * sharedPoolSlotSpacing;
+		float laneSpacing = GetSharedPoolTrashSlotWidth() + sharedPoolItemGap;
+		float x = -0.5f * Mathf.Max(0, ownedClaimedCount - 1) * laneSpacing;
 		float laneY = IsActorTopSide(actorClientId)
 			? sharedPoolY + sharedPoolHalfHeight + 0.75f
 			: sharedPoolY - sharedPoolHalfHeight - 0.75f;
@@ -2413,6 +3310,20 @@ public partial class GameManager
 
 			node.label.characterSize = Mathf.Max(0.014f, node.label.characterSize * scale * 0.96f);
 		}
+	}
+
+	private string GetNodeDisplayName(NodeRuntime node)
+	{
+		if (node != null)
+		{
+			string displayName = node.displayName != null ? node.displayName.Trim() : "";
+			if (!string.IsNullOrEmpty(displayName))
+			{
+				return displayName;
+			}
+		}
+
+		return HumanizeId(node != null ? node.id : null);
 	}
 
 	private string FormatTransitionLabel(string label)
@@ -2554,6 +3465,385 @@ public partial class GameManager
 		return count;
 	}
 
+	private void EnsureTypedTokenList(NodeRuntime placeNode)
+	{
+		if (placeNode == null || placeNode.type != NodeType.Place)
+		{
+			return;
+		}
+
+		if (placeNode.typedTokens == null)
+		{
+			placeNode.typedTokens = new List<TokenRuntime>();
+		}
+
+		while (placeNode.typedTokens.Count < placeNode.tokens)
+		{
+			placeNode.typedTokens.Add(CreateUntypedToken());
+		}
+
+		while (placeNode.typedTokens.Count > placeNode.tokens)
+		{
+			placeNode.typedTokens.RemoveAt(placeNode.typedTokens.Count - 1);
+		}
+	}
+
+	private void SetUntypedTokenCount(NodeRuntime placeNode, int count)
+	{
+		if (placeNode == null || placeNode.type != NodeType.Place)
+		{
+			return;
+		}
+
+		placeNode.typedTokens = new List<TokenRuntime>();
+		for (int i = 0; i < count; i++)
+		{
+			placeNode.typedTokens.Add(CreateUntypedToken());
+		}
+
+		placeNode.tokens = placeNode.typedTokens.Count;
+	}
+
+	private void AddTokenToPlace(NodeRuntime placeNode, TokenRuntime token)
+	{
+		if (placeNode == null || placeNode.type != NodeType.Place)
+		{
+			return;
+		}
+
+		EnsureTypedTokenList(placeNode);
+		placeNode.typedTokens.Add(CloneToken(token));
+		placeNode.tokens = placeNode.typedTokens.Count;
+	}
+
+	private TokenRuntime TakeTokenFromPlace(NodeRuntime placeNode)
+	{
+		if (placeNode == null || placeNode.type != NodeType.Place)
+		{
+			return CreateUntypedToken();
+		}
+
+		EnsureTypedTokenList(placeNode);
+		if (placeNode.typedTokens.Count <= 0)
+		{
+			placeNode.tokens = 0;
+			return CreateUntypedToken();
+		}
+
+		TokenRuntime token = placeNode.typedTokens[0];
+		placeNode.typedTokens.RemoveAt(0);
+		placeNode.tokens = placeNode.typedTokens.Count;
+		return token;
+	}
+
+	private TokenRuntime CreateUntypedToken()
+	{
+		return new TokenRuntime();
+	}
+
+	private TokenRuntime CreateIngredientToken(string ingredientName)
+	{
+		TokenRuntime token = new TokenRuntime();
+		AddUniqueTokenValue(token.ingredients, ingredientName);
+		token.description = ingredientName != null ? ingredientName.Trim() : "";
+		return token;
+	}
+
+	private TokenRuntime CloneToken(TokenRuntime source)
+	{
+		TokenRuntime clone = new TokenRuntime();
+		if (source == null)
+		{
+			return clone;
+		}
+
+		clone.description = source.description ?? "";
+		CopyTokenValues(source.ingredients, clone.ingredients);
+		CopyTokenValues(source.states, clone.states);
+		return clone;
+	}
+
+	private TokenRuntime CombineTokens(List<TokenRuntime> tokensToCombine)
+	{
+		TokenRuntime combined = new TokenRuntime();
+		if (tokensToCombine == null)
+		{
+			return combined;
+		}
+
+		for (int i = 0; i < tokensToCombine.Count; i++)
+		{
+			TokenRuntime token = tokensToCombine[i];
+			if (token == null)
+			{
+				continue;
+			}
+
+			CopyTokenValues(token.ingredients, combined.ingredients);
+			CopyTokenValues(token.states, combined.states);
+		}
+
+		combined.description = JoinTokenDescriptions(tokensToCombine);
+		return combined;
+	}
+
+	private void CopyTokenValues(List<string> from, List<string> to)
+	{
+		if (from == null || to == null)
+		{
+			return;
+		}
+
+		for (int i = 0; i < from.Count; i++)
+		{
+			AddUniqueTokenValue(to, from[i]);
+		}
+	}
+
+	private void AddUniqueTokenValue(List<string> values, string value)
+	{
+		if (values == null)
+		{
+			return;
+		}
+
+		string trimmedValue = value != null ? value.Trim() : "";
+		if (string.IsNullOrEmpty(trimmedValue))
+		{
+			return;
+		}
+
+		for (int i = 0; i < values.Count; i++)
+		{
+			if (string.Equals(values[i], trimmedValue, StringComparison.OrdinalIgnoreCase))
+			{
+				return;
+			}
+		}
+
+		values.Add(trimmedValue);
+	}
+
+	private string GetIngredientNameForTransition(string transitionId)
+	{
+		if (!IsIngredientTransitionId(transitionId))
+		{
+			return "";
+		}
+
+		bool topSide = transitionId.StartsWith("T_Top_Zutat_");
+		return GetIngredientDisplayName(topSide, ExtractTrailingNumber(transitionId) - 1);
+	}
+
+	private string GetProcessingStateForTransition(string transitionId)
+	{
+		string blockId = GetCompositeBlockIdForNodeId(transitionId);
+		string[] nodeIds = GetCompositeBlockNodeIds(blockId);
+		PoolBlockDefinition definition = GetCompositeBlockDefinition(blockId);
+		if (definition == null || nodeIds == null || transitionId != nodeIds[2])
+		{
+			return "";
+		}
+
+		return GetPoolBlockResultState(definition);
+	}
+
+	private TokenRuntime CreateOutputTokenForTransition(string transitionId, List<TokenRuntime> consumedTokens)
+	{
+		TokenRuntime outputToken = IsIngredientTransitionId(transitionId)
+			? CreateIngredientToken(GetIngredientNameForTransition(transitionId))
+			: CombineTokens(consumedTokens);
+
+		string processingState = GetProcessingStateForTransition(transitionId);
+		string baseDescription = GetTokenDescription(outputToken);
+		AddUniqueTokenValue(outputToken.states, processingState);
+		if (!string.IsNullOrWhiteSpace(processingState))
+		{
+			if (GetNonEmptyTokenDescriptionCount(consumedTokens) > 1)
+			{
+				baseDescription = "(" + baseDescription + ")";
+			}
+
+			outputToken.description = baseDescription + " " + processingState.Trim();
+		}
+
+		return outputToken;
+	}
+
+	private string GetTokenDescription(TokenRuntime token)
+	{
+		if (token == null)
+		{
+			return "unbekannt";
+		}
+
+		string description = token.description != null ? token.description.Trim() : "";
+		if (!string.IsNullOrEmpty(description))
+		{
+			return description;
+		}
+
+		return GetTokenBaseDescription(token);
+	}
+
+	private string GetTokenBaseDescription(TokenRuntime token)
+	{
+		if (token == null)
+		{
+			return "unbekannt";
+		}
+
+		string ingredients = JoinTokenValues(token.ingredients);
+		string states = JoinTokenValues(token.states);
+		if (!string.IsNullOrEmpty(ingredients) && !string.IsNullOrEmpty(states))
+		{
+			return ingredients + " " + states;
+		}
+
+		if (!string.IsNullOrEmpty(ingredients))
+		{
+			return ingredients;
+		}
+
+		if (!string.IsNullOrEmpty(states))
+		{
+			return states;
+		}
+
+		return "unbekannt";
+	}
+
+	private string JoinTokenDescriptions(List<TokenRuntime> tokensToCombine)
+	{
+		if (tokensToCombine == null || tokensToCombine.Count <= 0)
+		{
+			return "";
+		}
+
+		string result = "";
+		for (int i = 0; i < tokensToCombine.Count; i++)
+		{
+			TokenRuntime token = tokensToCombine[i];
+			if (token == null)
+			{
+				continue;
+			}
+
+			string description = GetTokenDescription(token);
+			if (string.IsNullOrEmpty(description) || description == "unbekannt")
+			{
+				continue;
+			}
+
+			if (!string.IsNullOrEmpty(result))
+			{
+				result += ", ";
+			}
+
+			result += description;
+		}
+
+		return result;
+	}
+
+	private int GetNonEmptyTokenDescriptionCount(List<TokenRuntime> tokensToCombine)
+	{
+		if (tokensToCombine == null)
+		{
+			return 0;
+		}
+
+		int count = 0;
+		for (int i = 0; i < tokensToCombine.Count; i++)
+		{
+			string description = tokensToCombine[i] != null ? GetTokenDescription(tokensToCombine[i]) : "";
+			if (!string.IsNullOrEmpty(description) && description != "unbekannt")
+			{
+				count++;
+			}
+		}
+
+		return count;
+	}
+
+	private string GetPlaceDebugLabel(NodeRuntime placeNode)
+	{
+		if (placeNode == null || placeNode.type != NodeType.Place)
+		{
+			return "";
+		}
+
+		EnsureTypedTokenList(placeNode);
+		if (placeNode.typedTokens.Count <= 0)
+		{
+			return "leer";
+		}
+
+		int visibleCount = Mathf.Min(placeNode.typedTokens.Count, 3);
+		string label = "";
+		for (int i = 0; i < visibleCount; i++)
+		{
+			if (i > 0)
+			{
+				label += "\n";
+			}
+
+			label += GetTokenDescription(placeNode.typedTokens[i]);
+		}
+
+		int hiddenCount = placeNode.typedTokens.Count - visibleCount;
+		if (hiddenCount > 0)
+		{
+			label += "\n+" + hiddenCount;
+		}
+
+		return label;
+	}
+
+	private string JoinTokenValues(List<string> values)
+	{
+		if (values == null || values.Count <= 0)
+		{
+			return "";
+		}
+
+		string result = "";
+		for (int i = 0; i < values.Count; i++)
+		{
+			string value = values[i] != null ? values[i].Trim() : "";
+			if (string.IsNullOrEmpty(value))
+			{
+				continue;
+			}
+
+			if (!string.IsNullOrEmpty(result))
+			{
+				result += ", ";
+			}
+
+			result += value;
+		}
+
+		return result;
+	}
+
+	private string SanitizeTokenObjectName(string value)
+	{
+		if (string.IsNullOrEmpty(value))
+		{
+			return "unbekannt";
+		}
+
+		string result = "";
+		for (int i = 0; i < value.Length; i++)
+		{
+			char c = value[i];
+			result += char.IsLetterOrDigit(c) ? c : '_';
+		}
+
+		return result;
+	}
+
 	private void RefreshTokenVisuals(NodeRuntime placeNode)
 	{
 		if (placeNode.tokenRoot == null)
@@ -2561,6 +3851,7 @@ public partial class GameManager
 			return;
 		}
 
+		EnsureTypedTokenList(placeNode);
 		for (int i = placeNode.tokenRoot.childCount - 1; i >= 0; i--)
 		{
 			Destroy(placeNode.tokenRoot.GetChild(i).gameObject);
@@ -2569,7 +3860,8 @@ public partial class GameManager
 		int displayCount = Mathf.Min(placeNode.tokens, 12);
 		for (int i = 0; i < displayCount; i++)
 		{
-			GameObject tokenObject = new GameObject("Token_" + (i + 1));
+			string tokenDescription = i < placeNode.typedTokens.Count ? GetTokenDescription(placeNode.typedTokens[i]) : "unbekannt";
+			GameObject tokenObject = new GameObject("Token_" + (i + 1) + "_" + SanitizeTokenObjectName(tokenDescription));
 			tokenObject.transform.SetParent(placeNode.tokenRoot, false);
 			tokenObject.transform.localPosition = GetTokenLocalPosition(i, displayCount);
 			tokenObject.transform.localScale = new Vector3(0.2f, 0.2f, 1f);
@@ -2578,6 +3870,126 @@ public partial class GameManager
 			tokenRenderer.sprite = GetCircleSprite();
 			tokenRenderer.color = tokenColor;
 			tokenRenderer.sortingOrder = 40;
+		}
+	}
+
+	private void EnsureTimedPlaceProcessingVisual(NodeRuntime placeNode)
+	{
+		if (placeNode == null || placeNode.type != NodeType.Place || placeNode.processingDuration <= 0f || placeNode.processingBarRoot != null || placeNode.transform == null)
+		{
+			return;
+		}
+
+		GameObject root = new GameObject("ProcessingBar");
+		root.transform.SetParent(placeNode.transform, false);
+		root.transform.localPosition = new Vector3(0f, -0.72f, -0.04f);
+
+		GameObject backgroundObject = new GameObject("Background");
+		backgroundObject.transform.SetParent(root.transform, false);
+		backgroundObject.transform.localScale = new Vector3(0.78f, 0.08f, 1f);
+		SpriteRenderer background = backgroundObject.AddComponent<SpriteRenderer>();
+		background.sprite = GetSquareSprite();
+		background.color = new Color(0.04f, 0.05f, 0.06f, 0.38f);
+		background.sortingOrder = 41;
+
+		GameObject fillObject = new GameObject("Fill");
+		fillObject.transform.SetParent(root.transform, false);
+		fillObject.transform.localScale = new Vector3(0.78f, 0.08f, 1f);
+		SpriteRenderer fill = fillObject.AddComponent<SpriteRenderer>();
+		fill.sprite = GetSquareSprite();
+		fill.color = new Color(0.05f, 0.65f, 0.9f, 0.9f);
+		fill.sortingOrder = 42;
+
+		placeNode.processingBarRoot = root;
+		placeNode.processingBarFill = fill;
+		root.SetActive(false);
+	}
+
+	private void UpdateTimedPlaceProcessingVisuals()
+	{
+		foreach (KeyValuePair<string, NodeRuntime> pair in nodesById)
+		{
+			NodeRuntime node = pair.Value;
+			if (node == null)
+			{
+				continue;
+			}
+
+			if (node.type == NodeType.Place)
+			{
+				UpdateTimedPlaceProcessingVisual(node);
+			}
+			else if (node.renderer != null)
+			{
+				node.renderer.color = IsTransitionEnabled(node.id) ? transitionEnabledColor : transitionDisabledColor;
+			}
+		}
+	}
+
+	private void UpdateTimedPlaceProcessingVisual(NodeRuntime placeNode)
+	{
+		if (placeNode == null || placeNode.processingDuration <= 0f)
+		{
+			return;
+		}
+
+		EnsureTimedPlaceProcessingVisual(placeNode);
+		if (placeNode.processingBarRoot == null || placeNode.processingBarFill == null)
+		{
+			return;
+		}
+
+		float remaining = GetTimedPlaceProcessingRemaining(placeNode);
+		bool active = placeNode.tokens > 0 && remaining > 0.001f;
+		placeNode.processingBarRoot.SetActive(active);
+		if (!active)
+		{
+			return;
+		}
+
+		float progress = Mathf.Clamp01(remaining / Mathf.Max(0.001f, placeNode.processingDuration));
+		float fullWidth = 0.78f;
+		placeNode.processingBarFill.transform.localScale = new Vector3(fullWidth * progress, 0.08f, 1f);
+		placeNode.processingBarFill.transform.localPosition = new Vector3(-fullWidth * (1f - progress) * 0.5f, 0f, 0f);
+	}
+
+	private float GetTimedPlaceProcessingRemaining(NodeRuntime placeNode)
+	{
+		if (placeNode == null || placeNode.processingDuration <= 0f || placeNode.tokens <= 0)
+		{
+			return 0f;
+		}
+
+		return Mathf.Max(0f, placeNode.processingReadyTime - Time.time);
+	}
+
+	private bool IsTimedPlaceProcessing(NodeRuntime placeNode)
+	{
+		return GetTimedPlaceProcessingRemaining(placeNode) > 0.001f;
+	}
+
+	private void HandlePlaceTokensChanged(NodeRuntime placeNode, int previousTokens)
+	{
+		if (placeNode == null || placeNode.processingDuration <= 0f)
+		{
+			return;
+		}
+
+		if (placeNode.tokens <= 0)
+		{
+			placeNode.processingReadyTime = 0f;
+			return;
+		}
+
+		if (previousTokens > placeNode.tokens)
+		{
+			placeNode.processingReadyTime = Time.time + placeNode.processingDuration;
+			return;
+		}
+
+		if (previousTokens <= 0 || placeNode.processingReadyTime <= 0f)
+		{
+			placeNode.processingReadyTime = Time.time + placeNode.processingDuration;
 		}
 	}
 
@@ -2703,6 +4115,23 @@ public partial class GameManager
 		if (IsDeliveryTransitionId(id))
 		{
 			return "Ausliefern";
+		}
+
+		if (IsSharedPoolTrashTransitionId(id))
+		{
+			return GetSharedPoolTrashTransitionDisplayName();
+		}
+
+		string compositeName = GetCompositeBlockDisplayNameForNodeId(id);
+		if (!string.IsNullOrEmpty(compositeName))
+		{
+			return compositeName;
+		}
+
+		string ingredientName = GetIngredientDisplayNameForNodeId(id);
+		if (!string.IsNullOrEmpty(ingredientName))
+		{
+			return ingredientName;
 		}
 
 		if (id.Contains("_Out"))

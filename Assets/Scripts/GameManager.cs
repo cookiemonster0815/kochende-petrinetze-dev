@@ -34,8 +34,28 @@ public partial class GameManager : NetworkBehaviour
 			return;
 		}
 
-		TryInitializeGameplayAfterConnection();
+		if (showLevelSelection && !gameplayInitialized)
+		{
+			EnsureLevelSelectionScreen();
+			HandleLevelSelectionInput();
+			TryInitializeGameplayAfterConnection();
+			if (!gameplayInitialized)
+			{
+				return;
+			}
+		}
+		else
+		{
+			TryInitializeGameplayAfterConnection();
+		}
+
 		if (!gameplayInitialized)
+		{
+			return;
+		}
+
+		HandleGameplayMenuHotkey();
+		if (IsGameplayMenuOpen())
 		{
 			return;
 		}
@@ -57,6 +77,7 @@ public partial class GameManager : NetworkBehaviour
 		}
 
 		UpdateCameraFollowAvatar();
+		UpdateLevelOrderDisplay();
 	}
 
 	public override void OnDestroy()
@@ -96,9 +117,16 @@ public partial class GameManager : NetworkBehaviour
 				return;
 			}
 
+			if (showLevelSelection && !levelSelectionConfirmed)
+			{
+				return;
+			}
+
+			DestroyLevelSelectionScreen();
 			EnsureGraphRootExists();
 			BuildInitialPetriNet();
 			gameplayInitialized = true;
+			StartLevelOrderTimeline();
 			BroadcastSnapshotToClients();
 			return;
 		}
@@ -107,6 +135,7 @@ public partial class GameManager : NetworkBehaviour
 		{
 			EnsureLocalAvatarStartPosition();
 			gameplayInitialized = true;
+			StartLevelOrderTimeline();
 			SendAvatarUpdate(avatarPosition, avatarRotation, heldTransitionId);
 		}
 	}

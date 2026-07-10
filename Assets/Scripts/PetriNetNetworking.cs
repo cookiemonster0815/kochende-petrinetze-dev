@@ -22,6 +22,7 @@ public partial class GameManager
 		Unity.Netcode.NetworkManager.Singleton.CustomMessagingManager.RegisterNamedMessageHandler(CommandMessageName, OnCommandMessageReceived);
 		Unity.Netcode.NetworkManager.Singleton.CustomMessagingManager.RegisterNamedMessageHandler(SnapshotMessageName, OnSnapshotMessageReceived);
 		Unity.Netcode.NetworkManager.Singleton.CustomMessagingManager.RegisterNamedMessageHandler(AvatarMessageName, OnAvatarMessageReceived);
+		Unity.Netcode.NetworkManager.Singleton.CustomMessagingManager.RegisterNamedMessageHandler(LevelSelectionMessageName, OnLevelSelectionMessageReceived);
 		networkHandlersRegistered = true;
 
 		if (Unity.Netcode.NetworkManager.Singleton.IsHost && nodesById.Count > 0)
@@ -43,6 +44,7 @@ public partial class GameManager
 			Unity.Netcode.NetworkManager.Singleton.CustomMessagingManager.UnregisterNamedMessageHandler(CommandMessageName);
 			Unity.Netcode.NetworkManager.Singleton.CustomMessagingManager.UnregisterNamedMessageHandler(SnapshotMessageName);
 			Unity.Netcode.NetworkManager.Singleton.CustomMessagingManager.UnregisterNamedMessageHandler(AvatarMessageName);
+			Unity.Netcode.NetworkManager.Singleton.CustomMessagingManager.UnregisterNamedMessageHandler(LevelSelectionMessageName);
 		}
 
 		networkHandlersRegistered = false;
@@ -60,7 +62,17 @@ public partial class GameManager
 			return;
 		}
 
-		if (enableSharedTransitionPool && !collaborativeLayoutApplied && Unity.Netcode.NetworkManager.Singleton.ConnectedClientsIds.Count >= 2)
+		if (showLevelSelection && !gameplayInitialized)
+		{
+			SendLevelSelectionStateToClient(clientId, new LevelSelectionState
+			{
+				showSelection = true,
+				selectedLevelIndex = selectedLevelIndex
+			});
+			return;
+		}
+
+		if (enableSharedTransitionPool && gameplayInitialized && !collaborativeLayoutApplied && Unity.Netcode.NetworkManager.Singleton.ConnectedClientsIds.Count >= 2)
 		{
 			ulong otherClientId = clientId;
 			BuildCollaborativeTwoPlayerLayout(NetworkManager.ServerClientId, otherClientId);
@@ -142,6 +154,27 @@ public partial class GameManager
 		}
 
 		StoreRemoteAvatarState(state);
+	}
+
+	private void OnLevelSelectionMessageReceived(ulong senderClientId, FastBufferReader reader)
+	{
+		if (!enableNetworkAuthoritativeSync)
+		{
+			return;
+		}
+
+		if (Unity.Netcode.NetworkManager.Singleton != null && Unity.Netcode.NetworkManager.Singleton.IsHost)
+		{
+			return;
+		}
+
+		LevelSelectionState state = ReadLevelSelectionState(reader);
+		if (state == null)
+		{
+			return;
+		}
+
+		ApplyLevelSelectionState(state);
 	}
 
 	private void SendCommandToHost(CommandData cmd)
@@ -234,6 +267,42 @@ public partial class GameManager
 		}
 	}
 
+	private void BroadcastLevelSelectionStateToClients()
+	{
+		if (Unity.Netcode.NetworkManager.Singleton == null || !Unity.Netcode.NetworkManager.Singleton.IsHost)
+		{
+			return;
+		}
+
+		LevelSelectionState state = new LevelSelectionState
+		{
+			showSelection = true,
+			selectedLevelIndex = selectedLevelIndex
+		};
+
+		foreach (ulong clientId in Unity.Netcode.NetworkManager.Singleton.ConnectedClientsIds)
+		{
+			if (clientId == NetworkManager.ServerClientId)
+			{
+				continue;
+			}
+
+			SendLevelSelectionStateToClient(clientId, state);
+		}
+	}
+
+	private void SendLevelSelectionStateToClient(ulong clientId, LevelSelectionState state)
+	{
+		string json = JsonUtility.ToJson(state);
+		byte[] bytes = Encoding.UTF8.GetBytes(json);
+		using (FastBufferWriter writer = new FastBufferWriter(sizeof(int) + bytes.Length, Allocator.Temp))
+		{
+			writer.WriteValueSafe(bytes.Length);
+			writer.WriteBytesSafe(bytes);
+			Unity.Netcode.NetworkManager.Singleton.CustomMessagingManager.SendNamedMessage(LevelSelectionMessageName, clientId, writer, NetworkDelivery.ReliableFragmentedSequenced);
+		}
+	}
+
 	private void StoreRemoteAvatarState(AvatarState state)
 	{
 		ulong clientId = (ulong)state.clientId;
@@ -267,7 +336,11 @@ public partial class GameManager
 
 	private SnapshotData BuildSnapshot()
 	{
-		SnapshotData snapshot = new SnapshotData();
+		SnapshotData snapshot = new SnapshotData
+		{
+			selectedLevelIndex = selectedLevelIndex,
+			completedOrderIndexes = GetCompletedLevelOrderIndexes()
+		};
 
 		foreach (KeyValuePair<string, NodeRuntime> pair in nodesById)
 		{
@@ -277,11 +350,14 @@ public partial class GameManager
 				id = node.id,
 				type = (int)node.type,
 				tokens = node.tokens,
+				typedTokens = BuildTypedTokenSnapshot(node),
 				x = node.transform.position.x,
 				y = node.transform.position.y,
 				ownerClientId = (long)node.ownerClientId,
 				isSharedPoolTransition = node.isSharedPoolTransition,
 				isSharedPoolAvailable = node.isSharedPoolAvailable,
+				processingDuration = node.processingDuration,
+				processingRemaining = GetTimedPlaceProcessingRemaining(node),
 			});
 		}
 
@@ -332,6 +408,89 @@ public partial class GameManager
 		return snapshot;
 	}
 
+	private List<TokenState> BuildTypedTokenSnapshot(NodeRuntime node)
+	{
+		List<TokenState> states = new List<TokenState>();
+		if (node == null || node.type != NodeType.Place)
+		{
+			return states;
+		}
+
+		EnsureTypedTokenList(node);
+		for (int i = 0; i < node.typedTokens.Count; i++)
+		{
+			TokenRuntime token = node.typedTokens[i];
+			TokenState state = new TokenState();
+			if (token != null)
+			{
+				state.description = token.description ?? "";
+				CopyTokenValues(token.ingredients, state.ingredients);
+				CopyTokenValues(token.states, state.states);
+			}
+
+			states.Add(state);
+		}
+
+		return states;
+	}
+
+	private void ApplyTypedTokenSnapshot(NodeRuntime node, List<TokenState> states, int fallbackTokenCount)
+	{
+		if (node == null || node.type != NodeType.Place)
+		{
+			return;
+		}
+
+		node.typedTokens = new List<TokenRuntime>();
+		if (states != null)
+		{
+			for (int i = 0; i < states.Count; i++)
+			{
+				TokenState state = states[i];
+				TokenRuntime token = new TokenRuntime();
+				if (state != null)
+				{
+					token.description = state.description ?? "";
+					CopyTokenValues(state.ingredients, token.ingredients);
+					CopyTokenValues(state.states, token.states);
+				}
+
+				node.typedTokens.Add(token);
+			}
+		}
+
+		while (node.typedTokens.Count < fallbackTokenCount)
+		{
+			node.typedTokens.Add(CreateUntypedToken());
+		}
+
+		while (node.typedTokens.Count > fallbackTokenCount)
+		{
+			node.typedTokens.RemoveAt(node.typedTokens.Count - 1);
+		}
+
+		node.tokens = node.typedTokens.Count;
+	}
+
+	private void ApplyNodeProcessingSnapshot(NodeRuntime node, float duration, float remaining)
+	{
+		if (node == null || node.type != NodeType.Place)
+		{
+			return;
+		}
+
+		float configuredDuration = GetTimedPlaceProcessingDuration(node.id);
+		node.processingDuration = duration > 0f ? duration : configuredDuration;
+		if (node.processingDuration <= 0f || node.tokens <= 0)
+		{
+			node.processingReadyTime = 0f;
+			return;
+		}
+
+		node.processingReadyTime = Time.time + Mathf.Clamp(remaining, 0f, node.processingDuration);
+		EnsureTimedPlaceProcessingVisual(node);
+	}
+
 	private void ApplySnapshot(SnapshotData snapshot)
 	{
 		if (snapshot == null)
@@ -339,6 +498,9 @@ public partial class GameManager
 			return;
 		}
 
+		bool wasGameplayInitialized = gameplayInitialized;
+		ApplySnapshotLevelDefinition(snapshot.selectedLevelIndex);
+		DestroyLevelSelectionScreen();
 		ApplySharedScreenLayoutDefaults();
 		suppressNetworkSend = true;
 
@@ -419,7 +581,8 @@ public partial class GameManager
 					node.isSharedPoolTransition = state.isSharedPoolTransition;
 					node.isSharedPoolAvailable = state.isSharedPoolAvailable;
 					node.ownerClientId = (ulong)state.ownerClientId;
-					node.tokens = state.tokens;
+					ApplyTypedTokenSnapshot(node, state.typedTokens, state.tokens);
+					ApplyNodeProcessingSnapshot(node, state.processingDuration, state.processingRemaining);
 					// Only update position for nodes that don't belong to me or aren't being dragged
 					// Nodes I own (or am dragging) keep their local position
 					bool heldByLocal = node.id == heldTransitionId || node.id == heldPlaceId || IsHeldCompositeBlockNode(node);
@@ -437,6 +600,11 @@ public partial class GameManager
 				else if ((NodeType)state.type == NodeType.Place)
 				{
 					CreatePlaceNode(state.id, new Vector2(state.x, state.y), state.tokens, false, (ulong)state.ownerClientId, state.isSharedPoolTransition, state.isSharedPoolAvailable);
+					if (nodesById.TryGetValue(state.id, out NodeRuntime createdPlace))
+					{
+						ApplyTypedTokenSnapshot(createdPlace, state.typedTokens, state.tokens);
+						ApplyNodeProcessingSnapshot(createdPlace, state.processingDuration, state.processingRemaining);
+					}
 				}
 				else
 				{
@@ -513,6 +681,13 @@ public partial class GameManager
 			arcCounter = Mathf.Max(arcCounter, mergeMaxArc + 1);
 
 			TryAttachPendingCreatedPlace();
+			if (!wasGameplayInitialized)
+			{
+				gameplayInitialized = true;
+				StartLevelOrderTimeline();
+			}
+
+			ApplyCompletedLevelOrderIndexes(snapshot.completedOrderIndexes);
 			EnsureLocalAvatarStartPosition();
 			RefreshPetriNetVisuals();
 			suppressNetworkSend = false;
@@ -541,6 +716,11 @@ public partial class GameManager
 			if ((NodeType)state.type == NodeType.Place)
 			{
 				CreatePlaceNode(state.id, new Vector2(state.x, state.y), state.tokens, false, (ulong)state.ownerClientId, state.isSharedPoolTransition, state.isSharedPoolAvailable);
+				if (nodesById.TryGetValue(state.id, out NodeRuntime createdPlace))
+				{
+					ApplyTypedTokenSnapshot(createdPlace, state.typedTokens, state.tokens);
+					ApplyNodeProcessingSnapshot(createdPlace, state.processingDuration, state.processingRemaining);
+				}
 				maxPlace = Mathf.Max(maxPlace, ExtractTrailingNumber(state.id));
 			}
 			else
@@ -569,6 +749,12 @@ public partial class GameManager
 		RefreshPetriNetVisuals();
 		EnsureLocalAvatarStartPosition();
 		gameplayInitialized = true;
+		if (!wasGameplayInitialized)
+		{
+			StartLevelOrderTimeline();
+		}
+
+		ApplyCompletedLevelOrderIndexes(snapshot.completedOrderIndexes);
 		pendingClaimedTransitionId = null;
 		TryAttachPendingCreatedPlace();
 		suppressNetworkSend = false;
@@ -614,6 +800,20 @@ public partial class GameManager
 		reader.ReadBytesSafe(ref bytes, length);
 		string json = Encoding.UTF8.GetString(bytes);
 		return JsonUtility.FromJson<AvatarState>(json);
+	}
+
+	private LevelSelectionState ReadLevelSelectionState(FastBufferReader reader)
+	{
+		reader.ReadValueSafe(out int length);
+		if (length <= 0)
+		{
+			return null;
+		}
+
+		byte[] bytes = new byte[length];
+		reader.ReadBytesSafe(ref bytes, length);
+		string json = Encoding.UTF8.GetString(bytes);
+		return JsonUtility.FromJson<LevelSelectionState>(json);
 	}
 
 	private bool IsHostOrOffline()

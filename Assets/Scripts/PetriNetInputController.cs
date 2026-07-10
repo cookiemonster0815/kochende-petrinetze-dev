@@ -47,6 +47,11 @@ public partial class GameManager
 
 	private void HandleCameraControls()
 	{
+		if (IsGameplayMenuOpen() || (showLevelSelection && !gameplayInitialized && IsGameplayConnectionReady()))
+		{
+			return;
+		}
+
 		if (mainCamera == null)
 		{
 			mainCamera = Camera.main;
@@ -287,6 +292,12 @@ public partial class GameManager
 			return;
 		}
 
+		if (!string.IsNullOrEmpty(craneConnectStartNodeId))
+		{
+			HandleCraneConnectAction();
+			return;
+		}
+
 		if (TryPickupCompositeBlockAtCraneTarget())
 		{
 			return;
@@ -298,6 +309,12 @@ public partial class GameManager
 		}
 
 		TryPickupTransition();
+		if (!string.IsNullOrEmpty(heldTransitionId))
+		{
+			return;
+		}
+
+		TryPickupArcWithCrane();
 	}
 
 	private void TryPickupTransition()
@@ -511,6 +528,54 @@ public partial class GameManager
 		RequestReverseArc(arc.id);
 	}
 
+	private bool TryPickupArcWithCrane()
+	{
+		if (!TryGetArcAtCraneTarget(out ArcRuntime arc))
+		{
+			return false;
+		}
+
+		if (!TryGetArcPickupAnchor(arc, out string fixedNodeId, out bool reversed))
+		{
+			return false;
+		}
+
+		string arcId = arc.id;
+		craneConnectStartNodeId = fixedNodeId;
+		craneConnectReversed = reversed;
+		RequestDeleteArc(arcId);
+		if (!IsHostOrOffline() && arc.gameObject != null)
+		{
+			arc.gameObject.SetActive(false);
+		}
+
+		HideCraneHoverSelectionVisual();
+		UpdateCraneConnectPreviewVisual();
+		RefreshPetriNetVisuals();
+		return true;
+	}
+
+	private bool TryGetArcPickupAnchor(ArcRuntime arc, out string fixedNodeId, out bool reversed)
+	{
+		fixedNodeId = null;
+		reversed = false;
+		if (arc == null || !TryGetArcSegment(arc, out Vector3 start, out Vector3 end))
+		{
+			return false;
+		}
+
+		Vector2 craneTarget = new Vector2(avatarPosition.x, avatarPosition.y);
+		float distanceToStart = Vector2.Distance(craneTarget, new Vector2(start.x, start.y));
+		float distanceToEnd = Vector2.Distance(craneTarget, new Vector2(end.x, end.y));
+		bool pickupFromSide = distanceToStart <= distanceToEnd;
+		fixedNodeId = pickupFromSide ? arc.toId : arc.fromId;
+		reversed = pickupFromSide;
+
+		return nodesById.TryGetValue(fixedNodeId, out NodeRuntime fixedNode)
+			&& CanUseNodeAsExternalConnectionEndpoint(fixedNode)
+			&& CanActorEditNode(fixedNode, GetLocalActorClientId());
+	}
+
 	private void ToggleCraneConnectDirection()
 	{
 		if (string.IsNullOrEmpty(craneConnectStartNodeId))
@@ -567,9 +632,24 @@ public partial class GameManager
 	{
 		if (TryGetCompositeBlockAtCraneTarget(out CompositeBlockRuntime block))
 		{
+			if (!CanActorPickupCompositeBlock(block.id, GetLocalActorClientId()))
+			{
+				return false;
+			}
+
 			Vector2 blockCenter = GetCompositeBlockCenter(block.id);
 			heldCompositeBlockId = block.id;
 			heldCompositeBlockOffset = blockCenter - new Vector2(avatarPosition.x, avatarPosition.y);
+			if (IsCompositeBlockAvailableInSharedPool(block.id))
+			{
+				SetCompositeBlockSharedPoolState(block.id, GetLocalActorClientId(), false, true);
+				RequestClaimCompositeBlock(block.id);
+			}
+			else if (!IsCompositeBlockInSharedPool(block.id))
+			{
+				SetCompositeBlockSharedPoolState(block.id, GetLocalActorClientId(), false, false);
+			}
+
 			StartCraneDipAnimation();
 			UpdateHeldCompositeBlockVisual();
 			RefreshPetriNetVisuals();
@@ -603,12 +683,39 @@ public partial class GameManager
 		}
 
 		string blockId = heldCompositeBlockId;
-		Vector2 desiredCenter = ClampCompositeBlockCenterToActorArea(blockId, GetHeldCompositeBlockGroundCenter(), GetLocalActorClientId());
+		Vector2 groundCenter = GetHeldCompositeBlockGroundCenter();
+		if (IsInsideSharedPoolZone(groundCenter))
+		{
+			bool returned = TryReturnSharedCompositeBlockToPool(blockId, GetLocalActorClientId());
+			if (!returned)
+			{
+				return;
+			}
+
+			if (IsHostOrOffline())
+			{
+				BroadcastSnapshotToClients();
+			}
+			else
+			{
+				RequestReturnCompositeBlock(blockId);
+			}
+
+			SetCompositeBlockSorting(blockId, false);
+			heldCompositeBlockId = null;
+			heldCompositeBlockOffset = Vector2.zero;
+			StartCraneDipAnimation();
+			RefreshPetriNetVisuals();
+			return;
+		}
+
+		Vector2 desiredCenter = ClampCompositeBlockCenterToActorArea(blockId, groundCenter, GetLocalActorClientId());
 		if (!MoveCompositeBlockInternal(blockId, desiredCenter))
 		{
 			return;
 		}
 
+		SetCompositeBlockSharedPoolState(blockId, GetLocalActorClientId(), false, false);
 		RequestMoveCompositeBlock(blockId, new Vector3(desiredCenter.x, desiredCenter.y, 0f));
 		SetCompositeBlockSorting(blockId, false);
 		heldCompositeBlockId = null;
@@ -660,6 +767,11 @@ public partial class GameManager
 			return;
 		}
 
+		if (IsPlaceOverSharedTransitionPool(avatarPosition, null))
+		{
+			return;
+		}
+
 		pendingCreatedPlacePickup = true;
 		pendingCreatedPlacePickupPosition = avatarPosition;
 		pendingCreatedPlaceExistingIds.Clear();
@@ -684,7 +796,7 @@ public partial class GameManager
 		}
 
 		Vector3 dropPosition = avatarPosition;
-		if (IsPositionBlockedByNode(dropPosition, heldPlaceId))
+		if (IsPlacePlacementBlocked(dropPosition, heldPlaceId))
 		{
 			return;
 		}
@@ -698,7 +810,7 @@ public partial class GameManager
 
 	private void TryDeletePlaceWithCrane(NodeRuntime place)
 	{
-		if (place == null || place.type != NodeType.Place || IsProtectedInputPlace(place))
+		if (place == null || place.type != NodeType.Place || !CanDeleteNode(place))
 		{
 			return;
 		}
@@ -856,6 +968,11 @@ public partial class GameManager
 				continue;
 			}
 
+			if (!CanActorPickupCompositeBlock(block.id, GetLocalActorClientId()))
+			{
+				continue;
+			}
+
 			if (!TryGetCompositeBlockBounds(block.id, out Rect bounds))
 			{
 				continue;
@@ -978,7 +1095,8 @@ public partial class GameManager
 			&& arc.gameObject.activeInHierarchy
 			&& arc.ownerClientId == GetLocalActorClientId()
 			&& !IsIngredientSourceArc(arc)
-			&& !IsCompositeBlockInternalArc(arc);
+			&& !IsCompositeBlockInternalArc(arc)
+			&& !IsPlayerExchangeArc(arc);
 	}
 
 	private bool TryGetArcSegment(ArcRuntime arc, out Vector3 start, out Vector3 end)
@@ -1117,8 +1235,57 @@ public partial class GameManager
 		return false; // Position is free
 	}
 
+	private bool IsNodeMovePositionBlocked(NodeRuntime node, Vector3 targetPosition)
+	{
+		if (node != null && node.type == NodeType.Place && IsPlaceOverSharedTransitionPool(targetPosition, node.id))
+		{
+			return true;
+		}
+
+		return IsPositionBlockedByNode(targetPosition, node != null ? node.id : null);
+	}
+
+	private bool IsPlacePlacementBlocked(Vector3 targetPosition, string ignoredPlaceId)
+	{
+		return IsPlaceOverSharedTransitionPool(targetPosition, ignoredPlaceId)
+			|| IsPositionBlockedByNode(targetPosition, ignoredPlaceId);
+	}
+
+	private bool IsPlaceOverSharedTransitionPool(Vector3 targetPosition, string placeId)
+	{
+		if (!enableSharedTransitionPool)
+		{
+			return false;
+		}
+
+		NodeRuntime place = null;
+		if (!string.IsNullOrEmpty(placeId))
+		{
+			nodesById.TryGetValue(placeId, out place);
+		}
+
+		Vector2 center;
+		float radius;
+		if (place != null)
+		{
+			GetPlacePlacementCircle(place, targetPosition, out center, out radius);
+		}
+		else
+		{
+			center = new Vector2(targetPosition.x, targetPosition.y);
+			radius = 0.6f;
+		}
+
+		return DoCircleRectOverlap(center, radius, GetSharedTransitionPoolRect());
+	}
+
 	private bool IsNewPlacePositionBlocked(Vector3 targetPosition)
 	{
+		if (IsPlaceOverSharedTransitionPool(targetPosition, null))
+		{
+			return true;
+		}
+
 		Vector2 placeCenter = new Vector2(targetPosition.x, targetPosition.y);
 		float placeRadius = 0.6f;
 
@@ -1366,7 +1533,7 @@ public partial class GameManager
 		{
 			Vector2 clampedDragPosition = ClampPositionToActorArea(new Vector2(worldPosition.x + dragOffset.x, worldPosition.y + dragOffset.y), GetLocalActorClientId(), 0f);
 			Vector3 desiredPosition = new Vector3(clampedDragPosition.x, clampedDragPosition.y, 0f);
-			if (IsPositionBlockedByNode(desiredPosition, node.id))
+			if (IsNodeMovePositionBlocked(node, desiredPosition))
 			{
 				return;
 			}
@@ -1399,6 +1566,18 @@ public partial class GameManager
 				return;
 			}
 
+			if (!CanActorPickupCompositeBlock(pointerDownCompositeBlockId, GetLocalActorClientId()))
+			{
+				pointerDownCompositeBlockId = null;
+				return;
+			}
+
+			if (IsCompositeBlockAvailableInSharedPool(pointerDownCompositeBlockId))
+			{
+				SetCompositeBlockSharedPoolState(pointerDownCompositeBlockId, GetLocalActorClientId(), false, true);
+				RequestClaimCompositeBlock(pointerDownCompositeBlockId);
+			}
+
 			pointerDragActive = true;
 			draggedCompositeBlockId = pointerDownCompositeBlockId;
 			Vector2 blockCenter = GetCompositeBlockCenter(draggedCompositeBlockId);
@@ -1417,6 +1596,11 @@ public partial class GameManager
 		if (!MoveCompositeBlockInternal(draggedCompositeBlockId, desiredCenter))
 		{
 			return;
+		}
+
+		if (!IsInsideSharedPoolZone(desiredCenter))
+		{
+			SetCompositeBlockSharedPoolState(draggedCompositeBlockId, GetLocalActorClientId(), false, false);
 		}
 
 		Vector2 currentCenter = GetCompositeBlockCenter(draggedCompositeBlockId);
@@ -1561,7 +1745,7 @@ public partial class GameManager
 	{
 		if (TryGetNodeAtPoint(worldPosition, out NodeRuntime node))
 		{
-			if (IsProtectedInputPlace(node))
+			if (!CanDeleteNode(node))
 			{
 				return;
 			}
@@ -1572,7 +1756,7 @@ public partial class GameManager
 
 		if (TryGetArcAtPoint(worldPosition, out ArcRuntime arc))
 		{
-			if (IsIngredientSourceArc(arc) || IsCompositeBlockInternalArc(arc))
+			if (IsIngredientSourceArc(arc) || IsCompositeBlockInternalArc(arc) || IsPlayerExchangeArc(arc))
 			{
 				return;
 			}

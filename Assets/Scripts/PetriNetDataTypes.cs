@@ -39,6 +39,8 @@ public partial class GameManager
 	[Serializable]
 	private class SnapshotData
 	{
+		public int selectedLevelIndex;
+		public List<int> completedOrderIndexes = new List<int>();
 		public List<NodeState> nodes = new List<NodeState>();
 		public List<ArcState> arcs = new List<ArcState>();
 		public List<AvatarState> avatars = new List<AvatarState>();
@@ -55,16 +57,34 @@ public partial class GameManager
 	}
 
 	[Serializable]
+	private class LevelSelectionState
+	{
+		public bool showSelection;
+		public int selectedLevelIndex;
+	}
+
+	[Serializable]
 	private class NodeState
 	{
 		public string id;
 		public int type;
 		public int tokens;
+		public List<TokenState> typedTokens = new List<TokenState>();
 		public float x;
 		public float y;
 		public long ownerClientId;
 		public bool isSharedPoolTransition;
 		public bool isSharedPoolAvailable;
+		public float processingDuration;
+		public float processingRemaining;
+	}
+
+	[Serializable]
+	private class TokenState
+	{
+		public string description;
+		public List<string> ingredients = new List<string>();
+		public List<string> states = new List<string>();
 	}
 
 	[Serializable]
@@ -80,8 +100,10 @@ public partial class GameManager
 	private class NodeRuntime
 	{
 		public string id;
+		public string displayName;
 		public NodeType type;
 		public int tokens;
+		public List<TokenRuntime> typedTokens = new List<TokenRuntime>();
 		public ulong ownerClientId;
 		public bool isSharedPoolTransition;
 		public bool isSharedPoolAvailable;
@@ -90,6 +112,17 @@ public partial class GameManager
 		public Collider2D collider;
 		public TextMesh label;
 		public Transform tokenRoot;
+		public float processingDuration;
+		public float processingReadyTime;
+		public GameObject processingBarRoot;
+		public SpriteRenderer processingBarFill;
+	}
+
+	private class TokenRuntime
+	{
+		public string description;
+		public List<string> ingredients = new List<string>();
+		public List<string> states = new List<string>();
 	}
 
 	private class ArcRuntime
@@ -117,4 +150,5 @@ public partial class GameManager
 	private const string CommandMessageName = "PetriCommand";
 	private const string SnapshotMessageName = "PetriSnapshot";
 	private const string AvatarMessageName = "PetriAvatar";
+	private const string LevelSelectionMessageName = "PetriLevelSelection";
 }

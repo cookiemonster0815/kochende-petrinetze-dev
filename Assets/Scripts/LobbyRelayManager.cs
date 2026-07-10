@@ -86,6 +86,12 @@ public class LobbyRelayManager : MonoBehaviour
             return;
         }
 
+        GameManager gameManager = FindAnyObjectByType<GameManager>();
+        if (gameManager != null && gameManager.ShouldSuppressLobbyOverlay())
+        {
+            return;
+        }
+
         bool connected = AreBothPlayersConnected();
         Matrix4x4 oldMatrix = GUI.matrix;
         if (!connected)

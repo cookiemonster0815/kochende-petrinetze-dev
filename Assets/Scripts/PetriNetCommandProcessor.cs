@@ -63,6 +63,16 @@ public partial class GameManager
 		ExecuteOrSendCommand(new CommandData { action = "MoveCompositeBlock", id = blockId, x = centerPosition.x, y = centerPosition.y });
 	}
 
+	private void RequestClaimCompositeBlock(string blockId)
+	{
+		ExecuteOrSendCommand(new CommandData { action = "ClaimCompositeBlock", id = blockId });
+	}
+
+	private void RequestReturnCompositeBlock(string blockId)
+	{
+		ExecuteOrSendCommand(new CommandData { action = "ReturnCompositeBlock", id = blockId });
+	}
+
 	private void ExecuteOrSendCommand(CommandData cmd)
 	{
 		if (suppressNetworkSend)
@@ -106,11 +116,19 @@ public partial class GameManager
 			}
 			case "CreateHeldPlace":
 			{
+				if (IsPlaceOverSharedTransitionPool(new Vector3(cmd.x, cmd.y, 0f), null))
+				{
+					return false;
+				}
+
 				string newId = GetNextPlaceId();
 				CreatePlaceNode(newId, new Vector2(cmd.x, cmd.y), 0, true, actorClientId, false, false);
 				return true;
 			}
 			case "CreateTransition":
+				return false;
+			case "ReturnToLevelSelection":
+				ReturnToLevelSelectionFromHost();
 				return false;
 			case "CreateArc":
 			{
@@ -130,7 +148,7 @@ public partial class GameManager
 					return false;
 				}
 
-				if (IsProtectedInputPlace(node))
+				if (!CanDeleteNode(node))
 				{
 					return false;
 				}
@@ -144,7 +162,7 @@ public partial class GameManager
 					return false;
 				}
 
-				if (IsIngredientSourceArc(arc) || IsCompositeBlockInternalArc(arc))
+				if (IsIngredientSourceArc(arc) || IsCompositeBlockInternalArc(arc) || IsPlayerExchangeArc(arc))
 				{
 					return false;
 				}
@@ -182,7 +200,33 @@ public partial class GameManager
 					return false;
 				}
 
-				place.tokens = Mathf.Max(0, place.tokens + cmd.amount);
+				if (place.processingDuration > 0f && cmd.amount > 0 && place.tokens > 0)
+				{
+					return false;
+				}
+
+				EnsureTypedTokenList(place);
+				int previousTokens = place.tokens;
+				if (cmd.amount > 0)
+				{
+					int tokensToAdd = place.processingDuration > 0f ? Mathf.Min(1, cmd.amount) : cmd.amount;
+					for (int i = 0; i < tokensToAdd; i++)
+					{
+						AddTokenToPlace(place, CreateUntypedToken());
+					}
+				}
+				else if (cmd.amount < 0)
+				{
+					int tokensToRemove = Mathf.Min(place.typedTokens.Count, -cmd.amount);
+					for (int i = 0; i < tokensToRemove; i++)
+					{
+						place.typedTokens.RemoveAt(place.typedTokens.Count - 1);
+					}
+
+					place.tokens = place.typedTokens.Count;
+				}
+
+				HandlePlaceTokensChanged(place, previousTokens);
 				RefreshPetriNetVisuals();
 				return true;
 			}
@@ -190,6 +234,8 @@ public partial class GameManager
 				return TryFireTransition(cmd.id, actorClientId);
 			case "ClaimSharedTransition":
 				return TryClaimSharedTransition(cmd.id, actorClientId, new Vector2(cmd.x, cmd.y));
+			case "ClaimCompositeBlock":
+				return TryClaimSharedCompositeBlock(cmd.id, actorClientId);
 			case "MoveNode":
 			{
 				if (!nodesById.TryGetValue(cmd.id, out NodeRuntime node))
@@ -216,12 +262,13 @@ public partial class GameManager
 				}
 
 				desired = ClampPositionToActorArea(desired, actorClientId, 0f);
-				if (IsPositionBlockedByNode(new Vector3(desired.x, desired.y, 0f), node.id))
+				Vector3 desiredPosition = new Vector3(desired.x, desired.y, 0f);
+				if (IsNodeMovePositionBlocked(node, desiredPosition))
 				{
 					return false;
 				}
 
-				node.transform.position = new Vector3(desired.x, desired.y, 0f);
+				node.transform.position = desiredPosition;
 				// Placing a pool transition outside the pool makes it a regular owned transition
 				if (node.isSharedPoolTransition && !node.isSharedPoolAvailable)
 				{
@@ -234,15 +281,23 @@ public partial class GameManager
 			}
 			case "MoveCompositeBlock":
 			{
+				if (!CanActorPickupCompositeBlock(cmd.id, actorClientId))
+				{
+					return false;
+				}
+
 				Vector2 desired = ClampCompositeBlockCenterToActorArea(cmd.id, new Vector2(cmd.x, cmd.y), actorClientId);
 				if (!MoveCompositeBlockInternal(cmd.id, desired))
 				{
 					return false;
 				}
 
+				SetCompositeBlockSharedPoolState(cmd.id, actorClientId, false, false);
 				RefreshPetriNetVisuals();
 				return true;
 			}
+			case "ReturnCompositeBlock":
+				return TryReturnSharedCompositeBlockToPool(cmd.id, actorClientId);
 			case "ReturnSharedTransition":
 			{
 				if (!nodesById.TryGetValue(cmd.id, out NodeRuntime node))
@@ -315,22 +370,72 @@ public partial class GameManager
 			return false;
 		}
 
+		List<ArcRuntime> inputArcs = new List<ArcRuntime>();
+		List<ArcRuntime> outputArcs = new List<ArcRuntime>();
 		foreach (KeyValuePair<string, ArcRuntime> pair in arcsById)
 		{
 			ArcRuntime arc = pair.Value;
-			if (arc.toId == transitionId && nodesById.TryGetValue(arc.fromId, out NodeRuntime place) && place.type == NodeType.Place)
+			if (arc.toId == transitionId)
 			{
-				place.tokens -= arc.weight;
+				inputArcs.Add(arc);
+			}
+			else if (arc.fromId == transitionId)
+			{
+				outputArcs.Add(arc);
 			}
 		}
 
-		foreach (KeyValuePair<string, ArcRuntime> pair in arcsById)
+		List<TokenRuntime> consumedTokens = new List<TokenRuntime>();
+		List<NodeRuntime> touchedPlaces = new List<NodeRuntime>();
+		List<int> previousTokenCounts = new List<int>();
+		for (int i = 0; i < inputArcs.Count; i++)
 		{
-			ArcRuntime arc = pair.Value;
-			if (arc.fromId == transitionId && nodesById.TryGetValue(arc.toId, out NodeRuntime place) && place.type == NodeType.Place)
+			ArcRuntime arc = inputArcs[i];
+			if (!nodesById.TryGetValue(arc.fromId, out NodeRuntime place) || place.type != NodeType.Place)
 			{
-				place.tokens += arc.weight;
+				continue;
 			}
+
+			if (!touchedPlaces.Contains(place))
+			{
+				touchedPlaces.Add(place);
+				previousTokenCounts.Add(place.tokens);
+			}
+
+			for (int weightIndex = 0; weightIndex < arc.weight; weightIndex++)
+			{
+				consumedTokens.Add(TakeTokenFromPlace(place));
+			}
+		}
+
+		for (int i = 0; i < outputArcs.Count; i++)
+		{
+			ArcRuntime arc = outputArcs[i];
+			if (!nodesById.TryGetValue(arc.toId, out NodeRuntime place) || place.type != NodeType.Place)
+			{
+				continue;
+			}
+
+			if (!touchedPlaces.Contains(place))
+			{
+				touchedPlaces.Add(place);
+				previousTokenCounts.Add(place.tokens);
+			}
+
+			for (int weightIndex = 0; weightIndex < arc.weight; weightIndex++)
+			{
+				AddTokenToPlace(place, CreateOutputTokenForTransition(transitionId, consumedTokens));
+			}
+		}
+
+		for (int i = 0; i < touchedPlaces.Count; i++)
+		{
+			HandlePlaceTokensChanged(touchedPlaces[i], previousTokenCounts[i]);
+		}
+
+		if (IsDeliveryTransitionId(transitionId))
+		{
+			HandleDeliveredTokens(consumedTokens);
 		}
 
 		RefreshPetriNetVisuals();
@@ -372,7 +477,12 @@ public partial class GameManager
 			ArcRuntime arc = pair.Value;
 			if (arc.fromId == transitionId && nodesById.TryGetValue(arc.toId, out NodeRuntime outputPlace) && outputPlace.type == NodeType.Place)
 			{
+				EnsureTypedTokenList(outputPlace);
 				hasOutputPlace = true;
+				if (outputPlace.processingDuration > 0f && outputPlace.tokens + Mathf.Max(1, arc.weight) > 1)
+				{
+					return false;
+				}
 			}
 
 			if (arc.toId != transitionId)
@@ -385,8 +495,14 @@ public partial class GameManager
 				continue;
 			}
 
+			EnsureTypedTokenList(place);
 			hasInputPlace = true;
 			if (place.tokens < arc.weight)
+			{
+				return false;
+			}
+
+			if (IsTimedPlaceProcessing(place))
 			{
 				return false;
 			}
@@ -397,7 +513,7 @@ public partial class GameManager
 			return false;
 		}
 
-		if (!IsIngredientTransition(transition) && !IsDeliveryTransition(transition) && !hasOutputPlace)
+		if (!IsIngredientTransition(transition) && !IsDeliveryTransition(transition) && !IsSharedPoolTrashTransitionId(transition.id) && !hasOutputPlace)
 		{
 			return false;
 		}
@@ -424,7 +540,13 @@ public partial class GameManager
 
 		if (IsCompositeBlockNode(node))
 		{
-			return true;
+			string blockId = GetCompositeBlockIdForNodeId(node.id);
+			if (IsCompositeBlockAvailableInSharedPool(blockId))
+			{
+				return false;
+			}
+
+			return GetCompositeBlockOwner(blockId) == actorClientId;
 		}
 
 		if (node.isSharedPoolTransition && node.isSharedPoolAvailable)
@@ -448,6 +570,26 @@ public partial class GameManager
 		}
 
 		return node.type == NodeType.Place && (node.id == "P_Input" || node.id.EndsWith("_In"));
+	}
+
+	private bool CanDeleteNode(NodeRuntime node)
+	{
+		if (node == null)
+		{
+			return false;
+		}
+
+		if (IsProtectedInputPlace(node))
+		{
+			return false;
+		}
+
+		if (node.type == NodeType.Place && node.tokens > 0)
+		{
+			return false;
+		}
+
+		return true;
 	}
 
 	private bool CanActorMoveNode(NodeRuntime node, ulong actorClientId)
@@ -492,7 +634,7 @@ public partial class GameManager
 
 	private bool CanActorReverseArc(ArcRuntime arc, ulong actorClientId)
 	{
-		if (arc == null || arc.ownerClientId != actorClientId || IsIngredientSourceArc(arc) || IsCompositeBlockInternalArc(arc))
+		if (arc == null || arc.ownerClientId != actorClientId || IsIngredientSourceArc(arc) || IsCompositeBlockInternalArc(arc) || IsPlayerExchangeArc(arc))
 		{
 			return false;
 		}
