@@ -130,6 +130,9 @@ public partial class GameManager
 			case "ReturnToLevelSelection":
 				ReturnToLevelSelectionFromHost();
 				return false;
+			case "ConfirmLevelSelection":
+				ConfirmLevelSelection(cmd.amount);
+				return false;
 			case "CreateArc":
 			{
 				if (!CanActorCreateArc(cmd.fromId, cmd.toId, actorClientId))
@@ -162,7 +165,7 @@ public partial class GameManager
 					return false;
 				}
 
-				if (IsIngredientSourceArc(arc) || IsCompositeBlockInternalArc(arc) || IsPlayerExchangeArc(arc))
+				if (arc.kind == ArcKind.Inhibitor || IsIngredientSourceArc(arc) || IsCompositeBlockInternalArc(arc) || IsPlayerExchangeArc(arc))
 				{
 					return false;
 				}
@@ -292,6 +295,7 @@ public partial class GameManager
 					return false;
 				}
 
+				SetCompositeBlockNodeHeight(cmd.id, GroundZ);
 				SetCompositeBlockSharedPoolState(cmd.id, actorClientId, false, false);
 				RefreshPetriNetVisuals();
 				return true;
@@ -375,6 +379,11 @@ public partial class GameManager
 		foreach (KeyValuePair<string, ArcRuntime> pair in arcsById)
 		{
 			ArcRuntime arc = pair.Value;
+			if (arc.kind == ArcKind.Inhibitor)
+			{
+				continue;
+			}
+
 			if (arc.toId == transitionId)
 			{
 				inputArcs.Add(arc);
@@ -475,6 +484,27 @@ public partial class GameManager
 		foreach (KeyValuePair<string, ArcRuntime> pair in arcsById)
 		{
 			ArcRuntime arc = pair.Value;
+			if (arc.kind == ArcKind.Inhibitor)
+			{
+				if (arc.toId != transitionId)
+				{
+					continue;
+				}
+
+				if (!nodesById.TryGetValue(arc.fromId, out NodeRuntime inhibitorPlace) || inhibitorPlace.type != NodeType.Place)
+				{
+					continue;
+				}
+
+				EnsureTypedTokenList(inhibitorPlace);
+				if (inhibitorPlace.tokens > 0)
+				{
+					return false;
+				}
+
+				continue;
+			}
+
 			if (arc.fromId == transitionId && nodesById.TryGetValue(arc.toId, out NodeRuntime outputPlace) && outputPlace.type == NodeType.Place)
 			{
 				EnsureTypedTokenList(outputPlace);
@@ -634,7 +664,7 @@ public partial class GameManager
 
 	private bool CanActorReverseArc(ArcRuntime arc, ulong actorClientId)
 	{
-		if (arc == null || arc.ownerClientId != actorClientId || IsIngredientSourceArc(arc) || IsCompositeBlockInternalArc(arc) || IsPlayerExchangeArc(arc))
+		if (arc == null || arc.kind == ArcKind.Inhibitor || arc.ownerClientId != actorClientId || IsIngredientSourceArc(arc) || IsCompositeBlockInternalArc(arc) || IsPlayerExchangeArc(arc))
 		{
 			return false;
 		}

@@ -24,10 +24,56 @@ public partial class GameManager
 	[SerializeField] private float arrowHeadLength = 0.36f;
 	[SerializeField] private float arrowHeadAngle = 30f;
 
+	[Header("Activity Prefabs")]
+	[InspectorName("Cutting Tool Prefab")]
+	[SerializeField] private GameObject cuttingTransitionPrefab;
+	[InspectorName("Cutting Tool Animator Controller")]
+	[SerializeField] private RuntimeAnimatorController cuttingToolAnimatorController;
+	[InspectorName("Cutting Tool Color Map")]
+	[SerializeField] private Texture2D cuttingToolColorMap;
+	[InspectorName("Cutting Tool Local Position")]
+	[SerializeField] private Vector3 cuttingTransitionPrefabLocalPosition = new Vector3(0f, 0.5f, -0.62f);
+	[InspectorName("Cutting Tool Local Euler")]
+	[SerializeField] private Vector3 cuttingTransitionPrefabLocalEuler = new Vector3(90f, 0f, -35f);
+	[InspectorName("Cutting Tool Local Scale")]
+	[SerializeField] private Vector3 cuttingTransitionPrefabLocalScale = new Vector3(1.5f, 1.5f, 1.5f);
+
+	[Header("Avatar Prefabs")]
+	[SerializeField] private GameObject avatarDronePrefab;
+	[SerializeField] private RuntimeAnimatorController avatarDroneAnimatorController;
+	[SerializeField] private AnimationClip[] avatarDroneAnimationClips;
+	[SerializeField] private bool avatarDroneUseImportedAnimationClips = false;
+	[SerializeField] private string avatarDroneAnimationClipNameContains = "helicopter";
+	[SerializeField] private string avatarDroneAnimationClipNameExcludes = "rotor";
+	[SerializeField] private Vector3 avatarDroneLocalPosition = new Vector3(0f, 0f, 0f);
+	[SerializeField] private Vector3 avatarDroneLocalEuler = new Vector3(-90f, 45f, 0f);
+	[SerializeField] private Vector3 avatarDroneLocalScale = new Vector3(0.675f, 0.675f, 0.675f);
+	[SerializeField] private float avatarDroneRotorDegreesPerSecond = 720f;
+	[SerializeField] private Vector3 avatarDroneRotorLocalAxis = Vector3.zero;
+	[SerializeField] private GameObject avatarCraneChainPrefab;
+	[SerializeField] private GameObject avatarCraneHookPrefab;
+	[SerializeField] private Vector3 avatarCraneChainLocalEuler = new Vector3(-90f, 0f, 0f);
+	[SerializeField] private Vector3 avatarCraneHookLocalEuler = new Vector3(90f, 0f, 90f);
+	[SerializeField] private Vector3 avatarCraneChainLocalScale = new Vector3(0.18f, 0.18f, 0.18f);
+	[SerializeField] private Vector3 avatarCraneHookLocalScale = new Vector3(0.75f, 0.75f, 0.75f);
+	[SerializeField] private float avatarCraneChainLinkSpacing = 0.095f;
+	[SerializeField] private int avatarCraneChainMaxLinks = 36;
+	[SerializeField] private float avatarCraneChainLengthMultiplier = 1f;
+	[SerializeField] private float avatarCraneHookHangDistance = 0.95f;
+	[SerializeField] private float avatarCraneHookVisualDrop = 0.015f;
+	[SerializeField] private float avatarCraneHookClearance = 0.03f;
+
 	[Header("Editor")]
 	[SerializeField] private float zoomSpeed = 0.5f;
 	[SerializeField] private float minZoom = 1.8f;
 	[SerializeField] private float maxZoom = 12f;
+
+	[Header("Rendering")]
+	[SerializeField] private bool enforceMinimumWindowResolution = true;
+	[SerializeField] private int minimumWindowWidth = 1600;
+	[SerializeField] private int minimumWindowHeight = 900;
+	private float nextRenderResolutionCheckTime;
+	private int renderResolutionChecksRemaining;
 
 	[Header("Networking")]
 	[SerializeField] private bool enableNetworkAuthoritativeSync = true;
@@ -69,6 +115,7 @@ public partial class GameManager
 	[SerializeField] private List<PoolBlockDefinition> bottomPlayerBlocks = new List<PoolBlockDefinition>();
 	[SerializeField] private string sharedPoolTrashTransitionName = "Müll";
 	[SerializeField] private float sharedPoolItemGap = 0.65f;
+	private List<PetriNetLevelInhibitorArcDefinition> levelInhibitorArcs = new List<PetriNetLevelInhibitorArcDefinition>();
 
 	private static readonly string[] DefaultTopIngredientNames = { "Käse", "Tomate" };
 	private static readonly string[] DefaultBottomIngredientNames = { "Traube", "Ananas", "Wirsing", "Paprika", "Zwiebel", "Salat", "Aubergine", "Pilz" };
@@ -129,23 +176,26 @@ public partial class GameManager
 	private Vector3 lastAvatarPosition;
 	private float lastAvatarNetworkSyncRotation;
 	private string lastAvatarNetworkSyncHeldId = "";
+	private float lastAvatarNetworkSyncCraneHeight = 1.75f;
 	private float nextAvatarNetworkSyncTime;
 	private float avatarNetworkSyncInterval = 0.05f;
 	private float avatarSpeed = 8f;
 	private float avatarSprintMultiplier = 1.5f;
 	private float avatarCollisionRadius = 0.4f; // Matches CircleCollider2D radius on avatar visual
-	private float transitionCollisionRadius = 0.45f; // Approximate radius of transition collider
+	private float transitionCollisionRadius = 0.5f; // Half extent of the square transition footprint
 	private float cameraRestAreaMargin = 0.3f; // Rest area margin as % of screen
-	private float avatarCraneRestHeight = 0.65f;
-	private float avatarCraneLoweredHeight = 0.12f;
-	private float avatarCraneCurrentHeight = 0.65f;
+	private float avatarCraneRestHeight = 1.75f;
+	private float avatarCraneLoweredHeight = 1.1f;
+	private float avatarCraneDipTargetHeight = 1.1f;
+	private float avatarCraneCurrentHeight = 1.75f;
 	private float avatarCraneAnimationStartTime = -10f;
 	private float avatarCraneAnimationDuration = 0.36f;
 
 	// Remote avatar (other player)
 	private Dictionary<ulong, Vector3> remoteAvatarPositions = new Dictionary<ulong, Vector3>();
 	private Dictionary<ulong, float> remoteAvatarRotations = new Dictionary<ulong, float>();
-	private Dictionary<ulong, string> remoteAvatarInventories = new Dictionary<ulong, string>();
+	private Dictionary<ulong, RemoteHeldObjectState> remoteAvatarInventories = new Dictionary<ulong, RemoteHeldObjectState>();
+	private Dictionary<ulong, float> remoteAvatarCraneHeights = new Dictionary<ulong, float>();
 
 	private const ulong UnassignedOwnerClientId = ulong.MaxValue;
 }

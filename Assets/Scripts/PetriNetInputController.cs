@@ -107,33 +107,33 @@ public partial class GameManager
 				mainCamera.orthographicSize = requiredSize;
 			}
 
-			Vector3 sharedCamPos = mainCamera.transform.position;
+			Vector2 sharedCameraCenter = GetCameraGroundCenter();
 			float sharedScreenHeight = mainCamera.orthographicSize * 2f;
 			float sharedScreenWidth = sharedScreenHeight * mainCamera.aspect;
 			float sharedRestMarginX = sharedScreenWidth * cameraRestAreaMargin;
 			float sharedRestMarginY = sharedScreenHeight * cameraRestAreaMargin;
-			float sharedNewX = sharedCamPos.x;
-			float sharedNewY = sharedCamPos.y;
+			float sharedNewX = sharedCameraCenter.x;
+			float sharedNewY = sharedCameraCenter.y;
 
-			if (avatarPosition.x > sharedCamPos.x + sharedRestMarginX)
+			if (avatarPosition.x > sharedCameraCenter.x + sharedRestMarginX)
 			{
 				sharedNewX = avatarPosition.x - sharedRestMarginX;
 			}
-			else if (avatarPosition.x < sharedCamPos.x - sharedRestMarginX)
+			else if (avatarPosition.x < sharedCameraCenter.x - sharedRestMarginX)
 			{
 				sharedNewX = avatarPosition.x + sharedRestMarginX;
 			}
 
-			if (avatarPosition.y > sharedCamPos.y + sharedRestMarginY)
+			if (avatarPosition.y > sharedCameraCenter.y + sharedRestMarginY)
 			{
 				sharedNewY = avatarPosition.y - sharedRestMarginY;
 			}
-			else if (avatarPosition.y < sharedCamPos.y - sharedRestMarginY)
+			else if (avatarPosition.y < sharedCameraCenter.y - sharedRestMarginY)
 			{
 				sharedNewY = avatarPosition.y + sharedRestMarginY;
 			}
 
-			mainCamera.transform.position = new Vector3(sharedNewX, sharedNewY, sharedCamPos.z);
+			SetCameraGroundCenter(mainCamera, new Vector2(sharedNewX, sharedNewY));
 			cameraVelocityX = 0f;
 			cameraVelocityY = 0f;
 			return;
@@ -145,17 +145,17 @@ public partial class GameManager
 		float restMarginX = screenWidth * cameraRestAreaMargin;
 		float restMarginY = screenHeight * cameraRestAreaMargin;
 
-		Vector3 camPos = mainCamera.transform.position;
-		float deltaX = Mathf.Abs(avatarPosition.x - camPos.x);
-		float deltaY = Mathf.Abs(avatarPosition.y - camPos.y);
+		Vector2 cameraCenter = GetCameraGroundCenter();
+		float deltaX = Mathf.Abs(avatarPosition.x - cameraCenter.x);
+		float deltaY = Mathf.Abs(avatarPosition.y - cameraCenter.y);
 
 		// Handle each axis independently to prevent diagonal drift
-		float newX = camPos.x;
-		float newY = camPos.y;
+		float newX = cameraCenter.x;
+		float newY = cameraCenter.y;
 
 		if (deltaX > restMarginX)
 		{
-			newX = Mathf.SmoothDamp(camPos.x, avatarPosition.x, ref cameraVelocityX, 0.18f, Mathf.Infinity, Time.deltaTime);
+			newX = Mathf.SmoothDamp(cameraCenter.x, avatarPosition.x, ref cameraVelocityX, 0.18f, Mathf.Infinity, Time.deltaTime);
 		}
 		else
 		{
@@ -164,14 +164,14 @@ public partial class GameManager
 
 		if (deltaY > restMarginY)
 		{
-			newY = Mathf.SmoothDamp(camPos.y, avatarPosition.y, ref cameraVelocityY, 0.18f, Mathf.Infinity, Time.deltaTime);
+			newY = Mathf.SmoothDamp(cameraCenter.y, avatarPosition.y, ref cameraVelocityY, 0.18f, Mathf.Infinity, Time.deltaTime);
 		}
 		else
 		{
 			cameraVelocityY = Mathf.Lerp(cameraVelocityY, 0f, Time.deltaTime * 10f);
 		}
 
-		mainCamera.transform.position = new Vector3(newX, newY, camPos.z);
+		SetCameraGroundCenter(mainCamera, new Vector2(newX, newY));
 	}
 
 	private void HandleAvatarInput()
@@ -248,24 +248,27 @@ public partial class GameManager
 		// Pickup/Drop with spacebar
 		if (keyboard.spaceKey.wasPressedThisFrame)
 		{
-			StartCraneDipAnimation();
 			HandleAvatarInteraction();
+			StartCraneDipAnimation(GetSpaceCraneDipTargetHeight());
 		}
 
-		string currentHeldTransitionId = heldTransitionId ?? "";
+		string currentHeldNetworkKey = GetCurrentHeldNetworkKey();
 		float movedDistance = Vector3.Distance(lastAvatarPosition, avatarPosition);
-		bool heldTransitionChanged = lastAvatarNetworkSyncHeldId != currentHeldTransitionId;
+		bool heldObjectChanged = lastAvatarNetworkSyncHeldId != currentHeldNetworkKey;
 		bool rotationChanged = Mathf.Abs(Mathf.DeltaAngle(lastAvatarNetworkSyncRotation, avatarRotation)) > 2f;
-		bool shouldSendAvatarUpdate = heldTransitionChanged
+		bool craneHeightChanged = Mathf.Abs(lastAvatarNetworkSyncCraneHeight - avatarCraneCurrentHeight) > 0.025f;
+		bool shouldSendAvatarUpdate = heldObjectChanged
 			|| movedDistance > 0.65f
+			|| (craneHeightChanged && Time.unscaledTime >= nextAvatarNetworkSyncTime)
 			|| ((movedDistance > 0.05f || rotationChanged) && Time.unscaledTime >= nextAvatarNetworkSyncTime);
 		if (shouldSendAvatarUpdate)
 		{
 			nextAvatarNetworkSyncTime = Time.unscaledTime + avatarNetworkSyncInterval;
 			lastAvatarPosition = avatarPosition;
 			lastAvatarNetworkSyncRotation = avatarRotation;
-			lastAvatarNetworkSyncHeldId = currentHeldTransitionId;
-			SendAvatarUpdate(avatarPosition, avatarRotation, heldTransitionId);
+			lastAvatarNetworkSyncHeldId = currentHeldNetworkKey;
+			lastAvatarNetworkSyncCraneHeight = avatarCraneCurrentHeight;
+			SendAvatarUpdate(avatarPosition, avatarRotation, heldTransitionId, heldObjectChanged);
 		}
 
 		// Update avatar visual every frame
@@ -315,6 +318,51 @@ public partial class GameManager
 		}
 
 		TryPickupArcWithCrane();
+	}
+
+	private float GetSpaceCraneDipTargetHeight()
+	{
+		if (!string.IsNullOrEmpty(heldPlaceId)
+			|| !string.IsNullOrEmpty(heldTransitionId)
+			|| !string.IsNullOrEmpty(heldCompositeBlockId)
+			|| IsCraneOverAnyNode())
+		{
+			return GetCraneHeightForHookTarget(NodeVisualTopZ);
+		}
+
+		return GetCraneHeightForHookTarget(GroundZ);
+	}
+
+	private bool IsCraneOverAnyNode()
+	{
+		Vector2 craneTarget = new Vector2(avatarPosition.x, avatarPosition.y);
+		foreach (KeyValuePair<string, NodeRuntime> pair in nodesById)
+		{
+			NodeRuntime node = pair.Value;
+			if (node == null || node.transform == null || !node.transform.gameObject.activeInHierarchy)
+			{
+				continue;
+			}
+
+			if (node.type == NodeType.Place)
+			{
+				float distance = Vector2.Distance(craneTarget, node.transform.position);
+				if (distance <= avatarCollisionRadius + GetPlaceInteractionRadius(node) + 0.08f)
+				{
+					return true;
+				}
+			}
+			else
+			{
+				Rect expandedBounds = ExpandRect(GetTransitionPlacementBounds(node, node.transform.position), avatarCollisionRadius + 0.08f);
+				if (GetPointRectDistance(craneTarget, expandedBounds) <= 0f)
+				{
+					return true;
+				}
+			}
+		}
+
+		return false;
 	}
 
 	private void TryPickupTransition()
@@ -702,6 +750,7 @@ public partial class GameManager
 			}
 
 			SetCompositeBlockSorting(blockId, false);
+			SetCompositeBlockNodeHeight(blockId, GroundZ);
 			heldCompositeBlockId = null;
 			heldCompositeBlockOffset = Vector2.zero;
 			StartCraneDipAnimation();
@@ -718,6 +767,7 @@ public partial class GameManager
 		SetCompositeBlockSharedPoolState(blockId, GetLocalActorClientId(), false, false);
 		RequestMoveCompositeBlock(blockId, new Vector3(desiredCenter.x, desiredCenter.y, 0f));
 		SetCompositeBlockSorting(blockId, false);
+		SetCompositeBlockNodeHeight(blockId, GroundZ);
 		heldCompositeBlockId = null;
 		heldCompositeBlockOffset = Vector2.zero;
 		StartCraneDipAnimation();
@@ -918,14 +968,19 @@ public partial class GameManager
 
 	private bool TryGetHoverSelectableNodeAtCraneTarget(out NodeRuntime closestNode)
 	{
-		closestNode = null;
 		Vector2 craneTarget = new Vector2(avatarPosition.x, avatarPosition.y);
+		return TryGetHoverSelectableNodeAtPoint(craneTarget, GetLocalActorClientId(), out closestNode);
+	}
+
+	private bool TryGetHoverSelectableNodeAtPoint(Vector2 craneTarget, ulong actorClientId, out NodeRuntime closestNode)
+	{
+		closestNode = null;
 		float closestDistance = float.MaxValue;
 
 		foreach (KeyValuePair<string, NodeRuntime> pair in nodesById)
 		{
 			NodeRuntime node = pair.Value;
-			if (!CanActorHoverSelectNode(node))
+			if (!CanActorHoverSelectNode(node, actorClientId))
 			{
 				continue;
 			}
@@ -956,8 +1011,13 @@ public partial class GameManager
 
 	private bool TryGetCompositeBlockAtCraneTarget(out CompositeBlockRuntime closestBlock)
 	{
-		closestBlock = null;
 		Vector2 craneTarget = new Vector2(avatarPosition.x, avatarPosition.y);
+		return TryGetCompositeBlockAtPoint(craneTarget, GetLocalActorClientId(), out closestBlock);
+	}
+
+	private bool TryGetCompositeBlockAtPoint(Vector2 craneTarget, ulong actorClientId, out CompositeBlockRuntime closestBlock)
+	{
+		closestBlock = null;
 		float closestDistance = float.MaxValue;
 
 		foreach (KeyValuePair<string, CompositeBlockRuntime> pair in compositeBlocksById)
@@ -968,7 +1028,7 @@ public partial class GameManager
 				continue;
 			}
 
-			if (!CanActorPickupCompositeBlock(block.id, GetLocalActorClientId()))
+			if (!CanActorPickupCompositeBlock(block.id, actorClientId))
 			{
 				continue;
 			}
@@ -978,7 +1038,7 @@ public partial class GameManager
 				continue;
 			}
 
-			if (!DoesCraneShadowTouchRect(bounds))
+			if (!DoesCraneShadowTouchRect(bounds, craneTarget))
 			{
 				continue;
 			}
@@ -997,6 +1057,11 @@ public partial class GameManager
 	private bool DoesCraneShadowTouchRect(Rect rect)
 	{
 		Vector2 shadowCenter = new Vector2(avatarPosition.x, avatarPosition.y);
+		return DoesCraneShadowTouchRect(rect, shadowCenter);
+	}
+
+	private bool DoesCraneShadowTouchRect(Rect rect, Vector2 shadowCenter)
+	{
 		float halfWidth = Mathf.Max(0.001f, GetAvatarBoundaryShadowHalfWidth());
 		float halfHeight = Mathf.Max(0.001f, GetAvatarBoundaryShadowHalfHeight());
 		float closestX = Mathf.Clamp(shadowCenter.x, rect.xMin, rect.xMax);
@@ -1007,6 +1072,11 @@ public partial class GameManager
 	}
 
 	private bool CanActorHoverSelectNode(NodeRuntime node)
+	{
+		return CanActorHoverSelectNode(node, GetLocalActorClientId());
+	}
+
+	private bool CanActorHoverSelectNode(NodeRuntime node, ulong actorClientId)
 	{
 		if (node == null || node.transform == null || !node.transform.gameObject.activeInHierarchy)
 		{
@@ -1023,7 +1093,7 @@ public partial class GameManager
 			return true;
 		}
 
-		return CanActorEditNode(node, GetLocalActorClientId());
+		return CanActorEditNode(node, actorClientId);
 	}
 
 	private bool TryGetTransitionAtCraneTarget(out NodeRuntime closestTransition)
@@ -1059,15 +1129,20 @@ public partial class GameManager
 
 	private bool TryGetArcAtCraneTarget(out ArcRuntime closestArc)
 	{
-		closestArc = null;
 		Vector2 craneTarget = new Vector2(avatarPosition.x, avatarPosition.y);
+		return TryGetArcAtPoint(craneTarget, GetLocalActorClientId(), out closestArc);
+	}
+
+	private bool TryGetArcAtPoint(Vector2 craneTarget, ulong actorClientId, out ArcRuntime closestArc)
+	{
+		closestArc = null;
 		float closestDistance = float.MaxValue;
 		float selectionDistance = Mathf.Max(0.2f, avatarCollisionRadius * 0.55f);
 
 		foreach (KeyValuePair<string, ArcRuntime> pair in arcsById)
 		{
 			ArcRuntime arc = pair.Value;
-			if (!CanActorSelectArc(arc))
+			if (!CanActorSelectArc(arc, actorClientId))
 			{
 				continue;
 			}
@@ -1090,10 +1165,16 @@ public partial class GameManager
 
 	private bool CanActorSelectArc(ArcRuntime arc)
 	{
+		return CanActorSelectArc(arc, GetLocalActorClientId());
+	}
+
+	private bool CanActorSelectArc(ArcRuntime arc, ulong actorClientId)
+	{
 		return arc != null
 			&& arc.gameObject != null
 			&& arc.gameObject.activeInHierarchy
-			&& arc.ownerClientId == GetLocalActorClientId()
+			&& arc.kind != ArcKind.Inhibitor
+			&& arc.ownerClientId == actorClientId
 			&& !IsIngredientSourceArc(arc)
 			&& !IsCompositeBlockInternalArc(arc)
 			&& !IsPlayerExchangeArc(arc);
@@ -1756,7 +1837,7 @@ public partial class GameManager
 
 		if (TryGetArcAtPoint(worldPosition, out ArcRuntime arc))
 		{
-			if (IsIngredientSourceArc(arc) || IsCompositeBlockInternalArc(arc) || IsPlayerExchangeArc(arc))
+			if (arc.kind == ArcKind.Inhibitor || IsIngredientSourceArc(arc) || IsCompositeBlockInternalArc(arc) || IsPlayerExchangeArc(arc))
 			{
 				return;
 			}
@@ -1834,9 +1915,17 @@ public partial class GameManager
 	private Vector3 GetMouseWorldPosition()
 	{
 		Vector2 mouse = Mouse.current.position.ReadValue();
-		float depth = -mainCamera.transform.position.z;
-		Vector3 world = mainCamera.ScreenToWorldPoint(new Vector3(mouse.x, mouse.y, depth));
-		world.z = 0f;
-		return world;
+		Ray ray = mainCamera.ScreenPointToRay(new Vector3(mouse.x, mouse.y, 0f));
+		Plane groundPlane = new Plane(Vector3.forward, new Vector3(0f, 0f, GroundZ));
+		if (groundPlane.Raycast(ray, out float distance))
+		{
+			Vector3 world = ray.GetPoint(distance);
+			world.z = GroundZ;
+			return world;
+		}
+
+		Vector3 fallback = mainCamera.transform.position + mainCamera.transform.forward * GameplayCameraDistance;
+		fallback.z = GroundZ;
+		return fallback;
 	}
 }

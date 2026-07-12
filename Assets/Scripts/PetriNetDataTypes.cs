@@ -21,6 +21,20 @@ public partial class GameManager
 		Transition
 	}
 
+	private enum ArcKind
+	{
+		Normal,
+		Inhibitor
+	}
+
+	private enum HeldObjectKind
+	{
+		None,
+		Transition,
+		Place,
+		CompositeBlock
+	}
+
 	[Serializable]
 	private class CommandData
 	{
@@ -53,7 +67,12 @@ public partial class GameManager
 		public float x;
 		public float y;
 		public float rotation;
+		public float craneHeight = -1f;
 		public string heldTransitionId;
+		public string heldObjectId;
+		public int heldObjectKind;
+		public float heldOffsetX;
+		public float heldOffsetY;
 	}
 
 	[Serializable]
@@ -95,6 +114,7 @@ public partial class GameManager
 		public string toId;
 		public int weight;
 		public long ownerClientId;
+		public int kind;
 	}
 
 	private class NodeRuntime
@@ -109,6 +129,8 @@ public partial class GameManager
 		public bool isSharedPoolAvailable;
 		public Transform transform;
 		public SpriteRenderer renderer;
+		public GameObject visual3D;
+		public MeshRenderer visual3DRenderer;
 		public Collider2D collider;
 		public TextMesh label;
 		public Transform tokenRoot;
@@ -132,9 +154,11 @@ public partial class GameManager
 		public string toId;
 		public int weight;
 		public ulong ownerClientId;
+		public ArcKind kind;
 		public GameObject gameObject;
 		public LineRenderer body;
 		public LineRenderer arrow;
+		public LineRenderer inhibitorCircle;
 		public EdgeCollider2D collider;
 	}
 
@@ -145,6 +169,13 @@ public partial class GameManager
 		public SpriteRenderer fill;
 		public LineRenderer border;
 		public BoxCollider2D collider;
+	}
+
+	private class RemoteHeldObjectState
+	{
+		public HeldObjectKind kind;
+		public string id;
+		public Vector2 offset;
 	}
 
 	private const string CommandMessageName = "PetriCommand";

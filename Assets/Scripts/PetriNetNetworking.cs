@@ -143,8 +143,16 @@ public partial class GameManager
 		if (Unity.Netcode.NetworkManager.Singleton.IsHost)
 		{
 			state.clientId = (long)senderClientId;
+			RemoteHeldObjectState incomingHeldState = GetRemoteHeldObjectState(state);
+			RemoteHeldObjectState previousHeldState = null;
+			if (remoteAvatarInventories != null)
+			{
+				remoteAvatarInventories.TryGetValue(senderClientId, out previousHeldState);
+			}
+
+			bool heldObjectChanged = GetHeldNetworkKey(previousHeldState) != GetHeldNetworkKey(incomingHeldState);
 			StoreRemoteAvatarState(state);
-			BroadcastAvatarState(state, senderClientId);
+			BroadcastAvatarState(state, senderClientId, heldObjectChanged);
 			return;
 		}
 
@@ -212,32 +220,179 @@ public partial class GameManager
 		}
 	}
 
-	private void SendAvatarUpdate(Vector3 position, float rotation, string heldId)
+	private void SendAvatarUpdate(Vector3 position, float rotation, string heldId, bool reliable = false)
 	{
 		if (Unity.Netcode.NetworkManager.Singleton == null || !Unity.Netcode.NetworkManager.Singleton.IsListening)
 		{
 			return;
 		}
 
-		AvatarState state = new AvatarState
-		{
-			clientId = (long)GetLocalActorClientId(),
-			x = position.x,
-			y = position.y,
-			rotation = rotation,
-			heldTransitionId = heldId ?? ""
-		};
+		AvatarState state = BuildLocalAvatarState(position, rotation, heldId);
 
 		if (Unity.Netcode.NetworkManager.Singleton.IsHost)
 		{
-			BroadcastAvatarState(state, GetLocalActorClientId());
+			BroadcastAvatarState(state, GetLocalActorClientId(), reliable);
 			return;
 		}
 
-		SendAvatarStateToClient(NetworkManager.ServerClientId, state);
+		SendAvatarStateToClient(NetworkManager.ServerClientId, state, reliable);
 	}
 
-	private void BroadcastAvatarState(AvatarState state, ulong exceptClientId)
+	private AvatarState BuildLocalAvatarState(Vector3 position, float rotation, string transitionFallbackId = null)
+	{
+		HeldObjectKind heldKind = GetCurrentHeldObjectKind();
+		string heldId = GetCurrentHeldObjectId();
+		if (heldKind == HeldObjectKind.None && !string.IsNullOrEmpty(transitionFallbackId))
+		{
+			heldKind = HeldObjectKind.Transition;
+			heldId = transitionFallbackId;
+		}
+
+		Vector2 heldOffset = heldKind == HeldObjectKind.CompositeBlock ? heldCompositeBlockOffset : Vector2.zero;
+		return new AvatarState
+		{
+			clientId = (long)GetLocalActorClientId(),
+				x = position.x,
+				y = position.y,
+				rotation = rotation,
+				craneHeight = avatarCraneCurrentHeight,
+				heldTransitionId = heldKind == HeldObjectKind.Transition ? (heldId ?? "") : "",
+			heldObjectId = heldId ?? "",
+			heldObjectKind = (int)heldKind,
+			heldOffsetX = heldOffset.x,
+			heldOffsetY = heldOffset.y,
+		};
+	}
+
+	private string GetCurrentHeldObjectId()
+	{
+		if (!string.IsNullOrEmpty(heldCompositeBlockId))
+		{
+			return heldCompositeBlockId;
+		}
+
+		if (!string.IsNullOrEmpty(heldPlaceId))
+		{
+			return heldPlaceId;
+		}
+
+		if (!string.IsNullOrEmpty(heldTransitionId))
+		{
+			return heldTransitionId;
+		}
+
+		return "";
+	}
+
+	private HeldObjectKind GetCurrentHeldObjectKind()
+	{
+		if (!string.IsNullOrEmpty(heldCompositeBlockId))
+		{
+			return HeldObjectKind.CompositeBlock;
+		}
+
+		if (!string.IsNullOrEmpty(heldPlaceId))
+		{
+			return HeldObjectKind.Place;
+		}
+
+		if (!string.IsNullOrEmpty(heldTransitionId))
+		{
+			return HeldObjectKind.Transition;
+		}
+
+		return HeldObjectKind.None;
+	}
+
+	private string GetCurrentHeldNetworkKey()
+	{
+		HeldObjectKind kind = GetCurrentHeldObjectKind();
+		string id = GetCurrentHeldObjectId();
+		if (kind == HeldObjectKind.None || string.IsNullOrEmpty(id))
+		{
+			return "";
+		}
+
+		return ((int)kind).ToString() + ":" + id;
+	}
+
+	private string GetHeldNetworkKey(RemoteHeldObjectState heldState)
+	{
+		if (heldState == null || heldState.kind == HeldObjectKind.None || string.IsNullOrEmpty(heldState.id))
+		{
+			return "";
+		}
+
+		return ((int)heldState.kind).ToString() + ":" + heldState.id;
+	}
+
+	private RemoteHeldObjectState GetRemoteHeldObjectState(AvatarState state)
+	{
+		if (state == null)
+		{
+			return new RemoteHeldObjectState { kind = HeldObjectKind.None, id = "", offset = Vector2.zero };
+		}
+
+		HeldObjectKind kind = (HeldObjectKind)Mathf.Clamp(state.heldObjectKind, (int)HeldObjectKind.None, (int)HeldObjectKind.CompositeBlock);
+		string id = state.heldObjectId ?? "";
+		if (kind == HeldObjectKind.None && !string.IsNullOrEmpty(state.heldTransitionId))
+		{
+			kind = HeldObjectKind.Transition;
+			id = state.heldTransitionId;
+		}
+
+		if (string.IsNullOrEmpty(id))
+		{
+			kind = HeldObjectKind.None;
+		}
+
+		return new RemoteHeldObjectState
+		{
+			kind = kind,
+			id = id,
+			offset = new Vector2(state.heldOffsetX, state.heldOffsetY),
+		};
+	}
+
+	private void ApplyLocalHeldObjectState(AvatarState state)
+	{
+		RemoteHeldObjectState heldState = GetRemoteHeldObjectState(state);
+		heldTransitionId = heldState.kind == HeldObjectKind.Transition ? heldState.id : null;
+		heldPlaceId = heldState.kind == HeldObjectKind.Place ? heldState.id : null;
+		heldCompositeBlockId = heldState.kind == HeldObjectKind.CompositeBlock ? heldState.id : null;
+		heldCompositeBlockOffset = heldState.kind == HeldObjectKind.CompositeBlock ? heldState.offset : Vector2.zero;
+	}
+
+	private bool IsNodeHeldByRemoteAvatar(string nodeId)
+	{
+		if (string.IsNullOrEmpty(nodeId) || remoteAvatarInventories == null)
+		{
+			return false;
+		}
+
+		foreach (KeyValuePair<ulong, RemoteHeldObjectState> pair in remoteAvatarInventories)
+		{
+			RemoteHeldObjectState heldState = pair.Value;
+			if (heldState == null || heldState.kind == HeldObjectKind.None || string.IsNullOrEmpty(heldState.id))
+			{
+				continue;
+			}
+
+			if ((heldState.kind == HeldObjectKind.Place || heldState.kind == HeldObjectKind.Transition) && heldState.id == nodeId)
+			{
+				return true;
+			}
+
+			if (heldState.kind == HeldObjectKind.CompositeBlock && GetCompositeBlockIdForNodeId(nodeId) == heldState.id)
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	private void BroadcastAvatarState(AvatarState state, ulong exceptClientId, bool reliable = false)
 	{
 		if (Unity.Netcode.NetworkManager.Singleton == null || !Unity.Netcode.NetworkManager.Singleton.IsHost)
 		{
@@ -251,11 +406,11 @@ public partial class GameManager
 				continue;
 			}
 
-			SendAvatarStateToClient(clientId, state);
+			SendAvatarStateToClient(clientId, state, reliable);
 		}
 	}
 
-	private void SendAvatarStateToClient(ulong clientId, AvatarState state)
+	private void SendAvatarStateToClient(ulong clientId, AvatarState state, bool reliable = false)
 	{
 		string json = JsonUtility.ToJson(state);
 		byte[] bytes = Encoding.UTF8.GetBytes(json);
@@ -263,7 +418,8 @@ public partial class GameManager
 		{
 			writer.WriteValueSafe(bytes.Length);
 			writer.WriteBytesSafe(bytes);
-			Unity.Netcode.NetworkManager.Singleton.CustomMessagingManager.SendNamedMessage(AvatarMessageName, clientId, writer, NetworkDelivery.Unreliable);
+			NetworkDelivery delivery = reliable ? NetworkDelivery.ReliableFragmentedSequenced : NetworkDelivery.Unreliable;
+			Unity.Netcode.NetworkManager.Singleton.CustomMessagingManager.SendNamedMessage(AvatarMessageName, clientId, writer, delivery);
 		}
 	}
 
@@ -311,9 +467,10 @@ public partial class GameManager
 			return;
 		}
 
-		remoteAvatarPositions[clientId] = new Vector3(state.x, state.y, 0f);
-		remoteAvatarRotations[clientId] = state.rotation;
-		remoteAvatarInventories[clientId] = state.heldTransitionId ?? "";
+			remoteAvatarPositions[clientId] = new Vector3(state.x, state.y, 0f);
+			remoteAvatarRotations[clientId] = state.rotation;
+			remoteAvatarInventories[clientId] = GetRemoteHeldObjectState(state);
+			remoteAvatarCraneHeights[clientId] = state.craneHeight >= 0f ? state.craneHeight : avatarCraneRestHeight;
 	}
 
 	private void BroadcastSnapshotToClients()
@@ -371,18 +528,12 @@ public partial class GameManager
 				toId = arc.toId,
 				weight = arc.weight,
 				ownerClientId = (long)arc.ownerClientId,
+				kind = (int)arc.kind,
 			});
 		}
 
 		// Add all avatar states
-		snapshot.avatars.Add(new AvatarState
-		{
-			clientId = (long)GetLocalActorClientId(),
-			x = avatarPosition.x,
-			y = avatarPosition.y,
-			rotation = avatarRotation,
-			heldTransitionId = heldTransitionId ?? ""
-		});
+		snapshot.avatars.Add(BuildLocalAvatarState(avatarPosition, avatarRotation, heldTransitionId));
 
 		// Add remote avatars (from other players)
 		if (remoteAvatarPositions != null)
@@ -392,15 +543,23 @@ public partial class GameManager
 				ulong clientId = pair.Key;
 				Vector3 pos = pair.Value;
 				float rotation = remoteAvatarRotations.ContainsKey(clientId) ? remoteAvatarRotations[clientId] : 0f;
-				string heldId = remoteAvatarInventories.ContainsKey(clientId) ? remoteAvatarInventories[clientId] : "";
-				
+				float craneHeight = remoteAvatarCraneHeights.ContainsKey(clientId) ? remoteAvatarCraneHeights[clientId] : avatarCraneRestHeight;
+				RemoteHeldObjectState heldState = remoteAvatarInventories.ContainsKey(clientId)
+					? remoteAvatarInventories[clientId]
+					: new RemoteHeldObjectState { kind = HeldObjectKind.None, id = "", offset = Vector2.zero };
+
 				snapshot.avatars.Add(new AvatarState
 				{
 					clientId = (long)clientId,
 					x = pos.x,
 					y = pos.y,
 					rotation = rotation,
-					heldTransitionId = heldId ?? ""
+					craneHeight = craneHeight,
+					heldTransitionId = heldState.kind == HeldObjectKind.Transition ? (heldState.id ?? "") : "",
+					heldObjectId = heldState.id ?? "",
+					heldObjectKind = (int)heldState.kind,
+					heldOffsetX = heldState.offset.x,
+					heldOffsetY = heldState.offset.y,
 				});
 			}
 		}
@@ -514,28 +673,31 @@ public partial class GameManager
 				
 				// Host/offline applies own avatar state directly.
 				// Clients keep local predicted movement to avoid visible rubberbanding.
-				if (clientId == GetLocalActorClientId())
-				{
-					if (IsHostOrOffline())
+					if (clientId == GetLocalActorClientId())
 					{
-						avatarPosition = new Vector3(state.x, state.y, 0f);
-						avatarRotation = state.rotation;
-						heldTransitionId = string.IsNullOrEmpty(state.heldTransitionId) ? null : state.heldTransitionId;
+						if (IsHostOrOffline())
+						{
+							avatarPosition = new Vector3(state.x, state.y, 0f);
+							avatarRotation = state.rotation;
+							avatarCraneCurrentHeight = state.craneHeight >= 0f ? state.craneHeight : avatarCraneRestHeight;
+							ApplyLocalHeldObjectState(state);
+						}
 					}
-				}
 				else
 				{
 					// Store remote avatar position
 					if (remoteAvatarPositions == null)
-					{
-						remoteAvatarPositions = new Dictionary<ulong, Vector3>();
-						remoteAvatarRotations = new Dictionary<ulong, float>();
-						remoteAvatarInventories = new Dictionary<ulong, string>();
+						{
+							remoteAvatarPositions = new Dictionary<ulong, Vector3>();
+							remoteAvatarRotations = new Dictionary<ulong, float>();
+							remoteAvatarInventories = new Dictionary<ulong, RemoteHeldObjectState>();
+							remoteAvatarCraneHeights = new Dictionary<ulong, float>();
+						}
+						remoteAvatarPositions[clientId] = new Vector3(state.x, state.y, 0f);
+						remoteAvatarRotations[clientId] = state.rotation;
+						remoteAvatarInventories[clientId] = GetRemoteHeldObjectState(state);
+						remoteAvatarCraneHeights[clientId] = state.craneHeight >= 0f ? state.craneHeight : avatarCraneRestHeight;
 					}
-					remoteAvatarPositions[clientId] = new Vector3(state.x, state.y, 0f);
-					remoteAvatarRotations[clientId] = state.rotation;
-					remoteAvatarInventories[clientId] = state.heldTransitionId ?? "";
-				}
 			}
 		}
 
@@ -586,7 +748,8 @@ public partial class GameManager
 					// Only update position for nodes that don't belong to me or aren't being dragged
 					// Nodes I own (or am dragging) keep their local position
 					bool heldByLocal = node.id == heldTransitionId || node.id == heldPlaceId || IsHeldCompositeBlockNode(node);
-					if (node.id != draggedNodeId && !heldByLocal && node.ownerClientId != GetLocalActorClientId())
+					bool heldByRemote = IsNodeHeldByRemoteAvatar(node.id);
+					if (node.id != draggedNodeId && !heldByLocal && !heldByRemote && node.ownerClientId != GetLocalActorClientId())
 					{
 						node.transform.position = new Vector3(state.x, state.y, 0f);
 					}
@@ -654,11 +817,12 @@ public partial class GameManager
 					arc.toId = state.toId;
 					arc.weight = Mathf.Max(1, state.weight);
 					arc.ownerClientId = (ulong)state.ownerClientId;
+					arc.kind = (ArcKind)state.kind;
 					UpdateArcVisual(arc);
 				}
 				else
 				{
-					CreateArcInternal(state.id, state.fromId, state.toId, state.weight, false, (ulong)state.ownerClientId);
+					CreateArcInternal(state.id, state.fromId, state.toId, state.weight, false, (ulong)state.ownerClientId, (ArcKind)state.kind);
 				}
 			}
 
@@ -738,7 +902,7 @@ public partial class GameManager
 				continue;
 			}
 
-			CreateArcInternal(state.id, state.fromId, state.toId, state.weight, false, (ulong)state.ownerClientId);
+			CreateArcInternal(state.id, state.fromId, state.toId, state.weight, false, (ulong)state.ownerClientId, (ArcKind)state.kind);
 			maxArc = Mathf.Max(maxArc, ExtractTrailingNumber(state.id));
 		}
 

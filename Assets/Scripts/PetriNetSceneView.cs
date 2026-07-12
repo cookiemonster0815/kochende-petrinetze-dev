@@ -2,9 +2,28 @@ using System;
 using System.Collections.Generic;
 using Unity.Netcode;
 using UnityEngine;
+using UnityEngine.Rendering;
 
 public partial class GameManager
 {
+	private const string CuttingActivityVisualName = "CuttingActivityPrefab3D";
+	private const string CuttingToolModelName = "CuttingToolModel";
+	private const string AvatarDroneVisualName = "AvatarDroneVisual";
+	private const string GroundPlaneName = "PetriNetGroundXY";
+	private const float GroundZ = 0f;
+	private const float OverlayZ = -0.02f;
+	private const float ArcZ = -0.08f;
+	private const float NodeVisualFootprint = 1f;
+	private const float NodeVisualHeight = 0.52f;
+	private const float NodeVisualCenterZ = -NodeVisualHeight * 0.5f;
+	private const float NodeVisualTopZ = -NodeVisualHeight;
+	private const float PlaceVisualHeightScale = NodeVisualHeight * 0.5f;
+	private const float HeldObjectUnderHookGap = 0.025f;
+	private const float TokenLayerZ = NodeVisualTopZ - 0.08f;
+	private const float NodeLabelLayerZ = NodeVisualTopZ - 0.12f;
+	private const float GameplayCameraDistance = 10f;
+	private const float GameplayCameraTiltPercent = 0.6f;
+
 	private void EnsureBaseSceneComponents()
 	{
 		if (createDefaultCameraIfMissing)
@@ -20,29 +39,138 @@ public partial class GameManager
 			ConfigureCamera(mainCamera);
 		}
 
-		if (createDefaultLightIfMissing && FindAnyObjectByType<Light>() == null)
+		if (createDefaultLightIfMissing)
 		{
-			GameObject lightObject = new GameObject("Directional Light");
-			Light light = lightObject.AddComponent<Light>();
-			light.type = LightType.Directional;
-			light.transform.rotation = Quaternion.Euler(45f, -20f, 0f);
-			light.intensity = 0.9f;
+			ConfigureSceneLight();
 		}
 
 		if (mainCamera == null)
 		{
 			mainCamera = Camera.main;
 		}
+
+		EnsureGroundPlane();
 	}
 
 	private void ConfigureCamera(Camera camera)
 	{
-		camera.transform.position = new Vector3(0f, 0f, -10f);
-		camera.transform.rotation = Quaternion.identity;
+		camera.transform.rotation = GetGameplayCameraRotation();
+		SetCameraGroundCenter(camera, Vector2.zero);
 		camera.orthographic = true;
 		camera.orthographicSize = GetSharedScreenCameraSize();
+		camera.nearClipPlane = 0.01f;
+		camera.farClipPlane = 80f;
+		camera.allowMSAA = true;
 		camera.clearFlags = CameraClearFlags.SolidColor;
 		camera.backgroundColor = new Color(0.95f, 0.96f, 0.98f);
+	}
+
+	private Quaternion GetGameplayCameraRotation()
+	{
+		Vector3 forward = new Vector3(0f, GameplayCameraTiltPercent, 1f).normalized;
+		return Quaternion.LookRotation(forward, Vector3.up);
+	}
+
+	private void SetCameraGroundCenter(Camera camera, Vector2 groundCenter)
+	{
+		if (camera == null)
+		{
+			return;
+		}
+
+		camera.transform.rotation = GetGameplayCameraRotation();
+		Vector3 center = new Vector3(groundCenter.x, groundCenter.y, GroundZ);
+		camera.transform.position = center - camera.transform.forward * GameplayCameraDistance;
+	}
+
+	private Vector2 GetCameraGroundCenter()
+	{
+		if (mainCamera == null)
+		{
+			return Vector2.zero;
+		}
+
+		Vector3 center = GetCameraGroundViewportPoint(new Vector2(0.5f, 0.5f));
+		return new Vector2(center.x, center.y);
+	}
+
+	private Vector3 GetCameraGroundViewportPoint(Vector2 viewportPoint)
+	{
+		if (mainCamera == null)
+		{
+			return Vector3.zero;
+		}
+
+		Ray ray = mainCamera.ViewportPointToRay(new Vector3(viewportPoint.x, viewportPoint.y, 0f));
+		Plane groundPlane = new Plane(Vector3.forward, new Vector3(0f, 0f, GroundZ));
+		if (groundPlane.Raycast(ray, out float distance))
+		{
+			Vector3 point = ray.GetPoint(distance);
+			point.z = GroundZ;
+			return point;
+		}
+
+		Vector3 fallback = mainCamera.transform.position + mainCamera.transform.forward * GameplayCameraDistance;
+		fallback.z = GroundZ;
+		return fallback;
+	}
+
+	private void ConfigureSceneLight()
+	{
+		Light light = FindAnyObjectByType<Light>();
+		if (light == null)
+		{
+			GameObject lightObject = new GameObject("Top Directional Light");
+			light = lightObject.AddComponent<Light>();
+		}
+
+		light.type = LightType.Directional;
+		light.transform.rotation = Quaternion.LookRotation(new Vector3(0.22f, -0.28f, 1f).normalized, Vector3.up);
+		light.intensity = 1.05f;
+		light.shadows = LightShadows.Soft;
+		light.shadowStrength = 0.65f;
+		light.shadowBias = 0.02f;
+		light.shadowNormalBias = 0.25f;
+
+		RenderSettings.ambientMode = AmbientMode.Flat;
+		RenderSettings.ambientLight = new Color(0.58f, 0.6f, 0.64f);
+	}
+
+	private void EnsureGroundPlane()
+	{
+		Transform existing = transform.Find(GroundPlaneName);
+		GameObject groundObject;
+		if (existing == null)
+		{
+			groundObject = GameObject.CreatePrimitive(PrimitiveType.Quad);
+			groundObject.name = GroundPlaneName;
+			groundObject.transform.SetParent(transform, false);
+		}
+		else
+		{
+			groundObject = existing.gameObject;
+		}
+
+		groundObject.transform.position = new Vector3(0f, 0f, GroundZ);
+		groundObject.transform.rotation = Quaternion.identity;
+		groundObject.transform.localScale = new Vector3(240f, 240f, 1f);
+
+		Collider collider = groundObject.GetComponent<Collider>();
+		if (collider != null)
+		{
+			Destroy(collider);
+		}
+
+		MeshRenderer renderer = groundObject.GetComponent<MeshRenderer>();
+		if (renderer == null)
+		{
+			renderer = groundObject.AddComponent<MeshRenderer>();
+		}
+
+		renderer.sharedMaterial = CreatePrimitiveVisualMaterial(new Color(0.9f, 0.93f, 0.91f));
+		renderer.shadowCastingMode = ShadowCastingMode.Off;
+		renderer.receiveShadows = true;
+		renderer.sortingOrder = -100;
 	}
 
 	private float GetSharedScreenCameraSize()
@@ -135,6 +263,7 @@ public partial class GameManager
 		CreateIngredientSourceNodes(true, topOwnerClientId);
 		CreateIngredientSourceNodes(false, bottomOwnerClientId);
 		CreateTransitionNode("T_Bottom_Ausliefern", GetDeliveryTransitionPosition(), false, bottomOwnerClientId, false, false);
+		CreateConfiguredInhibitorArcs();
 
 		placeCounter = 1;
 		transitionCounter = 1;
@@ -153,6 +282,7 @@ public partial class GameManager
 		lastAvatarPosition = avatarPosition;
 		lastAvatarNetworkSyncRotation = avatarRotation;
 		lastAvatarNetworkSyncHeldId = "";
+		lastAvatarNetworkSyncCraneHeight = avatarCraneCurrentHeight;
 		SeedRemoteAvatarStartPosition(topOwnerClientId);
 		SeedRemoteAvatarStartPosition(bottomOwnerClientId);
 
@@ -260,6 +390,101 @@ public partial class GameManager
 		EnsureCompositeBlockVisuals();
 	}
 
+	private void CreateConfiguredInhibitorArcs()
+	{
+		if (levelInhibitorArcs == null || levelInhibitorArcs.Count <= 0)
+		{
+			return;
+		}
+
+		for (int i = 0; i < levelInhibitorArcs.Count; i++)
+		{
+			PetriNetLevelInhibitorArcDefinition inhibitor = levelInhibitorArcs[i];
+			if (inhibitor == null)
+			{
+				continue;
+			}
+
+			if (!TryResolveInhibitorSourcePlaceId(inhibitor, out string sourcePlaceId)
+				|| !TryResolveInhibitorTargetTransitionId(inhibitor, out string targetTransitionId))
+			{
+				Debug.LogWarning("Inhibitor arc could not be resolved: " + inhibitor.sourceBlockFirstTransitionName + " -> " + inhibitor.targetTransitionName);
+				continue;
+			}
+
+			ulong ownerClientId = nodesById.TryGetValue(targetTransitionId, out NodeRuntime targetTransition)
+				? targetTransition.ownerClientId
+				: UnassignedOwnerClientId;
+			CreateArcInternal("A_Inhibitor_" + (i + 1), sourcePlaceId, targetTransitionId, 1, false, ownerClientId, ArcKind.Inhibitor);
+		}
+	}
+
+	private bool TryResolveInhibitorSourcePlaceId(PetriNetLevelInhibitorArcDefinition inhibitor, out string sourcePlaceId)
+	{
+		sourcePlaceId = null;
+		if (inhibitor == null || !TryFindCompositeBlockByFirstTransitionName(inhibitor.sourceBlockFirstTransitionName, out string blockId))
+		{
+			return false;
+		}
+
+		string[] nodeIds = GetCompositeBlockNodeIds(blockId);
+		if (nodeIds == null)
+		{
+			return false;
+		}
+
+		sourcePlaceId = inhibitor.sourcePlace == PetriNetLevelBlockPlace.ausgabe ? nodeIds[3] : nodeIds[1];
+		return nodesById.TryGetValue(sourcePlaceId, out NodeRuntime sourcePlace) && sourcePlace.type == NodeType.Place;
+	}
+
+	private bool TryResolveInhibitorTargetTransitionId(PetriNetLevelInhibitorArcDefinition inhibitor, out string targetTransitionId)
+	{
+		targetTransitionId = null;
+		if (inhibitor == null)
+		{
+			return false;
+		}
+
+		foreach (KeyValuePair<string, NodeRuntime> pair in nodesById)
+		{
+			NodeRuntime node = pair.Value;
+			if (node == null || node.type != NodeType.Transition)
+			{
+				continue;
+			}
+
+			if (NamesMatch(GetNodeDisplayName(node), inhibitor.targetTransitionName))
+			{
+				targetTransitionId = node.id;
+		return true;
+	}
+		}
+
+		return false;
+	}
+
+	private bool TryFindCompositeBlockByFirstTransitionName(string firstTransitionName, out string blockId)
+	{
+		blockId = null;
+		List<string> blockIds = GetAllCompositeBlockIds();
+		for (int i = 0; i < blockIds.Count; i++)
+		{
+			PoolBlockDefinition definition = GetCompositeBlockDefinition(blockIds[i]);
+			if (definition != null && NamesMatch(GetPoolBlockFirstTransitionName(definition), firstTransitionName))
+			{
+				blockId = blockIds[i];
+			return true;
+		}
+		}
+
+		return false;
+	}
+
+	private bool NamesMatch(string left, string right)
+	{
+		return string.Equals((left ?? "").Trim(), (right ?? "").Trim(), StringComparison.OrdinalIgnoreCase);
+	}
+
 	private void SeedRemoteAvatarStartPosition(ulong clientId)
 	{
 		if (Unity.Netcode.NetworkManager.Singleton == null || !Unity.Netcode.NetworkManager.Singleton.IsListening)
@@ -274,7 +499,8 @@ public partial class GameManager
 
 		remoteAvatarPositions[clientId] = GetDefaultAvatarStartPosition(clientId);
 		remoteAvatarRotations[clientId] = 0f;
-		remoteAvatarInventories[clientId] = "";
+		remoteAvatarInventories[clientId] = new RemoteHeldObjectState { kind = HeldObjectKind.None, id = "", offset = Vector2.zero };
+		remoteAvatarCraneHeights[clientId] = avatarCraneRestHeight;
 	}
 
 	private ulong GetFirstOtherConnectedClientId(ulong fallbackBaseClientId)
@@ -324,7 +550,8 @@ public partial class GameManager
 		avatarStartPositionApplied = true;
 		lastAvatarPosition = avatarPosition;
 		lastAvatarNetworkSyncRotation = avatarRotation;
-		lastAvatarNetworkSyncHeldId = heldTransitionId ?? "";
+		lastAvatarNetworkSyncHeldId = GetCurrentHeldNetworkKey();
+		lastAvatarNetworkSyncCraneHeight = avatarCraneCurrentHeight;
 	}
 
 	private void ClearGraph()
@@ -417,9 +644,11 @@ public partial class GameManager
 		}
 
 		remoteAvatarVisuals.Clear();
+		DestroyRemoteCraneHoverVisuals();
 		remoteAvatarPositions.Clear();
 		remoteAvatarRotations.Clear();
 		remoteAvatarInventories.Clear();
+		remoteAvatarCraneHeights.Clear();
 	}
 
 	private void CreatePlaceNode(string id, Vector2 position, int initialTokens, bool refreshVisuals, ulong ownerClientId, bool isSharedPoolTransition, bool isSharedPoolAvailable)
@@ -432,7 +661,7 @@ public partial class GameManager
 		GameObject nodeObject = new GameObject(id);
 		nodeObject.transform.SetParent(petriNetRoot, false);
 		nodeObject.transform.position = new Vector3(position.x, position.y, 0f);
-		nodeObject.transform.localScale = new Vector3(1.2f, 1.2f, 1f);
+		nodeObject.transform.localScale = Vector3.one;
 
 		SpriteRenderer renderer = nodeObject.AddComponent<SpriteRenderer>();
 		renderer.sprite = GetCircleSprite();
@@ -442,12 +671,22 @@ public partial class GameManager
 		{
 			renderer.sharedMaterial = placeMaterial;
 		}
+		MakeSpriteRendererInvisible(renderer);
+
+		MeshRenderer visual3DRenderer = CreatePrimitiveVisual3D(
+			nodeObject.transform,
+			"PlaceCylinder3D",
+			PrimitiveType.Cylinder,
+			placeColor,
+			new Vector3(0f, 0f, NodeVisualCenterZ),
+			new Vector3(NodeVisualFootprint, PlaceVisualHeightScale, NodeVisualFootprint),
+			Quaternion.Euler(-90f, 0f, 0f));
 
 		CircleCollider2D collider = nodeObject.AddComponent<CircleCollider2D>();
 
 		Transform tokenRoot = new GameObject("Tokens").transform;
 		tokenRoot.SetParent(nodeObject.transform, false);
-		tokenRoot.localPosition = new Vector3(0f, 0f, -0.02f);
+		tokenRoot.localPosition = new Vector3(0f, 0f, TokenLayerZ);
 
 		TextMesh label = CreateNodeLabel(nodeObject.transform, new Vector3(0f, -1.1f, 0f), 0.08f);
 
@@ -461,6 +700,8 @@ public partial class GameManager
 			processingDuration = GetTimedPlaceProcessingDuration(id),
 			transform = nodeObject.transform,
 			renderer = renderer,
+			visual3D = visual3DRenderer != null ? visual3DRenderer.gameObject : null,
+			visual3DRenderer = visual3DRenderer,
 			collider = collider,
 			label = label,
 			tokenRoot = tokenRoot,
@@ -487,7 +728,7 @@ public partial class GameManager
 		GameObject nodeObject = new GameObject(id);
 		nodeObject.transform.SetParent(petriNetRoot, false);
 		nodeObject.transform.position = new Vector3(position.x, position.y, 0f);
-		nodeObject.transform.localScale = new Vector3(0.9f, 0.9f, 1f);
+		nodeObject.transform.localScale = Vector3.one;
 
 		SpriteRenderer renderer = nodeObject.AddComponent<SpriteRenderer>();
 		renderer.sprite = GetSquareSprite();
@@ -497,6 +738,16 @@ public partial class GameManager
 		{
 			renderer.sharedMaterial = transitionMaterial;
 		}
+		MakeSpriteRendererInvisible(renderer);
+
+		MeshRenderer visual3DRenderer = CreatePrimitiveVisual3D(
+			nodeObject.transform,
+			"TransitionBlock3D",
+			PrimitiveType.Cube,
+			transitionEnabledColor,
+			new Vector3(0f, 0f, NodeVisualCenterZ),
+			new Vector3(NodeVisualFootprint, NodeVisualFootprint, NodeVisualHeight),
+			Quaternion.identity);
 
 		BoxCollider2D collider = nodeObject.AddComponent<BoxCollider2D>();
 		TextMesh label = CreateNodeLabel(nodeObject.transform, new Vector3(0f, 0f, 0f), 0.06f);
@@ -511,6 +762,8 @@ public partial class GameManager
 			isSharedPoolAvailable = isSharedPoolAvailable,
 			transform = nodeObject.transform,
 			renderer = renderer,
+			visual3D = visual3DRenderer != null ? visual3DRenderer.gameObject : null,
+			visual3DRenderer = visual3DRenderer,
 			collider = collider,
 			label = label,
 			tokenRoot = null,
@@ -525,7 +778,7 @@ public partial class GameManager
 		}
 	}
 
-	private bool CreateArcInternal(string arcId, string fromId, string toId, int weight, bool refreshVisuals, ulong ownerClientId)
+	private bool CreateArcInternal(string arcId, string fromId, string toId, int weight, bool refreshVisuals, ulong ownerClientId, ArcKind kind = ArcKind.Normal)
 	{
 		if (string.IsNullOrEmpty(fromId) || string.IsNullOrEmpty(toId))
 		{
@@ -542,13 +795,19 @@ public partial class GameManager
 			return false;
 		}
 
+		if (kind == ArcKind.Inhibitor && (fromNode.type != NodeType.Place || toNode.type != NodeType.Transition))
+		{
+			Debug.LogWarning("Inhibitor arc rejected: only Place->Transition is allowed.");
+			return false;
+		}
+
 		if (fromNode.type == toNode.type)
 		{
 			Debug.LogWarning("Arc rejected: only Place->Transition or Transition->Place is allowed.");
 			return false;
 		}
 
-		if (!IsArcAllowedByIngredientRules(fromId, toId))
+		if (kind == ArcKind.Normal && !IsArcAllowedByIngredientRules(fromId, toId))
 		{
 			return false;
 		}
@@ -565,29 +824,19 @@ public partial class GameManager
 		GameObject arcObject = new GameObject(arcId);
 		arcObject.transform.SetParent(petriNetRoot, false);
 
+		Color arcColor = new Color(0.18f, 0.2f, 0.25f);
 		LineRenderer body = arcObject.AddComponent<LineRenderer>();
-		body.positionCount = 2;
-		body.useWorldSpace = true;
-		body.sortingOrder = 24;
-		body.startWidth = arcWidth;
-		body.endWidth = arcWidth;
-		body.numCapVertices = 4;
-		body.material = GetArcMaterial();
-		body.startColor = new Color(0.18f, 0.2f, 0.25f);
-		body.endColor = new Color(0.18f, 0.2f, 0.25f);
+		ConfigureGroundLineRenderer(body, 2, arcWidth, 24, arcColor);
 
 		GameObject arrowObject = new GameObject("Arrow");
 		arrowObject.transform.SetParent(arcObject.transform, false);
 		LineRenderer arrow = arrowObject.AddComponent<LineRenderer>();
-		arrow.positionCount = 3;
-		arrow.useWorldSpace = true;
-		arrow.sortingOrder = 25;
-		arrow.startWidth = arcWidth;
-		arrow.endWidth = arcWidth;
-		arrow.numCapVertices = 4;
-		arrow.material = GetArcMaterial();
-		arrow.startColor = new Color(0.18f, 0.2f, 0.25f);
-		arrow.endColor = new Color(0.18f, 0.2f, 0.25f);
+		ConfigureGroundLineRenderer(arrow, 3, arcWidth, 25, arcColor);
+
+		GameObject inhibitorCircleObject = new GameObject("InhibitorCircle");
+		inhibitorCircleObject.transform.SetParent(arcObject.transform, false);
+		LineRenderer inhibitorCircle = inhibitorCircleObject.AddComponent<LineRenderer>();
+		ConfigureGroundLineRenderer(inhibitorCircle, 24, arcWidth, 25, arcColor, 6, 8, true);
 
 		EdgeCollider2D collider = arcObject.AddComponent<EdgeCollider2D>();
 		collider.edgeRadius = 0.14f;
@@ -600,9 +849,11 @@ public partial class GameManager
 			toId = toId,
 			weight = Mathf.Max(1, weight),
 			ownerClientId = ownerClientId,
+			kind = kind,
 			gameObject = arcObject,
 			body = body,
 			arrow = arrow,
+			inhibitorCircle = inhibitorCircle,
 			collider = collider,
 		};
 
@@ -616,6 +867,31 @@ public partial class GameManager
 		}
 
 		return true;
+	}
+
+	private void ConfigureGroundLineRenderer(LineRenderer line, int positionCount, float width, int sortingOrder, Color color, int capVertices = 6, int cornerVertices = 6, bool loop = false)
+	{
+		if (line == null)
+		{
+			return;
+		}
+
+		line.positionCount = positionCount;
+		line.loop = loop;
+		line.useWorldSpace = true;
+		line.alignment = LineAlignment.TransformZ;
+		line.sortingOrder = sortingOrder;
+		line.startWidth = width;
+		line.endWidth = width;
+		line.numCapVertices = capVertices;
+		line.numCornerVertices = cornerVertices;
+		line.textureMode = LineTextureMode.Stretch;
+		line.material = GetArcMaterial();
+		line.startColor = color;
+		line.endColor = color;
+		line.generateLightingData = false;
+		line.shadowCastingMode = ShadowCastingMode.Off;
+		line.receiveShadows = false;
 	}
 
 	private bool RemoveNodeInternal(string nodeId)
@@ -692,6 +968,7 @@ public partial class GameManager
 				node.label.color = Color.black;
 				node.label.characterSize = 0.04f;
 				node.label.lineSpacing = 0.78f;
+				SetNodeVisualColor(node, placeColor);
 				RefreshTokenVisuals(node);
 				SetPlaceSorting(node, node.id == heldPlaceId || IsHeldCompositeBlockNode(node));
 			}
@@ -704,7 +981,7 @@ public partial class GameManager
 				node.label.lineSpacing = transitionLabel.Contains("\n") ? 0.78f : 1f;
 				FitTransitionLabelInsideNode(node);
 				SetTransitionSorting(node, node.id == heldTransitionId || IsHeldCompositeBlockNode(node));
-				node.renderer.color = IsTransitionEnabled(node.id) ? transitionEnabledColor : transitionDisabledColor;
+				SetNodeVisualColor(node, IsTransitionEnabled(node.id) ? transitionEnabledColor : transitionDisabledColor);
 			}
 		}
 
@@ -720,6 +997,7 @@ public partial class GameManager
 	private GameObject localAvatarCable;
 	private GameObject localHeldNodeShadow;
 	private GameObject localCraneHoverNodeShadow;
+	private LineRenderer localCraneHoverNodeOutline;
 	private GameObject localCraneHoverArcHighlight;
 	private LineRenderer localCraneHoverArcBody;
 	private LineRenderer localCraneHoverArcArrow;
@@ -727,14 +1005,391 @@ public partial class GameManager
 	private LineRenderer localCraneConnectPreviewBody;
 	private LineRenderer localCraneConnectPreviewArrow;
 	private Dictionary<ulong, GameObject> remoteAvatarVisuals = new Dictionary<ulong, GameObject>();
+	private Dictionary<ulong, CraneHoverSelectionVisual> remoteCraneHoverVisuals = new Dictionary<ulong, CraneHoverSelectionVisual>();
+
+	private class CraneHoverSelectionVisual
+	{
+		public GameObject root;
+		public GameObject nodeRoot;
+		public LineRenderer nodeOutline;
+		public GameObject arcRoot;
+		public LineRenderer arcBody;
+		public LineRenderer arcArrow;
+	}
 
 	private Color GetAvatarColor(ulong clientId)
 	{
-		// Player 1 (ClientId 0) = Grün, Player 2 (ClientId 1) = Rot
+		// Player 1 (ClientId 0) = Blau, Player 2 (ClientId 1) = Orange
 		if (clientId == 0)
-			return new Color(0.2f, 0.8f, 0.2f, 0.9f); // Grün
+			return new Color(0.18f, 0.48f, 0.95f, 0.9f); // Blau
 		else
-			return new Color(0.8f, 0.2f, 0.2f, 0.9f); // Rot
+			return new Color(0.95f, 0.48f, 0.12f, 0.9f); // Orange
+	}
+
+	private MeshRenderer CreatePrimitiveVisual3D(Transform parent, string name, PrimitiveType primitiveType, Color color, Vector3 localPosition, Vector3 localScale, Quaternion localRotation)
+	{
+		GameObject visual = GameObject.CreatePrimitive(primitiveType);
+		visual.name = name;
+		visual.transform.SetParent(parent, false);
+		visual.transform.localPosition = localPosition;
+		visual.transform.localRotation = localRotation;
+		visual.transform.localScale = localScale;
+
+		Collider collider = visual.GetComponent<Collider>();
+		if (collider != null)
+		{
+			Destroy(collider);
+		}
+
+		MeshRenderer meshRenderer = visual.GetComponent<MeshRenderer>();
+		if (meshRenderer != null)
+		{
+			meshRenderer.material = CreatePrimitiveVisualMaterial(color);
+			meshRenderer.sortingOrder = 31;
+			ConfigureMeshRendererFor3D(meshRenderer, true, true);
+		}
+
+		return meshRenderer;
+	}
+
+	private void UpdateTimedPlaceActivityVisual(NodeRuntime placeNode, bool processingActive)
+	{
+		if (placeNode == null || placeNode.type != NodeType.Place || placeNode.transform == null)
+		{
+			return;
+		}
+
+		bool useCuttingVisual = ShouldUseCuttingPlaceVisual(placeNode) && cuttingTransitionPrefab != null;
+		Transform cuttingVisualTransform = placeNode.transform.Find(CuttingActivityVisualName);
+		if (!useCuttingVisual)
+		{
+			if (cuttingVisualTransform != null)
+			{
+				cuttingVisualTransform.gameObject.SetActive(false);
+			}
+
+			return;
+		}
+
+		GameObject cuttingVisual;
+		if (cuttingVisualTransform == null)
+		{
+			cuttingVisual = new GameObject(CuttingActivityVisualName);
+			cuttingVisual.transform.SetParent(placeNode.transform, false);
+			GameObject cuttingModel = Instantiate(cuttingTransitionPrefab, cuttingVisual.transform);
+			cuttingModel.name = CuttingToolModelName;
+			cuttingModel.transform.localPosition = Vector3.zero;
+			cuttingModel.transform.localRotation = Quaternion.identity;
+			cuttingModel.transform.localScale = Vector3.one;
+			cuttingVisual.name = CuttingActivityVisualName;
+			DestroyRuntimeColliders(cuttingModel);
+			ApplyCuttingToolColorMap(cuttingModel);
+			EnsureCuttingToolAnimator(cuttingModel);
+		}
+		else
+		{
+			cuttingVisual = cuttingVisualTransform.gameObject;
+		}
+
+		bool hasWorkItem = placeNode.tokens > 0;
+		cuttingVisual.SetActive(hasWorkItem);
+		if (!hasWorkItem)
+		{
+			return;
+		}
+
+		cuttingVisual.transform.localPosition = cuttingTransitionPrefabLocalPosition;
+		cuttingVisual.transform.localRotation = Quaternion.Euler(cuttingTransitionPrefabLocalEuler);
+		cuttingVisual.transform.localScale = cuttingTransitionPrefabLocalScale;
+		UpdateCuttingToolAnimator(cuttingVisual, processingActive);
+		SetMeshRenderersSortingOrder(cuttingVisual.transform, IsHeldCompositeBlockNode(placeNode) ? 58 : 43);
+	}
+
+	private bool ShouldUseCuttingPlaceVisual(NodeRuntime placeNode)
+	{
+		if (placeNode == null || !IsCompositeBlockBufferPlaceId(placeNode.id))
+		{
+			return false;
+		}
+
+		string blockId = GetCompositeBlockIdForNodeId(placeNode.id);
+		PoolBlockDefinition definition = GetCompositeBlockDefinition(blockId);
+		if (definition == null)
+		{
+			return false;
+		}
+
+		return IsCuttingName(GetPoolBlockFirstTransitionName(definition))
+			|| IsCuttingName(GetPoolBlockSecondTransitionName(definition))
+			|| IsCuttingName(GetPoolBlockResultState(definition));
+	}
+
+	private bool IsCuttingName(string value)
+	{
+		return !string.IsNullOrEmpty(value)
+			&& value.IndexOf("schneid", StringComparison.OrdinalIgnoreCase) >= 0;
+	}
+
+	private void UpdateCuttingToolAnimator(GameObject cuttingVisual, bool processingActive)
+	{
+		Transform model = cuttingVisual != null ? cuttingVisual.transform.Find(CuttingToolModelName) : null;
+		if (model == null)
+		{
+			model = cuttingVisual != null ? cuttingVisual.transform : null;
+		}
+
+		if (model == null)
+		{
+			return;
+		}
+
+		Animator animator = EnsureCuttingToolAnimator(model.gameObject);
+		if (animator == null || animator.runtimeAnimatorController == null)
+		{
+			ResetCuttingToolModelTransform(model);
+			return;
+		}
+
+		animator.enabled = processingActive;
+		if (!processingActive)
+		{
+			ResetCuttingToolModelTransform(model);
+		}
+	}
+
+	private Animator EnsureCuttingToolAnimator(GameObject model)
+	{
+		if (model == null)
+		{
+			return null;
+		}
+
+		Animator animator = model.GetComponent<Animator>();
+		if (animator == null && cuttingToolAnimatorController != null)
+		{
+			animator = model.AddComponent<Animator>();
+		}
+
+		if (animator == null)
+		{
+			return null;
+		}
+
+		if (cuttingToolAnimatorController != null)
+		{
+			animator.runtimeAnimatorController = cuttingToolAnimatorController;
+		}
+
+		animator.applyRootMotion = false;
+		return animator;
+	}
+
+	private void ResetCuttingToolModelTransform(Transform model)
+	{
+		if (model == null)
+		{
+			return;
+		}
+
+		model.localPosition = Vector3.zero;
+		model.localRotation = Quaternion.identity;
+	}
+
+	private void ApplyCuttingToolColorMap(GameObject root)
+	{
+		if (root == null || cuttingToolColorMap == null)
+		{
+			return;
+		}
+
+		MeshRenderer[] renderers = root.GetComponentsInChildren<MeshRenderer>(true);
+		for (int rendererIndex = 0; rendererIndex < renderers.Length; rendererIndex++)
+		{
+			Material[] materials = renderers[rendererIndex].materials;
+			for (int materialIndex = 0; materialIndex < materials.Length; materialIndex++)
+			{
+				Material material = materials[materialIndex];
+				if (material == null)
+				{
+					continue;
+				}
+
+				ApplyTexture(material, "_BaseMap", cuttingToolColorMap);
+				ApplyTexture(material, "_MainTex", cuttingToolColorMap);
+			}
+		}
+	}
+
+	private void ApplyTexture(Material material, string propertyName, Texture2D texture)
+	{
+		if (material == null || texture == null || !material.HasProperty(propertyName))
+		{
+			return;
+		}
+
+		material.SetTexture(propertyName, texture);
+		if (material.HasProperty("_BaseColor"))
+		{
+			material.SetColor("_BaseColor", Color.white);
+		}
+
+		if (material.HasProperty("_Color"))
+		{
+			material.SetColor("_Color", Color.white);
+		}
+	}
+
+	private void DestroyRuntimeColliders(GameObject root)
+	{
+		if (root == null)
+		{
+			return;
+		}
+
+		Collider[] colliders3D = root.GetComponentsInChildren<Collider>(true);
+		for (int i = 0; i < colliders3D.Length; i++)
+		{
+			Destroy(colliders3D[i]);
+		}
+
+		Collider2D[] colliders2D = root.GetComponentsInChildren<Collider2D>(true);
+		for (int i = 0; i < colliders2D.Length; i++)
+		{
+			Destroy(colliders2D[i]);
+		}
+	}
+
+	private void SetMeshRenderersSortingOrder(Transform root, int sortingOrder)
+	{
+		if (root == null)
+		{
+			return;
+		}
+
+		MeshRenderer[] renderers = root.GetComponentsInChildren<MeshRenderer>(true);
+		for (int i = 0; i < renderers.Length; i++)
+		{
+			renderers[i].sortingOrder = sortingOrder;
+			ConfigureMeshRendererFor3D(renderers[i], true, true);
+		}
+	}
+
+	private MeshRenderer EnsurePrimitiveVisual3D(Transform parent, string name, PrimitiveType primitiveType, Color color, Vector3 localPosition, Vector3 localScale, Quaternion localRotation)
+	{
+		Transform child = parent.Find(name);
+		if (child == null)
+		{
+			return CreatePrimitiveVisual3D(parent, name, primitiveType, color, localPosition, localScale, localRotation);
+		}
+
+		child.localPosition = localPosition;
+		child.localRotation = localRotation;
+		child.localScale = localScale;
+
+		MeshRenderer meshRenderer = child.GetComponent<MeshRenderer>();
+		if (meshRenderer == null)
+		{
+			meshRenderer = child.gameObject.AddComponent<MeshRenderer>();
+		}
+
+		SetPrimitiveVisualColor(meshRenderer, color);
+		ConfigureMeshRendererFor3D(meshRenderer, true, true);
+		return meshRenderer;
+	}
+
+	private void ConfigureMeshRendererFor3D(MeshRenderer meshRenderer, bool castShadows, bool receiveShadows)
+	{
+		if (meshRenderer == null)
+		{
+			return;
+		}
+
+		meshRenderer.shadowCastingMode = castShadows ? ShadowCastingMode.On : ShadowCastingMode.Off;
+		meshRenderer.receiveShadows = receiveShadows;
+	}
+
+	private Material CreatePrimitiveVisualMaterial(Color color)
+	{
+		Shader shader = Shader.Find("Universal Render Pipeline/Lit");
+		if (shader == null)
+		{
+			shader = Shader.Find("Standard");
+		}
+
+		if (shader == null)
+		{
+			shader = Shader.Find("Sprites/Default");
+		}
+
+		Material material = shader != null ? new Material(shader) : new Material(Shader.Find("Hidden/Internal-Colored"));
+		SetMaterialColor(material, color);
+		return material;
+	}
+
+	private void SetPrimitiveVisualColor(MeshRenderer meshRenderer, Color color)
+	{
+		if (meshRenderer == null)
+		{
+			return;
+		}
+
+		if (meshRenderer.sharedMaterial == null)
+		{
+			meshRenderer.material = CreatePrimitiveVisualMaterial(color);
+			return;
+		}
+
+		Material material = meshRenderer.material;
+		SetMaterialColor(material, color);
+		meshRenderer.material = material;
+	}
+
+	private void SetMaterialColor(Material material, Color color)
+	{
+		if (material == null)
+		{
+			return;
+		}
+
+		Color opaqueColor = new Color(color.r, color.g, color.b, 1f);
+		material.color = opaqueColor;
+		if (material.HasProperty("_BaseColor"))
+		{
+			material.SetColor("_BaseColor", opaqueColor);
+		}
+
+		if (material.HasProperty("_Color"))
+		{
+			material.SetColor("_Color", opaqueColor);
+		}
+	}
+
+	private void MakeSpriteRendererInvisible(SpriteRenderer renderer)
+	{
+		if (renderer == null)
+		{
+			return;
+		}
+
+		Color color = renderer.color;
+		color.a = 0f;
+		renderer.color = color;
+		renderer.forceRenderingOff = true;
+	}
+
+	private void SetNodeVisualColor(NodeRuntime node, Color color)
+	{
+		if (node == null)
+		{
+			return;
+		}
+
+		if (node.renderer != null)
+		{
+			node.renderer.color = new Color(color.r, color.g, color.b, 0f);
+		}
+
+		SetPrimitiveVisualColor(node.visual3DRenderer, color);
 	}
 
 	private void EnsureAvatarVisuals()
@@ -760,58 +1415,55 @@ public partial class GameManager
 			localAvatarArrow = null;
 		}
 
-		if (localAvatarShadow == null)
-		{
-			localAvatarShadow = new GameObject("LocalAvatarShadow");
-			localAvatarShadow.transform.SetParent(petriNetRoot);
-			SpriteRenderer shadowRenderer = localAvatarShadow.AddComponent<SpriteRenderer>();
-			shadowRenderer.sprite = GetCircleSprite();
-			shadowRenderer.color = new Color(0.02f, 0.03f, 0.04f, 0.28f);
-			shadowRenderer.sortingOrder = 49;
-			localAvatarShadow.transform.localScale = new Vector3(0.72f, 0.38f, 1f);
-		}
-
-		if (localHeldNodeShadow == null)
-		{
-			localHeldNodeShadow = new GameObject("LocalHeldNodeShadow");
-			localHeldNodeShadow.transform.SetParent(petriNetRoot);
-			SpriteRenderer shadowRenderer = localHeldNodeShadow.AddComponent<SpriteRenderer>();
-			shadowRenderer.sprite = GetSquareSprite();
-			shadowRenderer.color = new Color(0.02f, 0.03f, 0.04f, 0.24f);
-			shadowRenderer.sortingOrder = 49;
-			localHeldNodeShadow.transform.localScale = new Vector3(0.9f, 0.9f, 1f);
-			localHeldNodeShadow.SetActive(false);
-		}
+		DestroyLocalFakeShadowVisuals();
 
 		if (localAvatarCable == null)
 		{
 			localAvatarCable = new GameObject("LocalAvatarCable");
 			localAvatarCable.transform.SetParent(petriNetRoot);
-			LineRenderer cable = localAvatarCable.AddComponent<LineRenderer>();
-			cable.positionCount = 2;
-			cable.useWorldSpace = true;
-			cable.sortingOrder = 52;
-			cable.startWidth = 0.035f;
-			cable.endWidth = 0.035f;
-			cable.material = GetArcMaterial();
-			cable.startColor = new Color(0.08f, 0.1f, 0.13f, 0.55f);
-			cable.endColor = cable.startColor;
 		}
+		DisableLegacyCraneCableLine(localAvatarCable.transform);
+		EnsureCraneAttachmentParts(localAvatarCable.transform);
 
 		if (localAvatarVisual == null)
 		{
 			localAvatarVisual = new GameObject("LocalAvatar");
 			localAvatarVisual.transform.SetParent(petriNetRoot);
-			SpriteRenderer spriteRenderer = localAvatarVisual.AddComponent<SpriteRenderer>();
-			spriteRenderer.sprite = GetCircleSprite();
-			spriteRenderer.color = GetAvatarColor(GetLocalActorClientId());
-			spriteRenderer.sortingOrder = 60;
-			localAvatarVisual.transform.localScale = new Vector3(0.8f, 0.8f, 1f);
+			localAvatarVisual.transform.localScale = Vector3.one;
+			MeshRenderer bodyRenderer = CreatePrimitiveVisual3D(
+				localAvatarVisual.transform,
+				"BodySphere3D",
+				PrimitiveType.Sphere,
+				GetAvatarColor(GetLocalActorClientId()),
+				Vector3.zero,
+				new Vector3(1f, 1f, 1f),
+				Quaternion.identity);
+			if (bodyRenderer != null)
+			{
+				bodyRenderer.sortingOrder = 60;
+			}
+
+			EnsureAvatarDroneVisual(localAvatarVisual.transform, GetLocalActorClientId(), true);
 
 			// Trigger only: the crane flies over graph nodes and uses input logic for interactions.
 			CircleCollider2D collider = localAvatarVisual.AddComponent<CircleCollider2D>();
 			collider.radius = 0.4f;
 			collider.isTrigger = true;
+		}
+	}
+
+	private void DestroyLocalFakeShadowVisuals()
+	{
+		if (localAvatarShadow != null)
+		{
+			Destroy(localAvatarShadow);
+			localAvatarShadow = null;
+		}
+
+		if (localHeldNodeShadow != null)
+		{
+			Destroy(localHeldNodeShadow);
+			localHeldNodeShadow = null;
 		}
 	}
 
@@ -827,63 +1479,30 @@ public partial class GameManager
 		bool isHoldingCompositeBlock = !string.IsNullOrEmpty(heldCompositeBlockId) && compositeBlocksById.ContainsKey(heldCompositeBlockId);
 		bool isHoldingNode = isHoldingTransition || isHoldingPlace || isHoldingCompositeBlock;
 
-		if (localAvatarShadow != null)
-		{
-			float shadowScale = Mathf.Lerp(0.92f, 0.62f, Mathf.InverseLerp(avatarCraneLoweredHeight, avatarCraneRestHeight, avatarCraneCurrentHeight));
-			localAvatarShadow.SetActive(!isHoldingTransition);
-			localAvatarShadow.transform.position = new Vector3(avatarPosition.x, avatarPosition.y, -0.01f);
-			localAvatarShadow.transform.localScale = new Vector3(shadowScale, shadowScale * 0.52f, 1f);
-		}
-
 		UpdateHeldTransitionVisual();
 		UpdateHeldPlaceVisual();
 		UpdateHeldCompositeBlockVisual();
 		UpdateCraneHoverSelectionVisual(isHoldingNode);
 
-		if (localHeldNodeShadow != null)
-		{
-			localHeldNodeShadow.SetActive(isHoldingNode);
-			SpriteRenderer shadowRenderer = localHeldNodeShadow.GetComponent<SpriteRenderer>();
-			if (shadowRenderer != null)
-			{
-				shadowRenderer.sprite = isHoldingPlace ? GetCircleSprite() : GetSquareSprite();
-			}
-
-			if (isHoldingCompositeBlock && TryGetCompositeBlockBounds(heldCompositeBlockId, out Rect blockBounds))
-			{
-				Vector2 shadowCenter = GetHeldCompositeBlockGroundCenter();
-				localHeldNodeShadow.transform.position = new Vector3(shadowCenter.x, shadowCenter.y, -0.015f);
-				localHeldNodeShadow.transform.localScale = new Vector3(blockBounds.width, blockBounds.height, 1f);
-			}
-			else
-			{
-				localHeldNodeShadow.transform.position = new Vector3(avatarPosition.x, avatarPosition.y, -0.015f);
-				localHeldNodeShadow.transform.localScale = isHoldingPlace
-					? new Vector3(1.05f, 0.58f, 1f)
-					: new Vector3(0.9f, 0.9f, 1f);
-			}
-		}
+		DestroyLocalFakeShadowVisuals();
 
 		// Update local avatar dot
 		if (localAvatarVisual != null)
 		{
-			float bodyScale = Mathf.Lerp(0.72f, 0.86f, Mathf.InverseLerp(avatarCraneLoweredHeight, avatarCraneRestHeight, avatarCraneCurrentHeight));
 			localAvatarVisual.transform.position = craneVisualPosition;
-			localAvatarVisual.transform.localScale = new Vector3(bodyScale, bodyScale, 1f);
+			localAvatarVisual.transform.localScale = Vector3.one;
+			EnsureAvatarDroneVisual(localAvatarVisual.transform, GetLocalActorClientId(), true);
 		}
 
 		if (localAvatarCable != null)
 		{
-			LineRenderer cable = localAvatarCable.GetComponent<LineRenderer>();
-			if (cable != null)
-			{
-				cable.SetPosition(0, new Vector3(avatarPosition.x, avatarPosition.y, -0.02f));
-				cable.SetPosition(1, new Vector3(craneVisualPosition.x, craneVisualPosition.y, -0.02f));
-			}
+			float hookTargetZ = GetLocalCraneHookTargetZ(isHoldingNode);
+			UpdateCraneAttachmentVisual(localAvatarCable.transform, craneVisualPosition, hookTargetZ);
 		}
 
 		UpdateCraneConnectPreviewVisual();
 		UpdateRemoteAvatarVisuals();
+		UpdateRemoteCraneHoverSelectionVisuals();
 	}
 
 	private void UpdateRemoteAvatarVisuals()
@@ -945,22 +1564,477 @@ public partial class GameManager
 			return;
 		}
 
-		bool isHoldingTransition = remoteAvatarInventories.TryGetValue(clientId, out string heldId) && !string.IsNullOrEmpty(heldId);
-		SpriteRenderer shadow = EnsureRemoteAvatarSprite(root.transform, "Shadow", GetCircleSprite(), new Color(0.02f, 0.03f, 0.04f, 0.28f), 49);
-		float shadowScale = Mathf.Lerp(0.92f, 0.62f, Mathf.InverseLerp(avatarCraneLoweredHeight, avatarCraneRestHeight, avatarCraneRestHeight));
-		shadow.gameObject.SetActive(!isHoldingTransition);
-		shadow.transform.localPosition = new Vector3(0f, 0f, -0.01f);
-		shadow.transform.localScale = new Vector3(shadowScale, shadowScale * 0.52f, 1f);
+		Transform fakeShadow = root.transform.Find("Shadow");
+		if (fakeShadow != null)
+		{
+			Destroy(fakeShadow.gameObject);
+		}
 
-		LineRenderer cable = EnsureRemoteAvatarCable(root.transform);
 		Vector3 ground = root.transform.position;
-		Vector3 crane = ground + new Vector3(0f, avatarCraneRestHeight, -0.05f);
-		cable.SetPosition(0, new Vector3(ground.x, ground.y, -0.02f));
-		cable.SetPosition(1, new Vector3(crane.x, crane.y, -0.02f));
+		float remoteCraneHeight = GetRemoteAvatarCraneHeight(clientId);
+		Vector3 crane = ground + new Vector3(0f, 0f, -remoteCraneHeight);
+		Transform cableRoot = EnsureRemoteAvatarCable(root.transform);
+		UpdateCraneAttachmentVisual(cableRoot, crane, GetRemoteCraneHookTargetZ(clientId));
 
-		SpriteRenderer body = EnsureRemoteAvatarSprite(root.transform, "Body", GetCircleSprite(), GetAvatarColor(clientId), 60);
-		body.transform.localPosition = new Vector3(0f, avatarCraneRestHeight, -0.05f);
-		body.transform.localScale = new Vector3(0.86f, 0.86f, 1f);
+		Transform oldFlatBody = root.transform.Find("Body");
+		if (oldFlatBody != null)
+		{
+			oldFlatBody.gameObject.SetActive(false);
+		}
+
+		MeshRenderer body = EnsurePrimitiveVisual3D(
+			root.transform,
+			"BodySphere3D",
+			PrimitiveType.Sphere,
+			GetAvatarColor(clientId),
+			new Vector3(0f, 0f, -remoteCraneHeight),
+			new Vector3(0.86f, 0.86f, 0.86f),
+			Quaternion.identity);
+		if (body != null)
+		{
+			body.sortingOrder = 60;
+		}
+
+		Transform drone = EnsureAvatarDroneVisual(root.transform, clientId, false);
+		if (drone != null)
+		{
+			drone.localPosition = new Vector3(avatarDroneLocalPosition.x, avatarDroneLocalPosition.y, -remoteCraneHeight + avatarDroneLocalPosition.z);
+		}
+
+		UpdateRemoteHeldObjectVisual(clientId, ground);
+	}
+
+	private void UpdateRemoteHeldObjectVisual(ulong clientId, Vector3 remoteGroundPosition)
+	{
+		if (!remoteAvatarInventories.TryGetValue(clientId, out RemoteHeldObjectState heldState)
+			|| heldState == null
+			|| heldState.kind == HeldObjectKind.None
+			|| string.IsNullOrEmpty(heldState.id))
+		{
+			return;
+		}
+
+		Vector2 heldCenter = new Vector2(remoteGroundPosition.x, remoteGroundPosition.y);
+		if (heldState.kind == HeldObjectKind.CompositeBlock)
+		{
+			heldCenter += heldState.offset;
+			if (MoveCompositeBlockInternal(heldState.id, heldCenter, false))
+			{
+				SetCompositeBlockNodeHeight(heldState.id, GetRemoteHeldObjectZ(clientId));
+				UpdateAllArcVisuals();
+				SetCompositeBlockSorting(heldState.id, true);
+			}
+
+			return;
+		}
+
+		if (!nodesById.TryGetValue(heldState.id, out NodeRuntime heldNode) || heldNode == null || heldNode.transform == null)
+		{
+			return;
+		}
+
+		heldNode.transform.position = new Vector3(heldCenter.x, heldCenter.y, GetRemoteHeldObjectZ(clientId));
+		if (heldState.kind == HeldObjectKind.Place)
+		{
+			SetPlaceSorting(heldNode, true);
+		}
+		else if (heldState.kind == HeldObjectKind.Transition)
+		{
+			SetTransitionSorting(heldNode, true);
+		}
+
+		UpdateAllArcVisuals();
+	}
+
+	private float GetRemoteHeldObjectZ(ulong clientId)
+	{
+		return GetHeldObjectZForCraneHeight(GetRemoteAvatarCraneHeight(clientId));
+	}
+
+	private float GetRemoteAvatarCraneHeight(ulong clientId)
+	{
+		if (remoteAvatarCraneHeights.TryGetValue(clientId, out float craneHeight))
+		{
+			return Mathf.Clamp(craneHeight, GroundZ, avatarCraneRestHeight);
+		}
+
+		return avatarCraneRestHeight;
+	}
+
+	private void UpdateRemoteCraneHoverSelectionVisuals()
+	{
+		if (petriNetRoot == null)
+		{
+			return;
+		}
+
+		List<ulong> staleClientIds = new List<ulong>();
+		foreach (KeyValuePair<ulong, CraneHoverSelectionVisual> pair in remoteCraneHoverVisuals)
+		{
+			if (!remoteAvatarPositions.ContainsKey(pair.Key))
+			{
+				staleClientIds.Add(pair.Key);
+			}
+		}
+
+		for (int i = 0; i < staleClientIds.Count; i++)
+		{
+			DestroyRemoteCraneHoverVisual(staleClientIds[i]);
+		}
+
+		foreach (KeyValuePair<ulong, Vector3> pair in remoteAvatarPositions)
+		{
+			ulong clientId = pair.Key;
+			if (clientId == GetLocalActorClientId())
+			{
+				continue;
+			}
+
+			CraneHoverSelectionVisual visual = EnsureRemoteCraneHoverVisual(clientId);
+			if (visual == null)
+			{
+				continue;
+			}
+
+			if (IsRemoteAvatarHoldingObject(clientId))
+			{
+				HideRemoteCraneHoverSelectionVisual(visual);
+				continue;
+			}
+
+			Vector2 craneTarget = new Vector2(pair.Value.x, pair.Value.y);
+			if (TryGetCompositeBlockAtPoint(craneTarget, clientId, out CompositeBlockRuntime block))
+			{
+				ShowRemoteCraneHoverCompositeBlockVisual(visual, block.id);
+				HideRemoteCraneHoverArcVisual(visual);
+				continue;
+			}
+
+			if (TryGetHoverSelectableNodeAtPoint(craneTarget, clientId, out NodeRuntime node))
+			{
+				ShowRemoteCraneHoverNodeVisual(visual, node);
+				HideRemoteCraneHoverArcVisual(visual);
+				continue;
+			}
+
+			HideRemoteCraneHoverNodeVisual(visual);
+			if (TryGetArcAtPoint(craneTarget, clientId, out ArcRuntime arc))
+			{
+				ShowRemoteCraneHoverArcVisual(visual, arc, craneTarget);
+				continue;
+			}
+
+			HideRemoteCraneHoverArcVisual(visual);
+		}
+	}
+
+	private bool IsRemoteAvatarHoldingObject(ulong clientId)
+	{
+		if (!remoteAvatarInventories.TryGetValue(clientId, out RemoteHeldObjectState heldState) || heldState == null)
+		{
+			return false;
+		}
+
+		return heldState.kind != HeldObjectKind.None && !string.IsNullOrEmpty(heldState.id);
+	}
+
+	private CraneHoverSelectionVisual EnsureRemoteCraneHoverVisual(ulong clientId)
+	{
+		if (remoteCraneHoverVisuals.TryGetValue(clientId, out CraneHoverSelectionVisual visual)
+			&& visual != null
+			&& visual.root != null)
+		{
+			return visual;
+		}
+
+		visual = new CraneHoverSelectionVisual();
+		visual.root = new GameObject("RemoteCraneHoverSelection_" + clientId);
+		visual.root.transform.SetParent(petriNetRoot, false);
+
+		visual.nodeRoot = new GameObject("NodeSelection");
+		visual.nodeRoot.transform.SetParent(visual.root.transform, false);
+		visual.nodeOutline = visual.nodeRoot.AddComponent<LineRenderer>();
+		ConfigureCraneHoverNodeLine(visual.nodeOutline, 4, true);
+		visual.nodeRoot.SetActive(false);
+
+		visual.arcRoot = new GameObject("ArcHighlight");
+		visual.arcRoot.transform.SetParent(visual.root.transform, false);
+		visual.arcBody = visual.arcRoot.AddComponent<LineRenderer>();
+		ConfigureCraneHoverArcLine(visual.arcBody, 2);
+
+		GameObject arrowObject = new GameObject("Arrow");
+		arrowObject.transform.SetParent(visual.arcRoot.transform, false);
+		visual.arcArrow = arrowObject.AddComponent<LineRenderer>();
+		ConfigureCraneHoverArcLine(visual.arcArrow, 3);
+		visual.arcRoot.SetActive(false);
+
+		remoteCraneHoverVisuals[clientId] = visual;
+		return visual;
+	}
+
+	private void ShowRemoteCraneHoverNodeVisual(CraneHoverSelectionVisual visual, NodeRuntime node)
+	{
+		if (visual == null || visual.nodeRoot == null || node == null || node.transform == null)
+		{
+			HideRemoteCraneHoverNodeVisual(visual);
+			return;
+		}
+
+		visual.nodeRoot.SetActive(true);
+		Vector3 nodePosition = node.transform.position;
+		if (node.type == NodeType.Place)
+		{
+			SetCraneHoverCircleOutline(visual.nodeOutline, nodePosition, NodeVisualFootprint * 0.58f);
+		}
+		else
+		{
+			SetCraneHoverRectOutline(visual.nodeOutline, new Rect(
+				nodePosition.x - NodeVisualFootprint * 0.58f,
+				nodePosition.y - NodeVisualFootprint * 0.58f,
+				NodeVisualFootprint * 1.16f,
+				NodeVisualFootprint * 1.16f));
+		}
+	}
+
+	private void ShowRemoteCraneHoverCompositeBlockVisual(CraneHoverSelectionVisual visual, string blockId)
+	{
+		if (visual == null || visual.nodeRoot == null || !TryGetCompositeBlockBounds(blockId, out Rect bounds))
+		{
+			HideRemoteCraneHoverNodeVisual(visual);
+			return;
+		}
+
+		visual.nodeRoot.SetActive(true);
+		SetCraneHoverRectOutline(visual.nodeOutline, new Rect(
+			bounds.xMin - 0.08f,
+			bounds.yMin - 0.08f,
+			bounds.width + 0.16f,
+			bounds.height + 0.16f));
+	}
+
+	private void ShowRemoteCraneHoverArcVisual(CraneHoverSelectionVisual visual, ArcRuntime arc, Vector2 craneTarget)
+	{
+		if (visual == null || visual.arcRoot == null || !TryGetArcHoverSegment(arc, craneTarget, out Vector3 start, out Vector3 end, out bool showArrowHead))
+		{
+			HideRemoteCraneHoverArcVisual(visual);
+			return;
+		}
+
+		Vector3 dir = end - start;
+		if (dir.sqrMagnitude < 0.0001f)
+		{
+			HideRemoteCraneHoverArcVisual(visual);
+			return;
+		}
+
+		dir.Normalize();
+		visual.arcRoot.SetActive(true);
+		if (showArrowHead)
+		{
+			SetLineWithArrow(visual.arcBody, visual.arcArrow, start, end, dir);
+		}
+		else
+		{
+			Vector3 zOffset = new Vector3(0f, 0f, ArcZ);
+			visual.arcBody.SetPosition(0, start + zOffset);
+			visual.arcBody.SetPosition(1, end + zOffset);
+			visual.arcArrow.SetPosition(0, end + zOffset);
+			visual.arcArrow.SetPosition(1, end + zOffset);
+			visual.arcArrow.SetPosition(2, end + zOffset);
+		}
+	}
+
+	private void HideRemoteCraneHoverSelectionVisual(CraneHoverSelectionVisual visual)
+	{
+		HideRemoteCraneHoverNodeVisual(visual);
+		HideRemoteCraneHoverArcVisual(visual);
+	}
+
+	private void HideRemoteCraneHoverNodeVisual(CraneHoverSelectionVisual visual)
+	{
+		if (visual != null && visual.nodeRoot != null)
+		{
+			visual.nodeRoot.SetActive(false);
+		}
+	}
+
+	private void HideRemoteCraneHoverArcVisual(CraneHoverSelectionVisual visual)
+	{
+		if (visual != null && visual.arcRoot != null)
+		{
+			visual.arcRoot.SetActive(false);
+		}
+	}
+
+	private void DestroyRemoteCraneHoverVisual(ulong clientId)
+	{
+		if (!remoteCraneHoverVisuals.TryGetValue(clientId, out CraneHoverSelectionVisual visual))
+		{
+			return;
+		}
+
+		if (visual != null && visual.root != null)
+		{
+			Destroy(visual.root);
+		}
+
+		remoteCraneHoverVisuals.Remove(clientId);
+	}
+
+	private void DestroyRemoteCraneHoverVisuals()
+	{
+		List<ulong> clientIds = new List<ulong>(remoteCraneHoverVisuals.Keys);
+		for (int i = 0; i < clientIds.Count; i++)
+		{
+			DestroyRemoteCraneHoverVisual(clientIds[i]);
+		}
+	}
+
+	private Transform EnsureAvatarDroneVisual(Transform root, ulong clientId, bool localAvatar)
+	{
+		GameObject dronePrefab = GetAvatarDronePrefab();
+		if (root == null || dronePrefab == null)
+		{
+			return null;
+		}
+
+		Transform sphere = root.Find("BodySphere3D");
+		if (sphere != null)
+		{
+			sphere.gameObject.SetActive(false);
+		}
+
+		Transform drone = root.Find(AvatarDroneVisualName);
+		if (drone == null)
+		{
+			GameObject droneObject = Instantiate(dronePrefab, root);
+			droneObject.name = AvatarDroneVisualName;
+			drone = droneObject.transform;
+			DestroyRuntimeColliders(droneObject);
+			ApplyAvatarDroneTint(droneObject, clientId);
+			SetAvatarDroneAnimation(droneObject, true);
+		}
+
+		drone.gameObject.SetActive(true);
+		if (localAvatar)
+		{
+			drone.localPosition = avatarDroneLocalPosition;
+		}
+
+		drone.localRotation = GetAvatarDroneRotation();
+		drone.localScale = avatarDroneLocalScale;
+		SetMeshRenderersSortingOrder(drone, 60);
+		return drone;
+	}
+
+	private Quaternion GetAvatarDroneRotation()
+	{
+		// The imported drone lies in XZ, so yaw must happen before tilting its top toward the XY game board camera.
+		Quaternion inDronePlaneRotation = Quaternion.AngleAxis(avatarDroneLocalEuler.y, Vector3.up);
+		Quaternion tiltTopTowardCamera = Quaternion.AngleAxis(avatarDroneLocalEuler.x, Vector3.right);
+		Quaternion screenRoll = Quaternion.AngleAxis(avatarDroneLocalEuler.z, Vector3.forward);
+		return screenRoll * tiltTopTowardCamera * inDronePlaneRotation;
+	}
+
+	private GameObject GetAvatarDronePrefab()
+	{
+#if UNITY_EDITOR
+		GameObject realisticDronePrefab = UnityEditor.AssetDatabase.LoadAssetAtPath<GameObject>(RealisticDronePrefabPath);
+		if (realisticDronePrefab != null)
+		{
+			avatarDronePrefab = realisticDronePrefab;
+			return realisticDronePrefab;
+		}
+#endif
+
+		return avatarDronePrefab;
+	}
+
+	private void SetAvatarDroneAnimation(GameObject droneObject, bool playing)
+	{
+		if (droneObject == null)
+		{
+			return;
+		}
+
+		bool useImportedAvatarAnimation = avatarDroneUseImportedAnimationClips && avatarDroneAnimatorController != null;
+		Animator[] animators = droneObject.GetComponentsInChildren<Animator>(true);
+		if (animators.Length <= 0 && useImportedAvatarAnimation)
+		{
+			animators = new[] { droneObject.AddComponent<Animator>() };
+		}
+
+		for (int i = 0; i < animators.Length; i++)
+		{
+			if (useImportedAvatarAnimation)
+			{
+				animators[i].runtimeAnimatorController = avatarDroneAnimatorController;
+			}
+
+			animators[i].enabled = useImportedAvatarAnimation && playing;
+			animators[i].applyRootMotion = false;
+		}
+
+		Animation[] animations = droneObject.GetComponentsInChildren<Animation>(true);
+		for (int i = 0; i < animations.Length; i++)
+		{
+			animations[i].Stop();
+			animations[i].enabled = false;
+		}
+
+		PetriNetAvatarDroneAnimator droneAnimator = droneObject.GetComponent<PetriNetAvatarDroneAnimator>();
+		if (droneAnimator == null)
+		{
+			droneAnimator = droneObject.AddComponent<PetriNetAvatarDroneAnimator>();
+		}
+
+		droneAnimator.Configure(
+			avatarDroneAnimationClips,
+			avatarDroneUseImportedAnimationClips,
+			avatarDroneAnimationClipNameContains,
+			avatarDroneAnimationClipNameExcludes,
+			avatarDroneRotorDegreesPerSecond,
+			avatarDroneRotorLocalAxis,
+			playing);
+	}
+
+	private void ApplyAvatarDroneTint(GameObject droneObject, ulong clientId)
+	{
+		if (droneObject == null)
+		{
+			return;
+		}
+
+		CloneAvatarDroneMaterials(droneObject);
+	}
+
+	private void CloneAvatarDroneMaterials(GameObject droneObject)
+	{
+		if (droneObject == null)
+		{
+			return;
+		}
+
+		MeshRenderer[] renderers = droneObject.GetComponentsInChildren<MeshRenderer>(true);
+		for (int i = 0; i < renderers.Length; i++)
+		{
+			MeshRenderer renderer = renderers[i];
+			if (renderer == null)
+			{
+				continue;
+			}
+
+			Material[] sourceMaterials = renderer.sharedMaterials;
+			Material[] materials = new Material[sourceMaterials.Length];
+			for (int materialIndex = 0; materialIndex < materials.Length; materialIndex++)
+			{
+				Material sourceMaterial = sourceMaterials[materialIndex];
+				Material material = sourceMaterial != null ? new Material(sourceMaterial) : null;
+				materials[materialIndex] = material;
+			}
+
+			renderer.sharedMaterials = materials;
+		}
 	}
 
 	private SpriteRenderer EnsureRemoteAvatarSprite(Transform root, string name, Sprite sprite, Color color, int sortingOrder)
@@ -984,7 +2058,7 @@ public partial class GameManager
 		return renderer;
 	}
 
-	private LineRenderer EnsureRemoteAvatarCable(Transform root)
+	private Transform EnsureRemoteAvatarCable(Transform root)
 	{
 		Transform child = root.Find("Cable");
 		if (child == null)
@@ -993,25 +2067,321 @@ public partial class GameManager
 			child.SetParent(root, false);
 		}
 
-		LineRenderer cable = child.GetComponent<LineRenderer>();
-		if (cable == null)
+		DisableLegacyCraneCableLine(child);
+		EnsureCraneAttachmentParts(child);
+		return child;
+	}
+
+	private void DisableLegacyCraneCableLine(Transform cableRoot)
+	{
+		if (cableRoot == null)
 		{
-			cable = child.gameObject.AddComponent<LineRenderer>();
+			return;
 		}
 
-		cable.positionCount = 2;
-		cable.useWorldSpace = true;
-		cable.sortingOrder = 52;
-		cable.startWidth = 0.035f;
-		cable.endWidth = 0.035f;
-		cable.material = GetArcMaterial();
-		cable.startColor = new Color(0.08f, 0.1f, 0.13f, 0.55f);
-		cable.endColor = cable.startColor;
-		return cable;
+		LineRenderer line = cableRoot.GetComponent<LineRenderer>();
+		if (line != null)
+		{
+			line.enabled = false;
+		}
+	}
+
+	private void EnsureCraneAttachmentParts(Transform cableRoot)
+	{
+		if (cableRoot == null)
+		{
+			return;
+		}
+
+		EnsureCraneChainLinkRoot(cableRoot);
+		EnsureCraneAttachmentPart(cableRoot, "ChainHook", GetAvatarCraneHookPrefab(), PrimitiveType.Capsule, new Color(0.16f, 0.16f, 0.17f));
+	}
+
+	private Transform EnsureCraneChainLinkRoot(Transform cableRoot)
+	{
+		if (cableRoot == null)
+		{
+			return null;
+		}
+
+		Transform oldSingleChain = cableRoot.Find("Chain");
+		if (oldSingleChain != null)
+		{
+			oldSingleChain.gameObject.SetActive(false);
+		}
+
+		Transform chainRoot = cableRoot.Find("ChainLinks");
+		if (chainRoot == null)
+		{
+			chainRoot = new GameObject("ChainLinks").transform;
+			chainRoot.SetParent(cableRoot, false);
+		}
+
+		return chainRoot;
+	}
+
+	private Transform EnsureCraneAttachmentPart(Transform parent, string name, GameObject prefab, PrimitiveType fallbackPrimitive, Color fallbackColor)
+	{
+		Transform child = parent.Find(name);
+		if (child == null)
+		{
+			GameObject partObject;
+			if (prefab != null)
+			{
+				partObject = Instantiate(prefab, parent);
+			}
+			else
+			{
+				partObject = GameObject.CreatePrimitive(fallbackPrimitive);
+				partObject.transform.SetParent(parent, false);
+				MeshRenderer renderer = partObject.GetComponent<MeshRenderer>();
+				if (renderer != null)
+				{
+					renderer.material = CreatePrimitiveVisualMaterial(fallbackColor);
+				}
+			}
+
+			partObject.name = name;
+			child = partObject.transform;
+			DestroyRuntimeColliders(partObject);
+		}
+
+		child.gameObject.SetActive(true);
+		SetMeshRenderersSortingOrder(child, 62);
+		return child;
+	}
+
+	private void UpdateCraneAttachmentVisual(Transform cableRoot, Vector3 craneVisualPosition, float hookTargetZ)
+	{
+		if (cableRoot == null)
+		{
+			return;
+		}
+
+		DisableLegacyCraneCableLine(cableRoot);
+		EnsureCraneAttachmentParts(cableRoot);
+
+		float freeHookZ = GetHookZForCraneHeight(-craneVisualPosition.z);
+		float contactHookZ = GetHookContactZ(hookTargetZ);
+		float hookZ = Mathf.Clamp(Mathf.Min(freeHookZ, contactHookZ), craneVisualPosition.z, GroundZ);
+		float chainLength = Mathf.Max(0.01f, hookZ - craneVisualPosition.z);
+		Vector3 hookPosition = new Vector3(craneVisualPosition.x, craneVisualPosition.y, hookZ);
+		UpdateCraneChainLinks(cableRoot, craneVisualPosition, hookZ, chainLength);
+
+		Transform hook = cableRoot.Find("ChainHook");
+		if (hook != null)
+		{
+			UpdateCraneHookVisual(hook, hookPosition);
+		}
+	}
+
+	private void UpdateCraneHookVisual(Transform hook, Vector3 chainEndPosition)
+	{
+		if (hook == null)
+		{
+			return;
+		}
+
+		hook.gameObject.SetActive(true);
+		hook.rotation = Quaternion.Euler(avatarCraneHookLocalEuler);
+		hook.localScale = avatarCraneHookLocalScale;
+		hook.position = GetCraneHookVisualPosition(chainEndPosition);
+		SetMeshRenderersSortingOrder(hook, 63);
+
+		if (!TryGetRendererBounds(hook, out Bounds bounds))
+		{
+			return;
+		}
+
+		Vector3 visibleAttachPoint = new Vector3(bounds.center.x, bounds.center.y, bounds.min.z);
+		Vector3 desiredAttachPoint = chainEndPosition + new Vector3(0f, 0f, GetCraneHookVisualDrop());
+		hook.position += desiredAttachPoint - visibleAttachPoint;
+	}
+
+	private void UpdateCraneChainLinks(Transform cableRoot, Vector3 craneVisualPosition, float hookZ, float chainLength)
+	{
+		Transform chainRoot = EnsureCraneChainLinkRoot(cableRoot);
+		if (chainRoot == null)
+		{
+			return;
+		}
+
+		bool showChain = chainLength > 0.035f;
+		chainRoot.gameObject.SetActive(showChain);
+		if (!showChain)
+		{
+			SetCraneChainLinkCount(chainRoot, 0, craneVisualPosition, hookZ);
+			return;
+		}
+
+		float linkSpacing = Mathf.Max(0.035f, avatarCraneChainLinkSpacing * Mathf.Max(0.01f, avatarCraneChainLengthMultiplier));
+		int maxLinks = Mathf.Max(1, avatarCraneChainMaxLinks);
+		int linkCount = Mathf.Clamp(Mathf.CeilToInt(chainLength / linkSpacing), 1, maxLinks);
+		SetCraneChainLinkCount(chainRoot, linkCount, craneVisualPosition, hookZ);
+	}
+
+	private void SetCraneChainLinkCount(Transform chainRoot, int linkCount, Vector3 craneVisualPosition, float hookZ)
+	{
+		if (chainRoot == null)
+		{
+			return;
+		}
+
+		for (int i = 0; i < linkCount; i++)
+		{
+			Transform link = EnsureCraneChainLink(chainRoot, i);
+			if (link == null)
+			{
+				continue;
+			}
+
+				float t = linkCount == 1
+					? 1f
+					: i / (float)(linkCount - 1);
+			Vector3 linkEuler = avatarCraneChainLocalEuler;
+			linkEuler.z += (i % 2) * 90f;
+			link.gameObject.SetActive(true);
+			link.position = new Vector3(craneVisualPosition.x, craneVisualPosition.y, Mathf.Lerp(craneVisualPosition.z, hookZ, t));
+			link.rotation = Quaternion.Euler(linkEuler);
+			link.localScale = avatarCraneChainLocalScale;
+			SetMeshRenderersSortingOrder(link, 62);
+		}
+
+		for (int i = linkCount; i < chainRoot.childCount; i++)
+		{
+			chainRoot.GetChild(i).gameObject.SetActive(false);
+		}
+	}
+
+	private Transform EnsureCraneChainLink(Transform chainRoot, int index)
+	{
+		string linkName = "ChainLink_" + index.ToString("00");
+		return EnsureCraneAttachmentPart(chainRoot, linkName, GetAvatarCraneChainPrefab(), PrimitiveType.Cylinder, new Color(0.18f, 0.16f, 0.14f));
+	}
+
+	private GameObject GetAvatarCraneChainPrefab()
+	{
+#if UNITY_EDITOR
+		if (avatarCraneChainPrefab == null)
+		{
+			avatarCraneChainPrefab = UnityEditor.AssetDatabase.LoadAssetAtPath<GameObject>(HarborChainPrefabPath);
+		}
+#endif
+		return avatarCraneChainPrefab;
+	}
+
+	private GameObject GetAvatarCraneHookPrefab()
+	{
+#if UNITY_EDITOR
+		if (avatarCraneHookPrefab == null)
+		{
+			avatarCraneHookPrefab = UnityEditor.AssetDatabase.LoadAssetAtPath<GameObject>(HarborChainHookPrefabPath);
+		}
+#endif
+		return avatarCraneHookPrefab;
+	}
+
+	private float GetLocalCraneHookTargetZ(bool isHoldingNode)
+	{
+		if (isHoldingNode)
+		{
+			return GetHeldObjectTopZ();
+		}
+
+		if (TryGetCompositeBlockAtCraneTarget(out CompositeBlockRuntime _) || IsCraneOverAnyNode())
+		{
+			return NodeVisualTopZ;
+		}
+
+		return GroundZ;
+	}
+
+	private float GetRemoteCraneHookTargetZ(ulong clientId)
+	{
+		if (remoteAvatarInventories.TryGetValue(clientId, out RemoteHeldObjectState heldState)
+			&& heldState != null
+			&& heldState.kind != HeldObjectKind.None
+			&& !string.IsNullOrEmpty(heldState.id))
+		{
+			return GetRemoteHeldObjectZ(clientId) + NodeVisualTopZ;
+		}
+
+		return GroundZ;
+	}
+
+	private float GetCraneHookHangDistance()
+	{
+		return Mathf.Max(0.05f, avatarCraneHookHangDistance);
+	}
+
+	private float GetCraneHookVisualDrop()
+	{
+		return Mathf.Max(0f, avatarCraneHookVisualDrop);
+	}
+
+	private Vector3 GetCraneHookVisualPosition(Vector3 chainEndPosition)
+	{
+		float visualZ = Mathf.Clamp(chainEndPosition.z + GetCraneHookVisualDrop(), chainEndPosition.z, GroundZ);
+		return new Vector3(chainEndPosition.x, chainEndPosition.y, visualZ);
+	}
+
+	private bool TryGetRendererBounds(Transform root, out Bounds bounds)
+	{
+		bounds = new Bounds();
+		if (root == null)
+		{
+			return false;
+		}
+
+		Renderer[] renderers = root.GetComponentsInChildren<Renderer>(true);
+		bool hasBounds = false;
+		for (int i = 0; i < renderers.Length; i++)
+		{
+			Renderer renderer = renderers[i];
+			if (renderer == null || !renderer.enabled)
+			{
+				continue;
+			}
+
+			if (!hasBounds)
+			{
+				bounds = renderer.bounds;
+				hasBounds = true;
+			}
+			else
+			{
+				bounds.Encapsulate(renderer.bounds);
+			}
+		}
+
+		return hasBounds;
+	}
+
+	private float GetHookContactZ(float hookTargetZ)
+	{
+		return Mathf.Clamp(hookTargetZ - Mathf.Max(0f, avatarCraneHookClearance), -avatarCraneRestHeight, GroundZ);
+	}
+
+	private float GetHookZForCraneHeight(float craneHeight)
+	{
+		float craneZ = -Mathf.Max(0f, craneHeight);
+		return Mathf.Clamp(craneZ + GetCraneHookHangDistance(), craneZ, GroundZ);
+	}
+
+	private float GetCraneHeightForHookTarget(float hookTargetZ)
+	{
+		float targetHookZ = GetHookContactZ(hookTargetZ);
+		return Mathf.Clamp(GetCraneHookHangDistance() - targetHookZ, GroundZ, avatarCraneRestHeight);
 	}
 
 	private void StartCraneDipAnimation()
 	{
+		StartCraneDipAnimation(GetCraneHeightForHookTarget(NodeVisualTopZ));
+	}
+
+	private void StartCraneDipAnimation(float targetHeight)
+	{
+		avatarCraneDipTargetHeight = Mathf.Clamp(targetHeight, GroundZ, avatarCraneRestHeight);
 		avatarCraneAnimationStartTime = Time.unscaledTime;
 	}
 
@@ -1026,12 +2396,12 @@ public partial class GameManager
 
 		float phase = Mathf.Clamp01(elapsed / avatarCraneAnimationDuration);
 		float lowerAmount = Mathf.Sin(phase * Mathf.PI);
-		avatarCraneCurrentHeight = Mathf.Lerp(avatarCraneRestHeight, avatarCraneLoweredHeight, lowerAmount);
+		avatarCraneCurrentHeight = Mathf.Lerp(avatarCraneRestHeight, avatarCraneDipTargetHeight, lowerAmount);
 	}
 
 	private Vector3 GetCraneVisualPosition()
 	{
-		return avatarPosition + new Vector3(0f, avatarCraneCurrentHeight, -0.05f);
+		return new Vector3(avatarPosition.x, avatarPosition.y, -avatarCraneCurrentHeight);
 	}
 
 	private void UpdateHeldTransitionVisual()
@@ -1079,6 +2449,8 @@ public partial class GameManager
 
 		Vector2 heldCenter = GetHeldCompositeBlockVisualCenter();
 		MoveCompositeBlockInternal(heldCompositeBlockId, heldCenter, false);
+		SetCompositeBlockNodeHeight(heldCompositeBlockId, GetHeldObjectZ());
+		UpdateAllArcVisuals();
 		SetCompositeBlockSorting(heldCompositeBlockId, true);
 	}
 
@@ -1089,10 +2461,7 @@ public partial class GameManager
 
 	private Vector2 GetHeldCompositeBlockVisualCenter()
 	{
-		Vector2 center = GetHeldCompositeBlockGroundCenter();
-		float liftHeight = Mathf.Max(avatarCraneLoweredHeight, avatarCraneCurrentHeight - 0.2f);
-		center.y += liftHeight;
-		return center;
+		return GetHeldCompositeBlockGroundCenter();
 	}
 
 	private void EnsureCraneConnectPreviewVisual()
@@ -1118,18 +2487,36 @@ public partial class GameManager
 
 	private void EnsureCraneHoverNodeVisual()
 	{
-		if (localCraneHoverNodeShadow != null)
+		if (localCraneHoverNodeShadow != null && localCraneHoverNodeOutline != null)
 		{
 			return;
 		}
 
-		localCraneHoverNodeShadow = new GameObject("LocalCraneHoverNodeShadow");
-		localCraneHoverNodeShadow.transform.SetParent(petriNetRoot, false);
-		SpriteRenderer shadowRenderer = localCraneHoverNodeShadow.AddComponent<SpriteRenderer>();
-		shadowRenderer.sprite = GetSquareSprite();
-		shadowRenderer.color = new Color(0.02f, 0.05f, 0.08f, 0.24f);
-		shadowRenderer.sortingOrder = 29;
+		if (localCraneHoverNodeShadow == null)
+		{
+			localCraneHoverNodeShadow = new GameObject("LocalCraneHoverNodeSelection");
+			localCraneHoverNodeShadow.transform.SetParent(petriNetRoot, false);
+		}
+
+		SpriteRenderer oldShadowRenderer = localCraneHoverNodeShadow.GetComponent<SpriteRenderer>();
+		if (oldShadowRenderer != null)
+		{
+			oldShadowRenderer.enabled = false;
+		}
+
+		localCraneHoverNodeOutline = localCraneHoverNodeShadow.GetComponent<LineRenderer>();
+		if (localCraneHoverNodeOutline == null)
+		{
+			localCraneHoverNodeOutline = localCraneHoverNodeShadow.AddComponent<LineRenderer>();
+		}
+
+		ConfigureCraneHoverNodeLine(localCraneHoverNodeOutline, 4, true);
 		localCraneHoverNodeShadow.SetActive(false);
+	}
+
+	private void ConfigureCraneHoverNodeLine(LineRenderer line, int positionCount, bool loop)
+	{
+		ConfigureCraneHoverSelectionLine(line, positionCount, loop);
 	}
 
 	private void EnsureCraneHoverArcVisual()
@@ -1155,16 +2542,13 @@ public partial class GameManager
 
 	private void ConfigureCraneHoverArcLine(LineRenderer line, int positionCount)
 	{
-		line.positionCount = positionCount;
-		line.useWorldSpace = true;
-		line.sortingOrder = 23;
-		line.startWidth = arcWidth * 3.8f;
-		line.endWidth = arcWidth * 3.8f;
-		line.numCapVertices = 6;
-		line.material = GetArcMaterial();
-		Color shadowColor = new Color(0.02f, 0.05f, 0.08f, 0.24f);
-		line.startColor = shadowColor;
-		line.endColor = shadowColor;
+		ConfigureCraneHoverSelectionLine(line, positionCount, false);
+	}
+
+	private void ConfigureCraneHoverSelectionLine(LineRenderer line, int positionCount, bool loop)
+	{
+		Color highlightColor = new Color(0.15f, 0.58f, 0.95f, 0.55f);
+		ConfigureGroundLineRenderer(line, positionCount, arcWidth * 3.8f, 23, highlightColor, 8, 8, loop);
 	}
 
 	private void UpdateCraneHoverSelectionVisual(bool isHoldingNode)
@@ -1208,18 +2592,21 @@ public partial class GameManager
 		}
 
 		EnsureCraneHoverNodeVisual();
-		SpriteRenderer shadowRenderer = localCraneHoverNodeShadow.GetComponent<SpriteRenderer>();
-		if (shadowRenderer != null)
-		{
-			shadowRenderer.sprite = node.type == NodeType.Place ? GetCircleSprite() : GetSquareSprite();
-		}
-
 		localCraneHoverNodeShadow.SetActive(true);
+
 		Vector3 nodePosition = node.transform.position;
-		localCraneHoverNodeShadow.transform.position = new Vector3(nodePosition.x, nodePosition.y, -0.025f);
-		localCraneHoverNodeShadow.transform.localScale = node.type == NodeType.Place
-			? new Vector3(1.46f, 1.46f, 1f)
-			: new Vector3(1.08f, 1.08f, 1f);
+		if (node.type == NodeType.Place)
+		{
+			SetCraneHoverCircleOutline(nodePosition, NodeVisualFootprint * 0.58f);
+		}
+		else
+		{
+			SetCraneHoverRectOutline(new Rect(
+				nodePosition.x - NodeVisualFootprint * 0.58f,
+				nodePosition.y - NodeVisualFootprint * 0.58f,
+				NodeVisualFootprint * 1.16f,
+				NodeVisualFootprint * 1.16f));
+		}
 	}
 
 	private void ShowCraneHoverCompositeBlockVisual(string blockId)
@@ -1231,15 +2618,57 @@ public partial class GameManager
 		}
 
 		EnsureCraneHoverNodeVisual();
-		SpriteRenderer shadowRenderer = localCraneHoverNodeShadow.GetComponent<SpriteRenderer>();
-		if (shadowRenderer != null)
+		localCraneHoverNodeShadow.SetActive(true);
+		SetCraneHoverRectOutline(new Rect(
+			bounds.xMin - 0.08f,
+			bounds.yMin - 0.08f,
+			bounds.width + 0.16f,
+			bounds.height + 0.16f));
+	}
+
+	private void SetCraneHoverCircleOutline(Vector3 center, float radius)
+	{
+		SetCraneHoverCircleOutline(localCraneHoverNodeOutline, center, radius);
+	}
+
+	private void SetCraneHoverCircleOutline(LineRenderer outline, Vector3 center, float radius)
+	{
+		if (outline == null)
 		{
-			shadowRenderer.sprite = GetSquareSprite();
+			return;
 		}
 
-		localCraneHoverNodeShadow.SetActive(true);
-		localCraneHoverNodeShadow.transform.position = new Vector3(bounds.center.x, bounds.center.y, -0.025f);
-		localCraneHoverNodeShadow.transform.localScale = new Vector3(bounds.width + 0.12f, bounds.height + 0.12f, 1f);
+		const int pointCount = 48;
+		ConfigureCraneHoverNodeLine(outline, pointCount, true);
+		float z = ArcZ;
+		for (int i = 0; i < pointCount; i++)
+		{
+			float angle = (i / (float)pointCount) * Mathf.PI * 2f;
+			outline.SetPosition(i, new Vector3(
+				center.x + Mathf.Cos(angle) * radius,
+				center.y + Mathf.Sin(angle) * radius,
+				z));
+		}
+	}
+
+	private void SetCraneHoverRectOutline(Rect bounds)
+	{
+		SetCraneHoverRectOutline(localCraneHoverNodeOutline, bounds);
+	}
+
+	private void SetCraneHoverRectOutline(LineRenderer outline, Rect bounds)
+	{
+		if (outline == null)
+		{
+			return;
+		}
+
+		ConfigureCraneHoverNodeLine(outline, 4, true);
+		float z = ArcZ;
+		outline.SetPosition(0, new Vector3(bounds.xMin, bounds.yMax, z));
+		outline.SetPosition(1, new Vector3(bounds.xMax, bounds.yMax, z));
+		outline.SetPosition(2, new Vector3(bounds.xMax, bounds.yMin, z));
+		outline.SetPosition(3, new Vector3(bounds.xMin, bounds.yMin, z));
 	}
 
 	private void ShowCraneHoverArcVisual(ArcRuntime arc)
@@ -1266,15 +2695,22 @@ public partial class GameManager
 		}
 		else
 		{
-			localCraneHoverArcBody.SetPosition(0, start + new Vector3(0f, 0f, 0.1f));
-			localCraneHoverArcBody.SetPosition(1, end + new Vector3(0f, 0f, 0.1f));
-			localCraneHoverArcArrow.SetPosition(0, end + new Vector3(0f, 0f, 0.1f));
-			localCraneHoverArcArrow.SetPosition(1, end + new Vector3(0f, 0f, 0.1f));
-			localCraneHoverArcArrow.SetPosition(2, end + new Vector3(0f, 0f, 0.1f));
+			Vector3 zOffset = new Vector3(0f, 0f, ArcZ);
+			localCraneHoverArcBody.SetPosition(0, start + zOffset);
+			localCraneHoverArcBody.SetPosition(1, end + zOffset);
+			localCraneHoverArcArrow.SetPosition(0, end + zOffset);
+			localCraneHoverArcArrow.SetPosition(1, end + zOffset);
+			localCraneHoverArcArrow.SetPosition(2, end + zOffset);
 		}
 	}
 
 	private bool TryGetArcHoverSegment(ArcRuntime arc, out Vector3 segmentStart, out Vector3 segmentEnd, out bool showArrowHead)
+	{
+		Vector2 craneTarget = new Vector2(avatarPosition.x, avatarPosition.y);
+		return TryGetArcHoverSegment(arc, craneTarget, out segmentStart, out segmentEnd, out showArrowHead);
+	}
+
+	private bool TryGetArcHoverSegment(ArcRuntime arc, Vector2 craneTarget, out Vector3 segmentStart, out Vector3 segmentEnd, out bool showArrowHead)
 	{
 		segmentStart = Vector3.zero;
 		segmentEnd = Vector3.zero;
@@ -1285,7 +2721,6 @@ public partial class GameManager
 		}
 
 		Vector3 middle = (start + end) * 0.5f;
-		Vector2 craneTarget = new Vector2(avatarPosition.x, avatarPosition.y);
 		float distanceToStart = Vector2.Distance(craneTarget, new Vector2(start.x, start.y));
 		float distanceToEnd = Vector2.Distance(craneTarget, new Vector2(end.x, end.y));
 		if (distanceToStart <= distanceToEnd)
@@ -1332,6 +2767,7 @@ public partial class GameManager
 		{
 			Destroy(localCraneHoverNodeShadow);
 			localCraneHoverNodeShadow = null;
+			localCraneHoverNodeOutline = null;
 		}
 
 		if (localCraneHoverArcHighlight != null)
@@ -1341,20 +2777,14 @@ public partial class GameManager
 			localCraneHoverArcBody = null;
 			localCraneHoverArcArrow = null;
 		}
+
+		DestroyRemoteCraneHoverVisuals();
 	}
 
 	private void ConfigureCraneConnectPreviewLine(LineRenderer line, int sortingOrder, int positionCount)
 	{
-		line.positionCount = positionCount;
-		line.useWorldSpace = true;
-		line.sortingOrder = sortingOrder;
-		line.startWidth = arcWidth;
-		line.endWidth = arcWidth;
-		line.numCapVertices = 4;
-		line.material = GetArcMaterial();
 		Color previewColor = new Color(0.04f, 0.36f, 0.68f, 0.88f);
-		line.startColor = previewColor;
-		line.endColor = previewColor;
+		ConfigureGroundLineRenderer(line, positionCount, arcWidth, sortingOrder, previewColor);
 	}
 
 	private void UpdateCraneConnectPreviewVisual()
@@ -1418,8 +2848,44 @@ public partial class GameManager
 
 	private Vector3 GetHeldNodeVisualPosition()
 	{
-		float liftHeight = Mathf.Max(avatarCraneLoweredHeight, avatarCraneCurrentHeight - 0.2f);
-		return avatarPosition + new Vector3(0f, liftHeight, -0.04f);
+		return new Vector3(avatarPosition.x, avatarPosition.y, GetHeldObjectZ());
+	}
+
+	private float GetHeldObjectZ()
+	{
+		return GetHeldObjectZForCraneHeight(avatarCraneCurrentHeight);
+	}
+
+	private float GetHeldObjectTopZ()
+	{
+		return GetHeldObjectZ() + NodeVisualTopZ;
+	}
+
+	private float GetHeldObjectZForCraneHeight(float craneHeight)
+	{
+		float hookVisualZ = GetCraneHookVisualPosition(new Vector3(0f, 0f, GetHookZForCraneHeight(craneHeight))).z;
+		float objectRootZ = hookVisualZ + HeldObjectUnderHookGap - NodeVisualTopZ;
+		return Mathf.Min(GroundZ, objectRootZ);
+	}
+
+	private void SetCompositeBlockNodeHeight(string blockId, float z)
+	{
+		string[] nodeIds = GetCompositeBlockNodeIds(blockId);
+		if (nodeIds == null)
+		{
+			return;
+		}
+
+		for (int i = 0; i < nodeIds.Length; i++)
+		{
+			if (!nodesById.TryGetValue(nodeIds[i], out NodeRuntime node) || node.transform == null)
+			{
+				continue;
+			}
+
+			Vector3 position = node.transform.position;
+			node.transform.position = new Vector3(position.x, position.y, z);
+		}
 	}
 
 	private void SetPlaceSorting(NodeRuntime node, bool lifted)
@@ -1432,6 +2898,17 @@ public partial class GameManager
 		if (node.renderer != null)
 		{
 			node.renderer.sortingOrder = lifted ? 58 : 30;
+		}
+
+		if (node.visual3DRenderer != null)
+		{
+			node.visual3DRenderer.sortingOrder = lifted ? 58 : 31;
+		}
+
+		Transform cuttingVisual = node.transform.Find(CuttingActivityVisualName);
+		if (cuttingVisual != null)
+		{
+			SetMeshRenderersSortingOrder(cuttingVisual, lifted ? 58 : 31);
 		}
 
 		if (node.label != null)
@@ -1466,6 +2943,11 @@ public partial class GameManager
 		if (node.renderer != null)
 		{
 			node.renderer.sortingOrder = lifted ? 58 : 30;
+		}
+
+		if (node.visual3DRenderer != null)
+		{
+			node.visual3DRenderer.sortingOrder = lifted ? 58 : 31;
 		}
 
 		if (node.label != null)
@@ -1522,6 +3004,11 @@ public partial class GameManager
 				{
 					arc.arrow.sortingOrder = lifted ? 55 : 25;
 				}
+
+				if (arc.inhibitorCircle != null)
+				{
+					arc.inhibitorCircle.sortingOrder = lifted ? 55 : 25;
+				}
 			}
 		}
 
@@ -1546,6 +3033,11 @@ public partial class GameManager
 			if (arc.arrow != null)
 			{
 				arc.arrow.sortingOrder = lifted ? 55 : 25;
+			}
+
+			if (arc.inhibitorCircle != null)
+			{
+				arc.inhibitorCircle.sortingOrder = lifted ? 55 : 25;
 			}
 		}
 
@@ -1589,7 +3081,7 @@ public partial class GameManager
 			Vector2 slot = GetSharedPoolBlockSlotPositionByIndex(i);
 			GameObject slotObject = new GameObject("BlockSlot_" + (i + 1));
 			slotObject.transform.SetParent(sharedPoolVisualRoot, false);
-			slotObject.transform.position = new Vector3(slot.x, slot.y, 0.2f);
+			slotObject.transform.position = new Vector3(slot.x, slot.y, OverlayZ);
 			slotObject.transform.localScale = new Vector3(GetCompositeBlockTemplateWidth(), GetCompositeBlockTemplateHeight(), 1f);
 
 			SpriteRenderer slotRenderer = slotObject.AddComponent<SpriteRenderer>();
@@ -1603,7 +3095,7 @@ public partial class GameManager
 			Vector2 slot = GetSharedPoolTrashTransitionPosition();
 			GameObject slotObject = new GameObject("TrashSlot");
 			slotObject.transform.SetParent(sharedPoolVisualRoot, false);
-			slotObject.transform.position = new Vector3(slot.x, slot.y, 0.2f);
+			slotObject.transform.position = new Vector3(slot.x, slot.y, OverlayZ);
 			slotObject.transform.localScale = new Vector3(GetSharedPoolTrashSlotWidth(), 1.1f, 1f);
 
 			SpriteRenderer slotRenderer = slotObject.AddComponent<SpriteRenderer>();
@@ -1631,23 +3123,16 @@ public partial class GameManager
 		GameObject lineObject = new GameObject(name);
 		lineObject.transform.SetParent(sharedPoolVisualRoot, false);
 		LineRenderer line = lineObject.AddComponent<LineRenderer>();
-		line.positionCount = 2;
-		line.useWorldSpace = true;
-		line.sortingOrder = 13;
-		line.startWidth = 0.08f;
-		line.endWidth = 0.08f;
-		line.material = GetArcMaterial();
-		line.startColor = new Color(0.08f, 0.12f, 0.16f, 0.78f);
-		line.endColor = line.startColor;
-		line.SetPosition(0, new Vector3(fromX, sharedPoolY, 0.08f));
-		line.SetPosition(1, new Vector3(toX, sharedPoolY, 0.08f));
+		ConfigureGroundLineRenderer(line, 2, 0.08f, 13, new Color(0.08f, 0.12f, 0.16f, 0.78f));
+		line.SetPosition(0, new Vector3(fromX, sharedPoolY, ArcZ));
+		line.SetPosition(1, new Vector3(toX, sharedPoolY, ArcZ));
 	}
 
 	private void CreatePoolZoneVisual(string name, float centerY, float width, Color fillColor)
 	{
 		GameObject backgroundObject = new GameObject(name + "Background");
 		backgroundObject.transform.SetParent(sharedPoolVisualRoot, false);
-		backgroundObject.transform.position = new Vector3(0f, centerY, 0.25f);
+		backgroundObject.transform.position = new Vector3(0f, centerY, OverlayZ);
 		backgroundObject.transform.localScale = new Vector3(width, sharedPoolHalfHeight * 2f, 1f);
 
 		SpriteRenderer backgroundRenderer = backgroundObject.AddComponent<SpriteRenderer>();
@@ -1658,22 +3143,14 @@ public partial class GameManager
 		GameObject borderObject = new GameObject(name + "Border");
 		borderObject.transform.SetParent(sharedPoolVisualRoot, false);
 		LineRenderer border = borderObject.AddComponent<LineRenderer>();
-		border.positionCount = 5;
-		border.loop = false;
-		border.useWorldSpace = true;
-		border.sortingOrder = 12;
-		border.startWidth = 0.08f;
-		border.endWidth = 0.08f;
-		border.material = GetArcMaterial();
-		border.startColor = new Color(0.07f, 0.34f, 0.56f, 0.95f);
-		border.endColor = border.startColor;
+		ConfigureGroundLineRenderer(border, 5, 0.08f, 12, new Color(0.07f, 0.34f, 0.56f, 0.95f), 6, 8);
 
 		float halfWidth = width * 0.5f;
 		float halfHeight = sharedPoolHalfHeight;
-		Vector3 topLeft = new Vector3(-halfWidth, centerY + halfHeight, 0.15f);
-		Vector3 topRight = new Vector3(halfWidth, centerY + halfHeight, 0.15f);
-		Vector3 bottomRight = new Vector3(halfWidth, centerY - halfHeight, 0.15f);
-		Vector3 bottomLeft = new Vector3(-halfWidth, centerY - halfHeight, 0.15f);
+		Vector3 topLeft = new Vector3(-halfWidth, centerY + halfHeight, ArcZ);
+		Vector3 topRight = new Vector3(halfWidth, centerY + halfHeight, ArcZ);
+		Vector3 bottomRight = new Vector3(halfWidth, centerY - halfHeight, ArcZ);
+		Vector3 bottomLeft = new Vector3(-halfWidth, centerY - halfHeight, ArcZ);
 		border.SetPosition(0, topLeft);
 		border.SetPosition(1, topRight);
 		border.SetPosition(2, bottomRight);
@@ -1693,20 +3170,12 @@ public partial class GameManager
 		GameObject boxObject = new GameObject((topSide ? "Top" : "Bottom") + "IngredientBox");
 		boxObject.transform.SetParent(sharedPoolVisualRoot, false);
 		LineRenderer border = boxObject.AddComponent<LineRenderer>();
-		border.positionCount = 5;
-		border.loop = false;
-		border.useWorldSpace = true;
-		border.sortingOrder = 12;
-		border.startWidth = 0.07f;
-		border.endWidth = 0.07f;
-		border.material = GetArcMaterial();
-		border.startColor = new Color(0.24f, 0.18f, 0.08f, 0.9f);
-		border.endColor = border.startColor;
+		ConfigureGroundLineRenderer(border, 5, 0.07f, 12, new Color(0.24f, 0.18f, 0.08f, 0.9f), 6, 8);
 
-		Vector3 topLeft = new Vector3(bounds.xMin, bounds.yMax, 0.12f);
-		Vector3 topRight = new Vector3(bounds.xMax, bounds.yMax, 0.12f);
-		Vector3 bottomRight = new Vector3(bounds.xMax, bounds.yMin, 0.12f);
-		Vector3 bottomLeft = new Vector3(bounds.xMin, bounds.yMin, 0.12f);
+		Vector3 topLeft = new Vector3(bounds.xMin, bounds.yMax, ArcZ);
+		Vector3 topRight = new Vector3(bounds.xMax, bounds.yMax, ArcZ);
+		Vector3 bottomRight = new Vector3(bounds.xMax, bounds.yMin, ArcZ);
+		Vector3 bottomLeft = new Vector3(bounds.xMin, bounds.yMin, ArcZ);
 		border.SetPosition(0, topLeft);
 		border.SetPosition(1, topRight);
 		border.SetPosition(2, bottomRight);
@@ -1716,7 +3185,7 @@ public partial class GameManager
 		GameObject labelObject = new GameObject("ZutatenLabel");
 		labelObject.transform.SetParent(sharedPoolVisualRoot, false);
 		float labelY = topSide ? bounds.yMin - 0.12f : bounds.yMax + 0.12f;
-		labelObject.transform.position = new Vector3(bounds.xMin, labelY, 0.1f);
+		labelObject.transform.position = new Vector3(bounds.xMin, labelY, ArcZ);
 		TextMesh label = labelObject.AddComponent<TextMesh>();
 		label.text = "Zutaten";
 		label.characterSize = 0.046f;
@@ -2467,15 +3936,7 @@ public partial class GameManager
 		fill.sortingOrder = 11;
 
 		LineRenderer border = blockObject.AddComponent<LineRenderer>();
-		border.positionCount = 5;
-		border.loop = false;
-		border.useWorldSpace = true;
-		border.sortingOrder = 14;
-		border.startWidth = 0.075f;
-		border.endWidth = 0.075f;
-		border.material = GetArcMaterial();
-		border.startColor = new Color(0.18f, 0.18f, 0.2f, 0.9f);
-		border.endColor = border.startColor;
+		ConfigureGroundLineRenderer(border, 5, 0.075f, 14, new Color(0.18f, 0.18f, 0.2f, 0.9f), 6, 8);
 
 		BoxCollider2D collider = blockObject.AddComponent<BoxCollider2D>();
 		collider.isTrigger = true;
@@ -2525,17 +3986,17 @@ public partial class GameManager
 			return;
 		}
 
-		Vector3 center = new Vector3(bounds.center.x, bounds.center.y, 0.05f);
+		Vector3 center = new Vector3(bounds.center.x, bounds.center.y, OverlayZ);
 		block.gameObject.transform.position = center;
 		block.collider.offset = Vector2.zero;
 		block.collider.size = new Vector2(bounds.width, bounds.height);
-		block.fill.transform.position = new Vector3(bounds.center.x, bounds.center.y, 0.1f);
+		block.fill.transform.position = new Vector3(bounds.center.x, bounds.center.y, OverlayZ);
 		block.fill.transform.localScale = new Vector3(bounds.width, bounds.height, 1f);
 
-		Vector3 topLeft = new Vector3(bounds.xMin, bounds.yMax, 0.13f);
-		Vector3 topRight = new Vector3(bounds.xMax, bounds.yMax, 0.13f);
-		Vector3 bottomRight = new Vector3(bounds.xMax, bounds.yMin, 0.13f);
-		Vector3 bottomLeft = new Vector3(bounds.xMin, bounds.yMin, 0.13f);
+		Vector3 topLeft = new Vector3(bounds.xMin, bounds.yMax, ArcZ);
+		Vector3 topRight = new Vector3(bounds.xMax, bounds.yMax, ArcZ);
+		Vector3 bottomRight = new Vector3(bounds.xMax, bounds.yMin, ArcZ);
+		Vector3 bottomLeft = new Vector3(bounds.xMin, bounds.yMin, ArcZ);
 		block.border.SetPosition(0, topLeft);
 		block.border.SetPosition(1, topRight);
 		block.border.SetPosition(2, bottomRight);
@@ -2627,6 +4088,8 @@ public partial class GameManager
 
 		if (delta.sqrMagnitude <= 0.000001f)
 		{
+			EnsureCompositeBlockVisuals();
+			UpdateAllArcVisuals();
 			return true;
 		}
 
@@ -2695,6 +4158,7 @@ public partial class GameManager
 			return false;
 		}
 
+		SetCompositeBlockNodeHeight(blockId, GroundZ);
 		SetCompositeBlockSharedPoolState(blockId, UnassignedOwnerClientId, true, true);
 		RefreshPetriNetVisuals();
 		return true;
@@ -2882,7 +4346,7 @@ public partial class GameManager
 		foreach (KeyValuePair<string, ArcRuntime> pair in arcsById)
 		{
 			ArcRuntime arc = pair.Value;
-			if (arc == null || IsCompositeBlockInternalArc(arc))
+			if (arc == null || arc.kind == ArcKind.Inhibitor || IsCompositeBlockInternalArc(arc))
 			{
 				continue;
 			}
@@ -3012,12 +4476,12 @@ public partial class GameManager
 
 		if (!string.IsNullOrEmpty(heldPlaceId))
 		{
-			return 1.05f * 0.5f;
+			return NodeVisualFootprint * 0.5f;
 		}
 
 		if (!string.IsNullOrEmpty(heldTransitionId))
 		{
-			return 0.9f * 0.5f;
+			return NodeVisualFootprint * 0.5f;
 		}
 
 		float shadowScale = Mathf.Lerp(0.92f, 0.62f, Mathf.InverseLerp(avatarCraneLoweredHeight, avatarCraneRestHeight, avatarCraneCurrentHeight));
@@ -3033,12 +4497,12 @@ public partial class GameManager
 
 		if (!string.IsNullOrEmpty(heldPlaceId))
 		{
-			return 0.58f * 0.5f;
+			return NodeVisualFootprint * 0.5f;
 		}
 
 		if (!string.IsNullOrEmpty(heldTransitionId))
 		{
-			return 0.9f * 0.5f;
+			return NodeVisualFootprint * 0.5f;
 		}
 
 		float shadowScale = Mathf.Lerp(0.92f, 0.62f, Mathf.InverseLerp(avatarCraneLoweredHeight, avatarCraneRestHeight, avatarCraneCurrentHeight));
@@ -3864,12 +5328,14 @@ public partial class GameManager
 			GameObject tokenObject = new GameObject("Token_" + (i + 1) + "_" + SanitizeTokenObjectName(tokenDescription));
 			tokenObject.transform.SetParent(placeNode.tokenRoot, false);
 			tokenObject.transform.localPosition = GetTokenLocalPosition(i, displayCount);
-			tokenObject.transform.localScale = new Vector3(0.2f, 0.2f, 1f);
-
-			SpriteRenderer tokenRenderer = tokenObject.AddComponent<SpriteRenderer>();
-			tokenRenderer.sprite = GetCircleSprite();
-			tokenRenderer.color = tokenColor;
-			tokenRenderer.sortingOrder = 40;
+			CreatePrimitiveVisual3D(
+				tokenObject.transform,
+				"TokenSphere3D",
+				PrimitiveType.Sphere,
+				tokenColor,
+				Vector3.zero,
+				new Vector3(0.18f, 0.18f, 0.12f),
+				Quaternion.identity);
 		}
 	}
 
@@ -3882,7 +5348,7 @@ public partial class GameManager
 
 		GameObject root = new GameObject("ProcessingBar");
 		root.transform.SetParent(placeNode.transform, false);
-		root.transform.localPosition = new Vector3(0f, -0.72f, -0.04f);
+		root.transform.localPosition = new Vector3(0f, -0.72f, TokenLayerZ);
 
 		GameObject backgroundObject = new GameObject("Background");
 		backgroundObject.transform.SetParent(root.transform, false);
@@ -3921,7 +5387,7 @@ public partial class GameManager
 			}
 			else if (node.renderer != null)
 			{
-				node.renderer.color = IsTransitionEnabled(node.id) ? transitionEnabledColor : transitionDisabledColor;
+				SetNodeVisualColor(node, IsTransitionEnabled(node.id) ? transitionEnabledColor : transitionDisabledColor);
 			}
 		}
 	}
@@ -3941,6 +5407,7 @@ public partial class GameManager
 
 		float remaining = GetTimedPlaceProcessingRemaining(placeNode);
 		bool active = placeNode.tokens > 0 && remaining > 0.001f;
+		UpdateTimedPlaceActivityVisual(placeNode, active);
 		placeNode.processingBarRoot.SetActive(active);
 		if (!active)
 		{
@@ -4035,14 +5502,25 @@ public partial class GameManager
 		Vector3 start = from + dir * fromOffset;
 		Vector3 end = to - dir * toOffset;
 
-		SetLineWithArrow(arc.body, arc.arrow, start, end, dir);
+		if (arc.kind == ArcKind.Inhibitor)
+		{
+			SetLineWithInhibitorCircle(arc.body, arc.arrow, arc.inhibitorCircle, start, end, dir);
+		}
+		else
+		{
+			SetLineWithArrow(arc.body, arc.arrow, start, end, dir);
+			if (arc.inhibitorCircle != null)
+			{
+				arc.inhibitorCircle.gameObject.SetActive(false);
+			}
+		}
 
 		arc.collider.points = new[] { new Vector2(start.x, start.y), new Vector2(end.x, end.y) };
 	}
 
 	private void SetLineWithArrow(LineRenderer body, LineRenderer arrow, Vector3 start, Vector3 end, Vector3 dir)
 	{
-		Vector3 zOffset = new Vector3(0f, 0f, 0.1f);
+		Vector3 zOffset = new Vector3(0f, 0f, ArcZ);
 		if (body != null)
 		{
 			body.SetPosition(0, start + zOffset);
@@ -4054,11 +5532,43 @@ public partial class GameManager
 			return;
 		}
 
+		arrow.gameObject.SetActive(true);
 		Vector3 leftDir = Quaternion.Euler(0f, 0f, 180f - arrowHeadAngle) * dir;
 		Vector3 rightDir = Quaternion.Euler(0f, 0f, 180f + arrowHeadAngle) * dir;
 		arrow.SetPosition(0, end + leftDir * arrowHeadLength + zOffset);
 		arrow.SetPosition(1, end + zOffset);
 		arrow.SetPosition(2, end + rightDir * arrowHeadLength + zOffset);
+	}
+
+	private void SetLineWithInhibitorCircle(LineRenderer body, LineRenderer arrow, LineRenderer inhibitorCircle, Vector3 start, Vector3 end, Vector3 dir)
+	{
+		const float circleRadius = 0.16f;
+		Vector3 zOffset = new Vector3(0f, 0f, ArcZ);
+		Vector3 lineEnd = end - dir * circleRadius;
+		if (body != null)
+		{
+			body.SetPosition(0, start + zOffset);
+			body.SetPosition(1, lineEnd + zOffset);
+		}
+
+		if (arrow != null)
+		{
+			arrow.gameObject.SetActive(false);
+		}
+
+		if (inhibitorCircle == null)
+		{
+			return;
+		}
+
+		inhibitorCircle.gameObject.SetActive(true);
+		Vector3 tangent = new Vector3(-dir.y, dir.x, 0f).normalized;
+		for (int i = 0; i < inhibitorCircle.positionCount; i++)
+		{
+			float angle = (Mathf.PI * 2f * i) / inhibitorCircle.positionCount;
+			Vector3 offset = Mathf.Cos(angle) * tangent * circleRadius + Mathf.Sin(angle) * dir * circleRadius;
+			inhibitorCircle.SetPosition(i, end + offset + zOffset);
+		}
 	}
 
 	private float GetNodeOffsetAlongDirection(NodeRuntime node, Vector3 direction)
@@ -4086,7 +5596,7 @@ public partial class GameManager
 	{
 		GameObject labelObject = new GameObject("Label");
 		labelObject.transform.SetParent(nodeTransform, false);
-		labelObject.transform.localPosition = localOffset;
+		labelObject.transform.localPosition = new Vector3(localOffset.x, localOffset.y, localOffset.z + NodeLabelLayerZ);
 
 		TextMesh label = labelObject.AddComponent<TextMesh>();
 		label.text = "";

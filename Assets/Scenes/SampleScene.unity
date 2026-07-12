@@ -413,10 +413,12 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 9e799c24c9fff4200ad0c64b3593fe9f, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::GameManager
+  ShowTopMostFoldoutHeaderGroup: 1
   createDefaultCameraIfMissing: 1
   createDefaultLightIfMissing: 1
   buildPetriNetOnStart: 1
   petriNetRootName: GeneratedPetriNet
+  showLevelSelection: 1
   placeMaterial: {fileID: 0}
   transitionMaterial: {fileID: 0}
   arcMaterial: {fileID: 0}
@@ -427,12 +429,74 @@ MonoBehaviour:
   arcWidth: 0.08
   arrowHeadLength: 0.28
   arrowHeadAngle: 28
-  showEditorOverlay: 1
+  cuttingTransitionPrefab: {fileID: 0}
+  cuttingToolAnimatorController: {fileID: 0}
+  cuttingToolColorMap: {fileID: 0}
+  cuttingTransitionPrefabLocalPosition: {x: 0, y: 0, z: -0.2}
+  cuttingTransitionPrefabLocalEuler: {x: 18, y: -35, z: 25}
+  cuttingTransitionPrefabLocalScale: {x: 0.55, y: 0.55, z: 0.55}
+  avatarDronePrefab: {fileID: 0}
+  avatarDroneAnimatorController: {fileID: 0}
+  avatarDroneAnimationClips: []
+  avatarDroneUseImportedAnimationClips: 0
+  avatarDroneAnimationClipNameContains: helicopter
+  avatarDroneAnimationClipNameExcludes: rotor
+  avatarDroneLocalPosition: {x: 0, y: 0, z: 0}
+  avatarDroneLocalEuler: {x: -90, y: 45, z: 0}
+  avatarDroneLocalScale: {x: 0.675, y: 0.675, z: 0.675}
+  avatarDroneRotorDegreesPerSecond: 720
+  avatarDroneRotorLocalAxis: {x: 0, y: 0, z: 0}
+  avatarCraneChainPrefab: {fileID: 0}
+  avatarCraneHookPrefab: {fileID: 0}
+  avatarCraneChainLocalEuler: {x: -90, y: 0, z: 0}
+  avatarCraneHookLocalEuler: {x: -90, y: 0, z: 0}
+  avatarCraneChainLocalScale: {x: 0.18, y: 1, z: 0.18}
+  avatarCraneHookLocalScale: {x: 3, y: 3, z: 3}
+  avatarCraneChainLinkSpacing: 0.13
+  avatarCraneChainMaxLinks: 24
+  avatarCraneChainLengthMultiplier: 1
+  avatarCraneHookHangDistance: 0.55
+  avatarCraneHookVisualDrop: 0.16
+  avatarCraneHookClearance: 0.03
   zoomSpeed: 0.5
   minZoom: 1.8
   maxZoom: 12
-  panSpeed: 6
+  enforceMinimumWindowResolution: 1
+  minimumWindowWidth: 1600
+  minimumWindowHeight: 900
   enableNetworkAuthoritativeSync: 1
+  enableSharedTransitionPool: 1
+  sharedPoolY: 0
+  sharedPoolHalfHeight: 1
+  sharedPoolDragThreshold: 0.22
+  playerZoneXOffset: 6.5
+  playerZoneYSpacing: 2.7
+  sharedPoolBlocks:
+  - firstTransitionName: Kochen Start
+    secondTransitionName: Kochen Ende
+    processingSeconds: 5
+    resultState: gekocht
+  - firstTransitionName: Schneiden Start
+    secondTransitionName: Schneiden Ende
+    processingSeconds: 10
+    resultState: geschnitten
+  topPlayerBlocks: []
+  bottomPlayerBlocks: []
+  sharedPoolTrashTransitionName: "M\xFCll"
+  sharedPoolItemGap: 0.65
+  topIngredientNames:
+  - "K\xE4se"
+  - Tomate
+  bottomIngredientNames:
+  - Traube
+  - Ananas
+  - Wirsing
+  - Paprika
+  - Zwiebel
+  - Salat
+  - Aubergine
+  - Pilz
+  ingredientTransitionSpacing: 1.65
 --- !u!4 &414809358
 Transform:
   m_ObjectHideFlags: 0

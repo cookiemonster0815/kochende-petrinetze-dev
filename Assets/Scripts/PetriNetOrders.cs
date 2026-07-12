@@ -161,8 +161,9 @@ public partial class GameManager
 		float cardHeight = 0.78f * zoomScale;
 		float availableWidth = screenWidth - margin * 2f - gap * Mathf.Max(0, activeCount - 1);
 		float cardWidth = Mathf.Clamp(availableWidth / Mathf.Max(1, activeCount), 1.65f * zoomScale, 2.9f * zoomScale);
-		float leftX = mainCamera.transform.position.x - screenWidth * 0.5f + margin + cardWidth * 0.5f;
-		float topY = mainCamera.transform.position.y + mainCamera.orthographicSize - 0.5f * zoomScale;
+		Vector2 cameraGroundCenter = GetCameraGroundCenter();
+		float leftX = cameraGroundCenter.x - screenWidth * 0.5f + margin + cardWidth * 0.5f;
+		float topY = cameraGroundCenter.y + mainCamera.orthographicSize - 0.5f * zoomScale;
 		bool highlighted = highlightedLevelOrderUntil.ContainsKey(orderIndex);
 
 		GameObject card = levelOrderCardObjects[index];

@@ -66,6 +66,7 @@ public partial class GameManager
 		mainCamera.transform.rotation = Quaternion.identity;
 		mainCamera.orthographic = true;
 		mainCamera.orthographicSize = 4.8f;
+		mainCamera.allowMSAA = true;
 		mainCamera.clearFlags = CameraClearFlags.SolidColor;
 		mainCamera.backgroundColor = Color.white;
 	}
@@ -85,6 +86,7 @@ public partial class GameManager
 		lastAvatarPosition = avatarPosition;
 		lastAvatarNetworkSyncRotation = avatarRotation;
 		lastAvatarNetworkSyncHeldId = "";
+		lastAvatarNetworkSyncCraneHeight = avatarCraneCurrentHeight;
 		levelSelectionAvatarStateSent = false;
 	}
 
@@ -131,7 +133,7 @@ public partial class GameManager
 			"ConfirmLevelButton",
 			GetLevelSelectionConfirmButtonPosition(levels.Count),
 			new Vector2(2.1f, 0.66f),
-			IsHostOrOffline() ? "Bestätigen" : "Warte auf Host",
+			"Bestätigen",
 			new Color(0.78f, 0.92f, 1f),
 			30,
 			LevelSelectionConfirmTextSize);
@@ -301,7 +303,7 @@ public partial class GameManager
 			if (confirmRenderer != null)
 			{
 				bool confirmHovered = IsLevelConfirmButtonAtPoint(new Vector2(avatarPosition.x, avatarPosition.y));
-				confirmRenderer.color = confirmHovered && IsHostOrOffline()
+				confirmRenderer.color = confirmHovered
 					? new Color(0.56f, 0.84f, 1f)
 					: new Color(0.78f, 0.92f, 1f);
 			}
@@ -309,7 +311,7 @@ public partial class GameManager
 			TextMesh confirmText = levelConfirmButtonCollider.transform.Find("Label")?.GetComponent<TextMesh>();
 			if (confirmText != null)
 			{
-				confirmText.text = IsHostOrOffline() ? "Bestätigen" : "Warte auf Host";
+				confirmText.text = "Bestätigen";
 				Vector3 confirmScale = levelConfirmButtonCollider.transform.localScale;
 				FitLevelSelectionButtonText(confirmText, new Vector2(Mathf.Abs(confirmScale.x), Mathf.Abs(confirmScale.y)));
 			}
@@ -328,7 +330,9 @@ public partial class GameManager
 			return "";
 		}
 
-		string text = GetFallbackText(level.displayName, "Level") + "\n\nGeteilte Blöcke:\n" + GetLevelBlockOverviewText(level.blocks, PetriNetLevelBlockOwner.geteilt);
+		string text = GetFallbackText(level.displayName, "Level");
+		text += "\n\nInhibitor-Arcs:\n" + GetLevelInhibitorOverviewText(level.inhibitorArcs);
+		text += "\nGeteilte Blöcke:\n" + GetLevelBlockOverviewText(level.blocks, PetriNetLevelBlockOwner.geteilt);
 		text += "\n\nSpieler1-Blöcke:\n" + GetLevelBlockOverviewText(level.blocks, PetriNetLevelBlockOwner.spieler1);
 		text += "\n\nSpieler2-Blöcke:\n" + GetLevelBlockOverviewText(level.blocks, PetriNetLevelBlockOwner.spieler2);
 
@@ -391,17 +395,17 @@ public partial class GameManager
 		return new Vector3(Mathf.Clamp(desired.x, -4.45f, 4.45f), Mathf.Clamp(desired.y, -3.25f, 3.25f), 0f);
 	}
 
-	private void ActivateLevelSelectionAtPoint(Vector2 worldPoint, bool canConfirm)
+	private void ActivateLevelSelectionAtPoint(Vector2 worldPoint, bool broadcastSelection)
 	{
 		if (TryGetLevelButtonAtPoint(worldPoint, out int levelIndex))
 		{
-			SelectLevelIndex(levelIndex, canConfirm);
+			SelectLevelIndex(levelIndex, broadcastSelection);
 			return;
 		}
 
-		if (canConfirm && IsLevelConfirmButtonAtPoint(worldPoint))
+		if (IsLevelConfirmButtonAtPoint(worldPoint))
 		{
-			ConfirmLevelSelection();
+			RequestConfirmLevelSelection();
 		}
 	}
 
@@ -457,12 +461,12 @@ public partial class GameManager
 
 	private void SendLevelSelectionAvatarUpdateIfNeeded()
 	{
-		string currentHeldTransitionId = heldTransitionId ?? "";
+		string currentHeldNetworkKey = GetCurrentHeldNetworkKey();
 		float movedDistance = Vector3.Distance(lastAvatarPosition, avatarPosition);
-		bool heldTransitionChanged = lastAvatarNetworkSyncHeldId != currentHeldTransitionId;
+		bool heldObjectChanged = lastAvatarNetworkSyncHeldId != currentHeldNetworkKey;
 		bool rotationChanged = Mathf.Abs(Mathf.DeltaAngle(lastAvatarNetworkSyncRotation, avatarRotation)) > 2f;
 		bool shouldSendAvatarUpdate = !levelSelectionAvatarStateSent
-			|| heldTransitionChanged
+			|| heldObjectChanged
 			|| movedDistance > 0.65f
 			|| ((movedDistance > 0.05f || rotationChanged) && Time.unscaledTime >= nextAvatarNetworkSyncTime);
 		if (!shouldSendAvatarUpdate)
@@ -473,9 +477,10 @@ public partial class GameManager
 		nextAvatarNetworkSyncTime = Time.unscaledTime + avatarNetworkSyncInterval;
 		lastAvatarPosition = avatarPosition;
 		lastAvatarNetworkSyncRotation = avatarRotation;
-		lastAvatarNetworkSyncHeldId = currentHeldTransitionId;
+		lastAvatarNetworkSyncHeldId = currentHeldNetworkKey;
+		lastAvatarNetworkSyncCraneHeight = avatarCraneCurrentHeight;
 		levelSelectionAvatarStateSent = true;
-		SendAvatarUpdate(avatarPosition, avatarRotation, heldTransitionId);
+		SendAvatarUpdate(avatarPosition, avatarRotation, heldTransitionId, heldObjectChanged);
 	}
 
 	private void DestroyLevelSelectionScreen()
@@ -549,6 +554,11 @@ public partial class GameManager
 		ExecuteOrSendCommand(new CommandData { action = "ReturnToLevelSelection" });
 	}
 
+	private void RequestConfirmLevelSelection()
+	{
+		ExecuteOrSendCommand(new CommandData { action = "ConfirmLevelSelection", amount = selectedLevelIndex });
+	}
+
 	private void ReturnToLevelSelectionFromHost()
 	{
 		ApplyLevelSelectionState(new LevelSelectionState
@@ -615,13 +625,18 @@ public partial class GameManager
 
 	private void ConfirmLevelSelection()
 	{
+		ConfirmLevelSelection(selectedLevelIndex);
+	}
+
+	private void ConfirmLevelSelection(int levelIndex)
+	{
 		List<PetriNetLevelDefinition> levels = GetLevelDefinitions();
 		if (levels.Count <= 0)
 		{
 			return;
 		}
 
-		selectedLevelIndex = Mathf.Clamp(selectedLevelIndex, 0, levels.Count - 1);
+		selectedLevelIndex = Mathf.Clamp(levelIndex, 0, levels.Count - 1);
 		ApplyLevelDefinition(levels[selectedLevelIndex]);
 		levelSelectionConfirmed = true;
 	}
@@ -636,6 +651,7 @@ public partial class GameManager
 		sharedPoolBlocks = CopyBlockDefinitionList(level.blocks, PetriNetLevelBlockOwner.geteilt);
 		topPlayerBlocks = CopyBlockDefinitionList(level.blocks, PetriNetLevelBlockOwner.spieler1);
 		bottomPlayerBlocks = CopyBlockDefinitionList(level.blocks, PetriNetLevelBlockOwner.spieler2);
+		levelInhibitorArcs = CopyInhibitorArcDefinitionList(level.inhibitorArcs);
 		topIngredientNames = CopyStringList(level.topIngredients);
 		bottomIngredientNames = CopyStringList(level.bottomIngredients);
 		SetLevelOrders(level.orders);
@@ -696,6 +712,31 @@ public partial class GameManager
 		return copy;
 	}
 
+	private List<PetriNetLevelInhibitorArcDefinition> CopyInhibitorArcDefinitionList(List<PetriNetLevelInhibitorArcDefinition> source)
+	{
+		List<PetriNetLevelInhibitorArcDefinition> copy = new List<PetriNetLevelInhibitorArcDefinition>();
+		if (source == null)
+		{
+			return copy;
+		}
+
+		for (int i = 0; i < source.Count; i++)
+		{
+			PetriNetLevelInhibitorArcDefinition inhibitor = source[i];
+			if (inhibitor == null)
+			{
+				continue;
+			}
+
+			copy.Add(new PetriNetLevelInhibitorArcDefinition(
+				inhibitor.sourceBlockFirstTransitionName,
+				inhibitor.sourcePlace,
+				inhibitor.targetTransitionName));
+		}
+
+		return copy;
+	}
+
 	private string GetLevelBlockOverviewText(List<PetriNetLevelBlockDefinition> blocks, PetriNetLevelBlockOwner owner)
 	{
 		if (blocks == null || blocks.Count <= 0)
@@ -723,6 +764,44 @@ public partial class GameManager
 		}
 
 		return string.IsNullOrEmpty(text) ? "keine\n" : text;
+	}
+
+	private string GetLevelInhibitorOverviewText(List<PetriNetLevelInhibitorArcDefinition> inhibitors)
+	{
+		if (inhibitors == null || inhibitors.Count <= 0)
+		{
+			return "keine\n";
+		}
+
+		string text = "";
+		for (int i = 0; i < inhibitors.Count; i++)
+		{
+			PetriNetLevelInhibitorArcDefinition inhibitor = inhibitors[i];
+			if (inhibitor == null)
+			{
+				continue;
+			}
+
+			string sourceBlock = GetFallbackText(inhibitor.sourceBlockFirstTransitionName, "Block");
+			string sourcePlace = GetLevelBlockPlaceOverviewText(inhibitor.sourcePlace);
+			string targetTransition = GetFallbackText(inhibitor.targetTransitionName, "Transition");
+			text += "- " + sourceBlock + " / " + sourcePlace + " --o " + targetTransition + "\n";
+			text += "  sperrt, wenn dort Token liegen\n";
+		}
+
+		return string.IsNullOrEmpty(text) ? "keine\n" : text;
+	}
+
+	private string GetLevelBlockPlaceOverviewText(PetriNetLevelBlockPlace place)
+	{
+		switch (place)
+		{
+			case PetriNetLevelBlockPlace.ausgabe:
+				return "Ausgabe-Stelle";
+			case PetriNetLevelBlockPlace.zwischenstelle:
+			default:
+				return "Zwischenstelle";
+		}
 	}
 
 	private string JoinLevelList(List<string> values)
