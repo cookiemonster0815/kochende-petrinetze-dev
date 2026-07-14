@@ -1,17 +1,36 @@
 using System.Collections.Generic;
+using System.Text;
 using UnityEngine;
+using UnityEngine.UI;
 
 public partial class GameManager
 {
 	private List<PetriNetLevelOrderDefinition> levelOrderDefinitions = new List<PetriNetLevelOrderDefinition>();
 	private float levelOrderStartTime = -1f;
-	private Transform levelOrderDisplayRoot;
+	private float levelOrderPauseStartedTime = -1f;
+	private RectTransform levelOrderDisplayRoot;
+	private Font levelOrderUiFont;
 	private readonly List<GameObject> levelOrderCardObjects = new List<GameObject>();
-	private readonly List<SpriteRenderer> levelOrderCardBackgrounds = new List<SpriteRenderer>();
-	private readonly List<TextMesh> levelOrderCardTexts = new List<TextMesh>();
+	private readonly List<Image> levelOrderCardBackgrounds = new List<Image>();
+	private readonly List<Text> levelOrderCardTexts = new List<Text>();
 	private readonly HashSet<int> completedLevelOrderIndexes = new HashSet<int>();
+	private readonly HashSet<int> lateCompletedLevelOrderIndexes = new HashSet<int>();
+	private readonly Dictionary<int, float> completedLevelOrderDeliveredAtSeconds = new Dictionary<int, float>();
 	private readonly Dictionary<int, float> highlightedLevelOrderUntil = new Dictionary<int, float>();
 	private const float LevelOrderHighlightSeconds = 1.25f;
+	private const float LevelOrderCardMargin = 24f;
+	private const float LevelOrderCardGap = 16f;
+	private const float LevelOrderCardHeight = 108f;
+	private const float LevelOrderCardMinWidth = 240f;
+	private const float LevelOrderCardMaxWidth = 420f;
+	private const float LevelOrderCardPadding = 10f;
+	private const int LevelOrderCanvasSortingOrder = 5000;
+	private const int LevelOrderTextFontSize = 24;
+	private const int LevelOrderMinTextFontSize = 15;
+	private const int LevelOrderTextWrapLength = 28;
+	private static readonly Color LevelOrderDefaultCardColor = new Color(1f, 1f, 1f, 0.94f);
+	private static readonly Color LevelOrderHighlightedCardColor = new Color(0.48f, 0.92f, 0.54f, 0.96f);
+	private static readonly Color LevelOrderLateHighlightedCardColor = new Color(1f, 0.88f, 0.24f, 0.96f);
 
 	private void SetLevelOrders(List<PetriNetLevelOrderDefinition> orders)
 	{
@@ -36,7 +55,7 @@ public partial class GameManager
 
 			float appearsAt = Mathf.Max(0f, order.appearsAtSeconds);
 			float expiresAt = Mathf.Max(appearsAt + 1f, order.expiresAtSeconds);
-			copy.Add(new PetriNetLevelOrderDefinition(order.dishText.Trim(), appearsAt, expiresAt));
+			copy.Add(new PetriNetLevelOrderDefinition(order.dishText.Trim(), GetOrderRequiredTokenText(order), appearsAt, expiresAt));
 		}
 
 		return copy;
@@ -45,29 +64,41 @@ public partial class GameManager
 	private void StartLevelOrderTimeline()
 	{
 		levelOrderStartTime = Time.time;
+		levelOrderPauseStartedTime = -1f;
 		completedLevelOrderIndexes.Clear();
+		lateCompletedLevelOrderIndexes.Clear();
+		completedLevelOrderDeliveredAtSeconds.Clear();
 		highlightedLevelOrderUntil.Clear();
+		gameplayMenuOpen = false;
+		gameplayMenuOwnerClientId = NoGameplayMenuOwnerClientId;
+		levelEnded = false;
+		levelResultScrollPosition = Vector2.zero;
 		ClearLevelOrderCards();
 	}
 
 	private void StopLevelOrderTimeline()
 	{
 		levelOrderStartTime = -1f;
+		levelOrderPauseStartedTime = -1f;
 		completedLevelOrderIndexes.Clear();
+		lateCompletedLevelOrderIndexes.Clear();
+		completedLevelOrderDeliveredAtSeconds.Clear();
 		highlightedLevelOrderUntil.Clear();
+		gameplayMenuOpen = false;
+		gameplayMenuOwnerClientId = NoGameplayMenuOwnerClientId;
 		ClearLevelOrderDisplay();
 	}
 
 	private void UpdateLevelOrderDisplay()
 	{
-		if (!gameplayInitialized || levelOrderStartTime < 0f || levelOrderDefinitions == null || levelOrderDefinitions.Count <= 0 || mainCamera == null)
+		if (!gameplayInitialized || levelOrderStartTime < 0f || levelOrderDefinitions == null || levelOrderDefinitions.Count <= 0)
 		{
 			ClearLevelOrderCards();
 			return;
 		}
 
 		CleanupExpiredLevelOrderHighlights();
-		float elapsed = Time.time - levelOrderStartTime;
+		float elapsed = GetLevelOrderElapsedTime();
 		List<int> activeOrderIndexes = GetVisibleLevelOrderIndexes(elapsed);
 		if (activeOrderIndexes.Count <= 0)
 		{
@@ -98,8 +129,7 @@ public partial class GameManager
 
 			bool highlighted = highlightedLevelOrderUntil.ContainsKey(i);
 			bool active = !completedLevelOrderIndexes.Contains(i)
-				&& elapsed >= order.appearsAtSeconds
-				&& elapsed < order.expiresAtSeconds;
+				&& elapsed >= order.appearsAtSeconds;
 			if (highlighted || active)
 			{
 				activeOrderIndexes.Add(i);
@@ -116,34 +146,54 @@ public partial class GameManager
 			return;
 		}
 
-		EnsureGraphRootExists();
-		levelOrderDisplayRoot = new GameObject("LevelOrderDisplay").transform;
-		levelOrderDisplayRoot.SetParent(petriNetRoot, false);
+		GameObject canvasObject = new GameObject("LevelOrderDisplay", typeof(RectTransform));
+		Canvas canvas = canvasObject.AddComponent<Canvas>();
+		canvas.renderMode = RenderMode.ScreenSpaceOverlay;
+		canvas.sortingOrder = LevelOrderCanvasSortingOrder;
+
+		CanvasScaler scaler = canvasObject.AddComponent<CanvasScaler>();
+		scaler.uiScaleMode = CanvasScaler.ScaleMode.ConstantPixelSize;
+		scaler.scaleFactor = 1f;
+
+		levelOrderDisplayRoot = canvasObject.GetComponent<RectTransform>();
 	}
 
 	private void EnsureLevelOrderCard(int index)
 	{
 		while (levelOrderCardObjects.Count <= index)
 		{
-			GameObject card = new GameObject("OrderCard_" + (levelOrderCardObjects.Count + 1));
+			GameObject card = new GameObject("OrderCard_" + (levelOrderCardObjects.Count + 1), typeof(RectTransform));
 			card.transform.SetParent(levelOrderDisplayRoot, false);
+			RectTransform cardRect = card.GetComponent<RectTransform>();
+			cardRect.anchorMin = new Vector2(0f, 1f);
+			cardRect.anchorMax = new Vector2(0f, 1f);
+			cardRect.pivot = new Vector2(0f, 1f);
 
-			GameObject backgroundObject = new GameObject("Background");
-			backgroundObject.transform.SetParent(card.transform, false);
-			SpriteRenderer background = backgroundObject.AddComponent<SpriteRenderer>();
+			Image background = card.AddComponent<Image>();
 			background.sprite = GetSquareSprite();
-			background.color = new Color(1f, 1f, 1f, 0.94f);
-			background.sortingOrder = 92;
+			background.color = LevelOrderDefaultCardColor;
+			background.raycastTarget = false;
 
-			GameObject textObject = new GameObject("Label");
+			GameObject textObject = new GameObject("Label", typeof(RectTransform));
 			textObject.transform.SetParent(card.transform, false);
-			textObject.transform.localPosition = new Vector3(0f, 0f, -0.05f);
-			TextMesh text = textObject.AddComponent<TextMesh>();
-			text.anchor = TextAnchor.MiddleCenter;
-			text.alignment = TextAlignment.Center;
-			text.fontSize = 64;
+			RectTransform textRect = textObject.GetComponent<RectTransform>();
+			textRect.anchorMin = Vector2.zero;
+			textRect.anchorMax = Vector2.one;
+			textRect.offsetMin = new Vector2(LevelOrderCardPadding, LevelOrderCardPadding);
+			textRect.offsetMax = new Vector2(-LevelOrderCardPadding, -LevelOrderCardPadding);
+
+			Text text = textObject.AddComponent<Text>();
+			text.font = GetLevelOrderUiFont();
+			text.alignment = TextAnchor.MiddleCenter;
 			text.color = Color.black;
-			SetTextSortingOrder(text, 94);
+			text.fontSize = LevelOrderTextFontSize;
+			text.resizeTextForBestFit = true;
+			text.resizeTextMinSize = LevelOrderMinTextFontSize;
+			text.resizeTextMaxSize = LevelOrderTextFontSize;
+			text.horizontalOverflow = HorizontalWrapMode.Wrap;
+			text.verticalOverflow = VerticalWrapMode.Truncate;
+			text.supportRichText = false;
+			text.raycastTarget = false;
 
 			levelOrderCardObjects.Add(card);
 			levelOrderCardBackgrounds.Add(background);
@@ -153,55 +203,55 @@ public partial class GameManager
 
 	private void UpdateLevelOrderCard(int index, int orderIndex, PetriNetLevelOrderDefinition order, float elapsed, int activeCount)
 	{
-		float zoomScale = GetLevelOrderZoomScale();
-		float screenHeight = mainCamera.orthographicSize * 2f;
-		float screenWidth = screenHeight * mainCamera.aspect;
-		float margin = 0.28f * zoomScale;
-		float gap = 0.16f * zoomScale;
-		float cardHeight = 0.78f * zoomScale;
+		float uiScale = GetGameplayMenuUiScale();
+		float screenWidth = Mathf.Max(1f, Screen.width);
+		float margin = LevelOrderCardMargin * uiScale;
+		float gap = LevelOrderCardGap * uiScale;
+		float cardHeight = LevelOrderCardHeight * uiScale;
 		float availableWidth = screenWidth - margin * 2f - gap * Mathf.Max(0, activeCount - 1);
-		float cardWidth = Mathf.Clamp(availableWidth / Mathf.Max(1, activeCount), 1.65f * zoomScale, 2.9f * zoomScale);
-		Vector2 cameraGroundCenter = GetCameraGroundCenter();
-		float leftX = cameraGroundCenter.x - screenWidth * 0.5f + margin + cardWidth * 0.5f;
-		float topY = cameraGroundCenter.y + mainCamera.orthographicSize - 0.5f * zoomScale;
+		float cardWidth = Mathf.Clamp(
+			availableWidth / Mathf.Max(1, activeCount),
+			LevelOrderCardMinWidth * uiScale,
+			LevelOrderCardMaxWidth * uiScale);
 		bool highlighted = highlightedLevelOrderUntil.ContainsKey(orderIndex);
 
 		GameObject card = levelOrderCardObjects[index];
-		card.transform.position = new Vector3(leftX + index * (cardWidth + gap), topY, -0.2f);
+		RectTransform cardRect = card.transform as RectTransform;
+		if (cardRect != null)
+		{
+			cardRect.anchoredPosition = new Vector2(margin + index * (cardWidth + gap), -margin);
+			cardRect.sizeDelta = new Vector2(cardWidth, cardHeight);
+		}
 
 		if (levelOrderCardBackgrounds[index] != null)
 		{
-			levelOrderCardBackgrounds[index].transform.localScale = new Vector3(cardWidth, cardHeight, 1f);
 			levelOrderCardBackgrounds[index].color = highlighted
-				? new Color(0.48f, 0.92f, 0.54f, 0.96f)
-				: new Color(1f, 1f, 1f, 0.94f);
+				? GetLevelOrderHighlightedCardColor(orderIndex)
+				: LevelOrderDefaultCardColor;
 		}
 
-		TextMesh text = levelOrderCardTexts[index];
+		Text text = levelOrderCardTexts[index];
 		if (text != null)
 		{
+			RectTransform textRect = text.transform as RectTransform;
+			if (textRect != null)
+			{
+				float padding = LevelOrderCardPadding * uiScale;
+				textRect.offsetMin = new Vector2(padding, padding);
+				textRect.offsetMax = new Vector2(-padding, -padding);
+			}
+
+			int textMaxSize = Mathf.RoundToInt(LevelOrderTextFontSize * uiScale);
+			int textMinSize = Mathf.RoundToInt(LevelOrderMinTextFontSize * uiScale);
 			int remainingSeconds = Mathf.Max(0, Mathf.CeilToInt(order.expiresAtSeconds - elapsed));
+			string wrappedDish = WrapLevelOrderText(order.dishText, LevelOrderTextWrapLength);
 			text.text = highlighted
-				? WrapLevelOrderText(order.dishText, 30) + "\nOK"
-				: WrapLevelOrderText(order.dishText, 30) + "\n" + remainingSeconds + "s";
-			text.characterSize = 0.052f * zoomScale;
-			FitLevelOrderCardText(text, new Vector2(cardWidth, cardHeight));
+				? wrappedDish + "\nOK"
+				: wrappedDish + "\n" + remainingSeconds + "s";
+			text.fontSize = textMaxSize;
+			text.resizeTextMinSize = textMinSize;
+			text.resizeTextMaxSize = textMaxSize;
 		}
-	}
-
-	private float GetLevelOrderZoomScale()
-	{
-		if (mainCamera == null)
-		{
-			return 1f;
-		}
-
-		return Mathf.Max(0.1f, mainCamera.orthographicSize / Mathf.Max(0.1f, GetLevelOrderReferenceOrthographicSize()));
-	}
-
-	private float GetLevelOrderReferenceOrthographicSize()
-	{
-		return enableSharedTransitionPool ? GetSharedScreenCameraSize() : minZoom;
 	}
 
 	private void TrimLevelOrderCards(int count)
@@ -234,40 +284,25 @@ public partial class GameManager
 		}
 	}
 
-	private void FitLevelOrderCardText(TextMesh text, Vector2 cardSize)
+	private Font GetLevelOrderUiFont()
 	{
-		if (text == null)
+		if (levelOrderUiFont != null)
 		{
-			return;
+			return levelOrderUiFont;
 		}
 
-		MeshRenderer renderer = text.GetComponent<MeshRenderer>();
-		if (renderer == null)
+		levelOrderUiFont = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+		if (levelOrderUiFont == null)
 		{
-			return;
+			levelOrderUiFont = Resources.GetBuiltinResource<Font>("Arial.ttf");
 		}
 
-		float allowedWidth = cardSize.x * 0.88f;
-		float allowedHeight = cardSize.y * 0.78f;
-		for (int i = 0; i < 8; i++)
+		if (levelOrderUiFont == null)
 		{
-			Vector3 labelSize = renderer.bounds.size;
-			if (labelSize.x <= 0.0001f || labelSize.y <= 0.0001f)
-			{
-				return;
-			}
-
-			float widthScale = allowedWidth / labelSize.x;
-			float heightScale = allowedHeight / labelSize.y;
-			float scale = Mathf.Min(widthScale, heightScale);
-			if (scale >= 0.995f)
-			{
-				return;
-			}
-
-			float minCharacterSize = 0.026f * GetLevelOrderZoomScale();
-			text.characterSize = Mathf.Max(minCharacterSize, text.characterSize * scale * 0.94f);
+			levelOrderUiFont = Font.CreateDynamicFontFromOSFont("Arial", LevelOrderTextFontSize);
 		}
+
+		return levelOrderUiFont;
 	}
 
 	private void HandleDeliveredTokens(List<TokenRuntime> deliveredTokens)
@@ -277,14 +312,14 @@ public partial class GameManager
 			return;
 		}
 
-		float elapsed = Time.time - levelOrderStartTime;
+		float elapsed = GetLevelOrderElapsedTime();
 		List<string> deliveredCandidates = BuildDeliveredDishCandidates(deliveredTokens);
 		for (int i = 0; i < deliveredCandidates.Count; i++)
 		{
 			int matchingOrderIndex = FindMatchingActiveOrderIndex(deliveredCandidates[i], elapsed);
 			if (matchingOrderIndex >= 0)
 			{
-				MarkLevelOrderDelivered(matchingOrderIndex);
+				MarkLevelOrderDelivered(matchingOrderIndex, elapsed);
 				return;
 			}
 		}
@@ -340,12 +375,12 @@ public partial class GameManager
 				continue;
 			}
 
-			if (elapsed < order.appearsAtSeconds || elapsed >= order.expiresAtSeconds)
+			if (elapsed < order.appearsAtSeconds)
 			{
 				continue;
 			}
 
-			if (NormalizeDishText(order.dishText) == normalizedDeliveredDish)
+			if (NormalizeDishText(GetOrderRequiredTokenText(order)) == normalizedDeliveredDish)
 			{
 				return i;
 			}
@@ -356,13 +391,93 @@ public partial class GameManager
 
 	private void MarkLevelOrderDelivered(int orderIndex)
 	{
+		float elapsed = GetLevelOrderElapsedTime();
+		MarkLevelOrderDelivered(orderIndex, elapsed);
+	}
+
+	private void MarkLevelOrderDelivered(int orderIndex, float deliveredElapsed)
+	{
 		if (orderIndex < 0)
 		{
 			return;
 		}
 
 		completedLevelOrderIndexes.Add(orderIndex);
+		completedLevelOrderDeliveredAtSeconds[orderIndex] = Mathf.Max(0f, deliveredElapsed);
+		if (IsLevelOrderLate(orderIndex, deliveredElapsed))
+		{
+			lateCompletedLevelOrderIndexes.Add(orderIndex);
+		}
+		else
+		{
+			lateCompletedLevelOrderIndexes.Remove(orderIndex);
+		}
+
 		highlightedLevelOrderUntil[orderIndex] = Time.time + LevelOrderHighlightSeconds;
+	}
+
+	private Color GetLevelOrderHighlightedCardColor(int orderIndex)
+	{
+		return lateCompletedLevelOrderIndexes.Contains(orderIndex)
+			? LevelOrderLateHighlightedCardColor
+			: LevelOrderHighlightedCardColor;
+	}
+
+	private bool IsLevelOrderLate(int orderIndex, float elapsed)
+	{
+		return levelOrderDefinitions != null
+			&& orderIndex >= 0
+			&& orderIndex < levelOrderDefinitions.Count
+			&& levelOrderDefinitions[orderIndex] != null
+			&& elapsed >= levelOrderDefinitions[orderIndex].expiresAtSeconds;
+	}
+
+	private void PauseLevelOrderTimeline()
+	{
+		if (levelOrderStartTime < 0f || levelOrderPauseStartedTime >= 0f)
+		{
+			return;
+		}
+
+		levelOrderPauseStartedTime = Time.time;
+	}
+
+	private void ResumeLevelOrderTimeline()
+	{
+		if (levelOrderStartTime < 0f || levelOrderPauseStartedTime < 0f)
+		{
+			return;
+		}
+
+		float pausedSeconds = Mathf.Max(0f, Time.time - levelOrderPauseStartedTime);
+		levelOrderStartTime += pausedSeconds;
+		ShiftLevelOrderHighlightTimers(pausedSeconds);
+		levelOrderPauseStartedTime = -1f;
+	}
+
+	private float GetLevelOrderElapsedTime()
+	{
+		if (levelOrderStartTime < 0f)
+		{
+			return 0f;
+		}
+
+		float clockTime = levelOrderPauseStartedTime >= 0f ? levelOrderPauseStartedTime : Time.time;
+		return Mathf.Max(0f, clockTime - levelOrderStartTime);
+	}
+
+	private void ShiftLevelOrderHighlightTimers(float seconds)
+	{
+		if (seconds <= 0f || highlightedLevelOrderUntil.Count <= 0)
+		{
+			return;
+		}
+
+		List<int> keys = new List<int>(highlightedLevelOrderUntil.Keys);
+		for (int i = 0; i < keys.Count; i++)
+		{
+			highlightedLevelOrderUntil[keys[i]] += seconds;
+		}
 	}
 
 	private List<int> GetCompletedLevelOrderIndexes()
@@ -370,7 +485,26 @@ public partial class GameManager
 		return new List<int>(completedLevelOrderIndexes);
 	}
 
+	private List<float> GetCompletedLevelOrderDeliveryTimes()
+	{
+		List<float> deliveryTimes = new List<float>();
+		int orderCount = levelOrderDefinitions != null ? levelOrderDefinitions.Count : 0;
+		for (int i = 0; i < orderCount; i++)
+		{
+			deliveryTimes.Add(completedLevelOrderDeliveredAtSeconds.TryGetValue(i, out float deliveredAtSeconds)
+				? deliveredAtSeconds
+				: -1f);
+		}
+
+		return deliveryTimes;
+	}
+
 	private void ApplyCompletedLevelOrderIndexes(List<int> completedIndexes)
+	{
+		ApplyCompletedLevelOrderState(completedIndexes, null);
+	}
+
+	private void ApplyCompletedLevelOrderState(List<int> completedIndexes, List<float> completedDeliveryTimes)
 	{
 		if (completedIndexes == null)
 		{
@@ -387,13 +521,115 @@ public partial class GameManager
 
 			if (!completedLevelOrderIndexes.Contains(orderIndex))
 			{
-				MarkLevelOrderDelivered(orderIndex);
+				MarkLevelOrderDelivered(orderIndex, GetCompletedLevelOrderDeliveryTime(orderIndex, completedDeliveryTimes));
+			}
+			else if (completedDeliveryTimes != null)
+			{
+				float deliveredAtSeconds = GetCompletedLevelOrderDeliveryTime(orderIndex, completedDeliveryTimes);
+				completedLevelOrderDeliveredAtSeconds[orderIndex] = deliveredAtSeconds;
+				if (IsLevelOrderLate(orderIndex, deliveredAtSeconds))
+				{
+					lateCompletedLevelOrderIndexes.Add(orderIndex);
+				}
+				else
+				{
+					lateCompletedLevelOrderIndexes.Remove(orderIndex);
+				}
 			}
 		}
 	}
 
+	private float GetCompletedLevelOrderDeliveryTime(int orderIndex, List<float> completedDeliveryTimes)
+	{
+		if (completedDeliveryTimes != null
+			&& orderIndex >= 0
+			&& orderIndex < completedDeliveryTimes.Count
+			&& completedDeliveryTimes[orderIndex] >= 0f)
+		{
+			return completedDeliveryTimes[orderIndex];
+		}
+
+		return GetLevelOrderElapsedTime();
+	}
+
+	private string GetLevelOrderResultSummaryText()
+	{
+		int orderCount = levelOrderDefinitions != null ? levelOrderDefinitions.Count : 0;
+		int score = GetOnTimeLevelOrderScore();
+		StringBuilder text = new StringBuilder();
+		text.Append("Punkte: ");
+		text.Append(score);
+		text.Append(" / ");
+		text.Append(orderCount);
+
+		if (orderCount <= 0)
+		{
+			text.Append("\n\nKeine Rezepte in diesem Level.");
+			return text.ToString();
+		}
+
+		for (int i = 0; i < orderCount; i++)
+		{
+			PetriNetLevelOrderDefinition order = levelOrderDefinitions[i];
+			if (order == null)
+			{
+				continue;
+			}
+
+			text.Append("\n\n");
+			text.Append(i + 1);
+			text.Append(". ");
+			text.Append(order.dishText);
+			text.Append("\nGefordert: ");
+			text.Append(GetOrderRequiredTokenText(order));
+			text.Append("\n");
+
+			if (!completedLevelOrderIndexes.Contains(i))
+			{
+				text.Append("Nicht abgearbeitet");
+				continue;
+			}
+
+			float deliveredAtSeconds = completedLevelOrderDeliveredAtSeconds.TryGetValue(i, out float storedDeliveryTime)
+				? storedDeliveryTime
+				: 0f;
+			bool late = IsLevelOrderLate(i, deliveredAtSeconds);
+			text.Append(late ? "Zu spät" : "Rechtzeitig");
+			text.Append(" um ");
+			text.Append(FormatLevelOrderTime(deliveredAtSeconds));
+			text.Append(late ? " (+0)" : " (+1)");
+		}
+
+		return text.ToString();
+	}
+
+	private int GetLevelOrderCount()
+	{
+		return levelOrderDefinitions != null ? levelOrderDefinitions.Count : 0;
+	}
+
+	private int GetOnTimeLevelOrderScore()
+	{
+		int score = 0;
+		int orderCount = GetLevelOrderCount();
+		foreach (int orderIndex in completedLevelOrderIndexes)
+		{
+			if (orderIndex >= 0 && orderIndex < orderCount && !lateCompletedLevelOrderIndexes.Contains(orderIndex))
+			{
+				score++;
+			}
+		}
+
+		return score;
+	}
+
 	private void CleanupExpiredLevelOrderHighlights()
 	{
+		if (levelOrderPauseStartedTime >= 0f)
+		{
+			return;
+		}
+
 		if (highlightedLevelOrderUntil.Count <= 0)
 		{
 			return;
@@ -441,7 +677,7 @@ public partial class GameManager
 		}
 
 		string[] words = text.Trim().Split(' ');
-		string result = "";
+		StringBuilder result = new StringBuilder();
 		string line = "";
 		for (int i = 0; i < words.Length; i++)
 		{
@@ -454,12 +690,12 @@ public partial class GameManager
 			string candidate = string.IsNullOrEmpty(line) ? word : line + " " + word;
 			if (candidate.Length > maxLineLength && !string.IsNullOrEmpty(line))
 			{
-				if (!string.IsNullOrEmpty(result))
+				if (result.Length > 0)
 				{
-					result += "\n";
+					result.Append('\n');
 				}
 
-				result += line;
+				result.Append(line);
 				line = word;
 			}
 			else
@@ -470,15 +706,15 @@ public partial class GameManager
 
 		if (!string.IsNullOrEmpty(line))
 		{
-			if (!string.IsNullOrEmpty(result))
+			if (result.Length > 0)
 			{
-				result += "\n";
+				result.Append('\n');
 			}
 
-			result += line;
+			result.Append(line);
 		}
 
-		return result;
+		return result.ToString();
 	}
 
 	private string GetLevelOrderOverviewText(PetriNetLevelDefinition level)
@@ -488,7 +724,7 @@ public partial class GameManager
 			return "keine";
 		}
 
-		string text = "";
+		StringBuilder text = new StringBuilder();
 		for (int i = 0; i < level.orders.Count; i++)
 		{
 			PetriNetLevelOrderDefinition order = level.orders[i];
@@ -497,16 +733,39 @@ public partial class GameManager
 				continue;
 			}
 
-			if (!string.IsNullOrEmpty(text))
+			if (text.Length > 0)
 			{
-				text += "\n";
+				text.Append('\n');
 			}
 
-			text += "- " + order.dishText + " (" + FormatLevelOrderTime(order.appearsAtSeconds)
-				+ " bis " + FormatLevelOrderTime(order.expiresAtSeconds) + ")";
+			text.Append("- ");
+			text.Append(order.dishText);
+			text.Append("\n  Gefordert: ");
+			text.Append(GetOrderRequiredTokenText(order));
+			text.Append(" (");
+			text.Append(FormatLevelOrderTime(order.appearsAtSeconds));
+			text.Append(" bis ");
+			text.Append(FormatLevelOrderTime(order.expiresAtSeconds));
+			text.Append(")");
 		}
 
-		return string.IsNullOrEmpty(text) ? "keine" : text;
+		return text.Length <= 0 ? "keine" : text.ToString();
+	}
+
+	private string GetOrderRequiredTokenText(PetriNetLevelOrderDefinition order)
+	{
+		if (order == null)
+		{
+			return "";
+		}
+
+		string requiredTokenText = order.requiredTokenText != null ? order.requiredTokenText.Trim() : "";
+		if (!string.IsNullOrEmpty(requiredTokenText))
+		{
+			return requiredTokenText;
+		}
+
+		return order.dishText != null ? order.dishText.Trim() : "";
 	}
 
 	private string FormatLevelOrderTime(float seconds)

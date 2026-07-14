@@ -181,16 +181,14 @@ public partial class GameManager : NetworkBehaviour
 	{
 		Vector3 oldSmallScale = new Vector3(0.75f, 0.75f, 0.75f);
 		Vector3 olderSmallScale = new Vector3(0.55f, 0.55f, 0.55f);
-		if (IsApproximatelyVector(cuttingTransitionPrefabLocalScale, oldSmallScale)
-			|| IsApproximatelyVector(cuttingTransitionPrefabLocalScale, olderSmallScale))
+		if (IsApproximatelyAnyVector(cuttingTransitionPrefabLocalScale, oldSmallScale, olderSmallScale))
 		{
 			cuttingTransitionPrefabLocalScale = new Vector3(1.5f, 1.5f, 1.5f);
 		}
 
 		Vector3 oldEmbeddedPosition = new Vector3(0f, 0f, -0.2f);
 		Vector3 oldLiftedPosition = new Vector3(0f, 0.32f, -0.48f);
-		if (IsApproximatelyVector(cuttingTransitionPrefabLocalPosition, oldEmbeddedPosition)
-			|| IsApproximatelyVector(cuttingTransitionPrefabLocalPosition, oldLiftedPosition))
+		if (IsApproximatelyAnyVector(cuttingTransitionPrefabLocalPosition, oldEmbeddedPosition, oldLiftedPosition))
 		{
 			cuttingTransitionPrefabLocalPosition = new Vector3(0f, 0.5f, -0.62f);
 		}
@@ -204,9 +202,7 @@ public partial class GameManager : NetworkBehaviour
 		Vector3 oldSmallDroneScale = new Vector3(0.42f, 0.42f, 0.42f);
 		Vector3 oldMediumDroneScale = new Vector3(1.35f, 1.35f, 1.35f);
 		Vector3 oldLargeDroneScale = new Vector3(2.1f, 2.1f, 2.1f);
-		if (IsApproximatelyVector(avatarDroneLocalScale, oldSmallDroneScale)
-			|| IsApproximatelyVector(avatarDroneLocalScale, oldMediumDroneScale)
-			|| IsApproximatelyVector(avatarDroneLocalScale, oldLargeDroneScale))
+		if (IsApproximatelyAnyVector(avatarDroneLocalScale, oldSmallDroneScale, oldMediumDroneScale, oldLargeDroneScale))
 		{
 			avatarDroneLocalScale = new Vector3(0.675f, 0.675f, 0.675f);
 		}
@@ -225,20 +221,22 @@ public partial class GameManager : NetworkBehaviour
 		Vector3 oldZTurnedHookEuler = new Vector3(90f, 0f, 180f);
 		Vector3 oldFullyFlippedHookEuler = new Vector3(180f, 0f, 90f);
 		Vector3 oldPartlyFlippedHookEuler = new Vector3(120f, 0f, 90f);
-		if (IsApproximatelyVector(avatarCraneHookLocalEuler, oldHookEuler)
-			|| IsApproximatelyVector(avatarCraneHookLocalEuler, oldRotatedHookEuler)
-			|| IsApproximatelyVector(avatarCraneHookLocalEuler, oldFlippedHookEuler)
-			|| IsApproximatelyVector(avatarCraneHookLocalEuler, oldStraightHookEuler)
-			|| IsApproximatelyVector(avatarCraneHookLocalEuler, oldTiltedHookEuler)
-			|| IsApproximatelyVector(avatarCraneHookLocalEuler, oldRaisedHookEuler)
-			|| IsApproximatelyVector(avatarCraneHookLocalEuler, oldMoreRaisedHookEuler)
-			|| IsApproximatelyVector(avatarCraneHookLocalEuler, oldSideTiltedHookEuler)
-			|| IsApproximatelyVector(avatarCraneHookLocalEuler, oldLowZHookEuler)
-			|| IsApproximatelyVector(avatarCraneHookLocalEuler, oldFlatHookEuler)
-			|| IsApproximatelyVector(avatarCraneHookLocalEuler, oldTurnedHookEuler)
-			|| IsApproximatelyVector(avatarCraneHookLocalEuler, oldZTurnedHookEuler)
-			|| IsApproximatelyVector(avatarCraneHookLocalEuler, oldFullyFlippedHookEuler)
-			|| IsApproximatelyVector(avatarCraneHookLocalEuler, oldPartlyFlippedHookEuler))
+		if (IsApproximatelyAnyVector(
+			avatarCraneHookLocalEuler,
+			oldHookEuler,
+			oldRotatedHookEuler,
+			oldFlippedHookEuler,
+			oldStraightHookEuler,
+			oldTiltedHookEuler,
+			oldRaisedHookEuler,
+			oldMoreRaisedHookEuler,
+			oldSideTiltedHookEuler,
+			oldLowZHookEuler,
+			oldFlatHookEuler,
+			oldTurnedHookEuler,
+			oldZTurnedHookEuler,
+			oldFullyFlippedHookEuler,
+			oldPartlyFlippedHookEuler))
 		{
 			avatarCraneHookLocalEuler = new Vector3(90f, 0f, 90f);
 		}
@@ -276,9 +274,7 @@ public partial class GameManager : NetworkBehaviour
 		Vector3 oldHugeHookScale = new Vector3(3f, 3f, 3f);
 		Vector3 oldLargeHookScale = new Vector3(1.35f, 1.35f, 1.35f);
 		Vector3 oldTinyHookScale = new Vector3(0.24f, 0.24f, 0.24f);
-		if (IsApproximatelyVector(avatarCraneHookLocalScale, oldTinyHookScale)
-			|| IsApproximatelyVector(avatarCraneHookLocalScale, oldHugeHookScale)
-			|| IsApproximatelyVector(avatarCraneHookLocalScale, oldLargeHookScale))
+		if (IsApproximatelyAnyVector(avatarCraneHookLocalScale, oldTinyHookScale, oldHugeHookScale, oldLargeHookScale))
 		{
 			avatarCraneHookLocalScale = new Vector3(0.75f, 0.75f, 0.75f);
 		}
@@ -306,6 +302,19 @@ public partial class GameManager : NetworkBehaviour
 	private bool IsApproximatelyVector(Vector3 left, Vector3 right)
 	{
 		return (left - right).sqrMagnitude <= 0.0001f;
+	}
+
+	private bool IsApproximatelyAnyVector(Vector3 value, params Vector3[] candidates)
+	{
+		for (int i = 0; i < candidates.Length; i++)
+		{
+			if (IsApproximatelyVector(value, candidates[i]))
+			{
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	private void Update()
@@ -342,6 +351,7 @@ public partial class GameManager : NetworkBehaviour
 		HandleGameplayMenuHotkey();
 		if (IsGameplayMenuOpen())
 		{
+			UpdateAvatarVisuals();
 			return;
 		}
 
@@ -365,7 +375,6 @@ public partial class GameManager : NetworkBehaviour
 		nextRenderResolutionCheckTime = Time.unscaledTime + 0.5f;
 		QualitySettings.globalTextureMipmapLimit = 0;
 		ScalableBufferManager.ResizeBuffers(1f, 1f);
-		EnsureMinimumWindowResolution();
 	}
 
 	private void LateUpdate()

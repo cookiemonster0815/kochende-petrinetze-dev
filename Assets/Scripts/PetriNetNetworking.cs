@@ -96,6 +96,7 @@ public partial class GameManager
 			return;
 		}
 
+		ApplyCommandAvatarState(cmd, senderClientId);
 		suppressNetworkSend = true;
 		bool changed = ApplyCommand(cmd, senderClientId);
 		suppressNetworkSend = false;
@@ -104,6 +105,28 @@ public partial class GameManager
 		{
 			BroadcastSnapshotToClients();
 		}
+	}
+
+	private void ApplyCommandAvatarState(CommandData cmd, ulong senderClientId)
+	{
+		if (cmd == null || !cmd.hasAvatarState)
+		{
+			return;
+		}
+
+		StoreRemoteAvatarState(new AvatarState
+		{
+			clientId = (long)senderClientId,
+			x = cmd.avatarX,
+			y = cmd.avatarY,
+			rotation = cmd.avatarRotation,
+			craneHeight = cmd.avatarCraneHeight,
+			heldTransitionId = cmd.avatarHeldTransitionId ?? "",
+			heldObjectId = cmd.avatarHeldObjectId ?? "",
+			heldObjectKind = cmd.avatarHeldObjectKind,
+			heldOffsetX = cmd.avatarHeldOffsetX,
+			heldOffsetY = cmd.avatarHeldOffsetY,
+		});
 	}
 
 	private void OnSnapshotMessageReceived(ulong senderClientId, FastBufferReader reader)
@@ -496,7 +519,11 @@ public partial class GameManager
 		SnapshotData snapshot = new SnapshotData
 		{
 			selectedLevelIndex = selectedLevelIndex,
-			completedOrderIndexes = GetCompletedLevelOrderIndexes()
+			gameplayMenuOpen = gameplayMenuOpen,
+			gameplayMenuOwnerClientId = GetSerializableGameplayMenuOwnerClientId(),
+			levelEnded = this.levelEnded,
+			completedOrderIndexes = GetCompletedLevelOrderIndexes(),
+			completedOrderDeliveryTimes = GetCompletedLevelOrderDeliveryTimes()
 		};
 
 		foreach (KeyValuePair<string, NodeRuntime> pair in nodesById)
@@ -670,34 +697,35 @@ public partial class GameManager
 			{
 				AvatarState state = snapshot.avatars[i];
 				ulong clientId = (ulong)state.clientId;
-				
+
 				// Host/offline applies own avatar state directly.
 				// Clients keep local predicted movement to avoid visible rubberbanding.
-					if (clientId == GetLocalActorClientId())
+				if (clientId == GetLocalActorClientId())
+				{
+					if (IsHostOrOffline())
 					{
-						if (IsHostOrOffline())
-						{
-							avatarPosition = new Vector3(state.x, state.y, 0f);
-							avatarRotation = state.rotation;
-							avatarCraneCurrentHeight = state.craneHeight >= 0f ? state.craneHeight : avatarCraneRestHeight;
-							ApplyLocalHeldObjectState(state);
-						}
+						avatarPosition = new Vector3(state.x, state.y, 0f);
+						avatarRotation = state.rotation;
+						avatarCraneCurrentHeight = state.craneHeight >= 0f ? state.craneHeight : avatarCraneRestHeight;
+						ApplyLocalHeldObjectState(state);
 					}
+				}
 				else
 				{
 					// Store remote avatar position
 					if (remoteAvatarPositions == null)
-						{
-							remoteAvatarPositions = new Dictionary<ulong, Vector3>();
-							remoteAvatarRotations = new Dictionary<ulong, float>();
-							remoteAvatarInventories = new Dictionary<ulong, RemoteHeldObjectState>();
-							remoteAvatarCraneHeights = new Dictionary<ulong, float>();
-						}
-						remoteAvatarPositions[clientId] = new Vector3(state.x, state.y, 0f);
-						remoteAvatarRotations[clientId] = state.rotation;
-						remoteAvatarInventories[clientId] = GetRemoteHeldObjectState(state);
-						remoteAvatarCraneHeights[clientId] = state.craneHeight >= 0f ? state.craneHeight : avatarCraneRestHeight;
+					{
+						remoteAvatarPositions = new Dictionary<ulong, Vector3>();
+						remoteAvatarRotations = new Dictionary<ulong, float>();
+						remoteAvatarInventories = new Dictionary<ulong, RemoteHeldObjectState>();
+						remoteAvatarCraneHeights = new Dictionary<ulong, float>();
 					}
+
+					remoteAvatarPositions[clientId] = new Vector3(state.x, state.y, 0f);
+					remoteAvatarRotations[clientId] = state.rotation;
+					remoteAvatarInventories[clientId] = GetRemoteHeldObjectState(state);
+					remoteAvatarCraneHeights[clientId] = state.craneHeight >= 0f ? state.craneHeight : avatarCraneRestHeight;
+				}
 			}
 		}
 
@@ -713,7 +741,13 @@ public partial class GameManager
 			}
 		}
 
-		if (!string.IsNullOrEmpty(draggedNodeId) || !string.IsNullOrEmpty(heldCompositeBlockId) || !string.IsNullOrEmpty(pendingClaimedTransitionId) || hasPoolTransitions)
+		if (!string.IsNullOrEmpty(draggedNodeId)
+			|| !string.IsNullOrEmpty(heldTransitionId)
+			|| !string.IsNullOrEmpty(heldPlaceId)
+			|| !string.IsNullOrEmpty(heldCompositeBlockId)
+			|| !string.IsNullOrEmpty(craneConnectStartNodeId)
+			|| !string.IsNullOrEmpty(pendingClaimedTransitionId)
+			|| hasPoolTransitions)
 		{
 			int mergeMaxPlace = 0;
 			int mergeMaxTransition = 0;
@@ -848,10 +882,13 @@ public partial class GameManager
 			if (!wasGameplayInitialized)
 			{
 				gameplayInitialized = true;
+				avatarStartPositionApplied = false;
 				StartLevelOrderTimeline();
 			}
 
-			ApplyCompletedLevelOrderIndexes(snapshot.completedOrderIndexes);
+			ApplyCompletedLevelOrderState(snapshot.completedOrderIndexes, snapshot.completedOrderDeliveryTimes);
+			ApplyGameplayMenuSnapshotState(snapshot.gameplayMenuOpen, snapshot.gameplayMenuOwnerClientId);
+			ApplyLevelEndSnapshotState(snapshot.levelEnded);
 			EnsureLocalAvatarStartPosition();
 			RefreshPetriNetVisuals();
 			suppressNetworkSend = false;
@@ -911,6 +948,11 @@ public partial class GameManager
 		arcCounter = Mathf.Max(1, maxArc + 1);
 
 		RefreshPetriNetVisuals();
+		if (!wasGameplayInitialized)
+		{
+			avatarStartPositionApplied = false;
+		}
+
 		EnsureLocalAvatarStartPosition();
 		gameplayInitialized = true;
 		if (!wasGameplayInitialized)
@@ -918,7 +960,9 @@ public partial class GameManager
 			StartLevelOrderTimeline();
 		}
 
-		ApplyCompletedLevelOrderIndexes(snapshot.completedOrderIndexes);
+		ApplyCompletedLevelOrderState(snapshot.completedOrderIndexes, snapshot.completedOrderDeliveryTimes);
+		ApplyGameplayMenuSnapshotState(snapshot.gameplayMenuOpen, snapshot.gameplayMenuOwnerClientId);
+		ApplyLevelEndSnapshotState(snapshot.levelEnded);
 		pendingClaimedTransitionId = null;
 		TryAttachPendingCreatedPlace();
 		suppressNetworkSend = false;

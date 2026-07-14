@@ -48,13 +48,27 @@ public partial class GameManager
 		public float y;
 		public float z;
 		public float rotation;
+		public bool hasAvatarState;
+		public float avatarX;
+		public float avatarY;
+		public float avatarRotation;
+		public float avatarCraneHeight;
+		public string avatarHeldTransitionId;
+		public string avatarHeldObjectId;
+		public int avatarHeldObjectKind;
+		public float avatarHeldOffsetX;
+		public float avatarHeldOffsetY;
 	}
 
 	[Serializable]
 	private class SnapshotData
 	{
 		public int selectedLevelIndex;
+		public bool gameplayMenuOpen;
+		public long gameplayMenuOwnerClientId = -1;
+		public bool levelEnded;
 		public List<int> completedOrderIndexes = new List<int>();
+		public List<float> completedOrderDeliveryTimes = new List<float>();
 		public List<NodeState> nodes = new List<NodeState>();
 		public List<ArcState> arcs = new List<ArcState>();
 		public List<AvatarState> avatars = new List<AvatarState>();

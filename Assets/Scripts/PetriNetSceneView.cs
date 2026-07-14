@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Text;
 using Unity.Netcode;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -593,7 +594,6 @@ public partial class GameManager
 		connectStartNodeId = null;
 		CancelCraneConnectPreview();
 		draggedNodeId = null;
-		avatarStartPositionApplied = false;
 		heldTransitionId = null;
 		heldPlaceId = null;
 		heldCompositeBlockId = null;
@@ -4877,18 +4877,18 @@ public partial class GameManager
 
 	private string JoinTransitionLabelWords(string[] words, int startIndex, int count)
 	{
-		string result = "";
+		StringBuilder result = new StringBuilder();
 		for (int i = 0; i < count; i++)
 		{
 			if (i > 0)
 			{
-				result += " ";
+				result.Append(' ');
 			}
 
-			result += words[startIndex + i];
+			result.Append(words[startIndex + i]);
 		}
 
-		return result;
+		return result.ToString();
 	}
 
 	private int GetLongestTransitionLabelLineLength(string label)
@@ -5123,7 +5123,7 @@ public partial class GameManager
 		AddUniqueTokenValue(outputToken.states, processingState);
 		if (!string.IsNullOrWhiteSpace(processingState))
 		{
-			if (GetNonEmptyTokenDescriptionCount(consumedTokens) > 1)
+			if (ShouldWrapTokenBaseDescription(baseDescription, consumedTokens))
 			{
 				baseDescription = "(" + baseDescription + ")";
 			}
@@ -5132,6 +5132,17 @@ public partial class GameManager
 		}
 
 		return outputToken;
+	}
+
+	private bool ShouldWrapTokenBaseDescription(string baseDescription, List<TokenRuntime> consumedTokens)
+	{
+		string trimmedDescription = baseDescription != null ? baseDescription.Trim() : "";
+		if (trimmedDescription.Length <= 0 || (trimmedDescription.StartsWith("(") && trimmedDescription.EndsWith(")")))
+		{
+			return false;
+		}
+
+		return GetNonEmptyTokenDescriptionCount(consumedTokens) > 1 || trimmedDescription.Contains(",");
 	}
 
 	private string GetTokenDescription(TokenRuntime token)
@@ -5184,7 +5195,7 @@ public partial class GameManager
 			return "";
 		}
 
-		string result = "";
+		StringBuilder result = new StringBuilder();
 		for (int i = 0; i < tokensToCombine.Count; i++)
 		{
 			TokenRuntime token = tokensToCombine[i];
@@ -5199,15 +5210,15 @@ public partial class GameManager
 				continue;
 			}
 
-			if (!string.IsNullOrEmpty(result))
+			if (result.Length > 0)
 			{
-				result += ", ";
+				result.Append(", ");
 			}
 
-			result += description;
+			result.Append(description);
 		}
 
-		return result;
+		return result.ToString();
 	}
 
 	private int GetNonEmptyTokenDescriptionCount(List<TokenRuntime> tokensToCombine)
@@ -5244,24 +5255,25 @@ public partial class GameManager
 		}
 
 		int visibleCount = Mathf.Min(placeNode.typedTokens.Count, 3);
-		string label = "";
+		StringBuilder label = new StringBuilder();
 		for (int i = 0; i < visibleCount; i++)
 		{
 			if (i > 0)
 			{
-				label += "\n";
+				label.Append('\n');
 			}
 
-			label += GetTokenDescription(placeNode.typedTokens[i]);
+			label.Append(GetTokenDescription(placeNode.typedTokens[i]));
 		}
 
 		int hiddenCount = placeNode.typedTokens.Count - visibleCount;
 		if (hiddenCount > 0)
 		{
-			label += "\n+" + hiddenCount;
+			label.Append("\n+");
+			label.Append(hiddenCount);
 		}
 
-		return label;
+		return label.ToString();
 	}
 
 	private string JoinTokenValues(List<string> values)
@@ -5271,7 +5283,7 @@ public partial class GameManager
 			return "";
 		}
 
-		string result = "";
+		StringBuilder result = new StringBuilder();
 		for (int i = 0; i < values.Count; i++)
 		{
 			string value = values[i] != null ? values[i].Trim() : "";
@@ -5280,15 +5292,15 @@ public partial class GameManager
 				continue;
 			}
 
-			if (!string.IsNullOrEmpty(result))
+			if (result.Length > 0)
 			{
-				result += ", ";
+				result.Append(", ");
 			}
 
-			result += value;
+			result.Append(value);
 		}
 
-		return result;
+		return result.ToString();
 	}
 
 	private string SanitizeTokenObjectName(string value)
@@ -5298,14 +5310,14 @@ public partial class GameManager
 			return "unbekannt";
 		}
 
-		string result = "";
+		StringBuilder result = new StringBuilder();
 		for (int i = 0; i < value.Length; i++)
 		{
 			char c = value[i];
-			result += char.IsLetterOrDigit(c) ? c : '_';
+			result.Append(char.IsLetterOrDigit(c) ? c : '_');
 		}
 
-		return result;
+		return result.ToString();
 	}
 
 	private void RefreshTokenVisuals(NodeRuntime placeNode)

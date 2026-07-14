@@ -70,6 +70,7 @@ public class PetriNetLevelInhibitorArcDefinition
 public class PetriNetLevelOrderDefinition
 {
 	public string dishText = "Gericht";
+	public string requiredTokenText = "";
 	public float appearsAtSeconds;
 	public float expiresAtSeconds = 60f;
 
@@ -78,8 +79,14 @@ public class PetriNetLevelOrderDefinition
 	}
 
 	public PetriNetLevelOrderDefinition(string dishText, float appearsAtSeconds, float expiresAtSeconds)
+		: this(dishText, dishText, appearsAtSeconds, expiresAtSeconds)
+	{
+	}
+
+	public PetriNetLevelOrderDefinition(string dishText, string requiredTokenText, float appearsAtSeconds, float expiresAtSeconds)
 	{
 		this.dishText = dishText;
+		this.requiredTokenText = requiredTokenText;
 		this.appearsAtSeconds = appearsAtSeconds;
 		this.expiresAtSeconds = expiresAtSeconds;
 	}
@@ -161,8 +168,8 @@ public static class PetriNetLevelCatalog
 			new List<string> { "Suppengemüse" },
 			new List<PetriNetLevelOrderDefinition>
 			{
-				new PetriNetLevelOrderDefinition("Kartoffelsuppe: Kartoffeln geschnitten und mit Suppengemüse gekocht", 0f, 60f),
-				new PetriNetLevelOrderDefinition("Kartoffelsuppe: Kartoffeln geschnitten und mit Suppengemüse gekocht", 30f, 90f),
+				new PetriNetLevelOrderDefinition("Kartoffelsuppe", "(Kartoffeln geschnitten, Suppengemüse) gekocht", 0f, 60f),
+				new PetriNetLevelOrderDefinition("Kartoffelsuppe", "(Kartoffeln geschnitten, Suppengemüse) gekocht", 30f, 90f),
 			},
 			new List<string>()),
 
@@ -179,12 +186,12 @@ public static class PetriNetLevelCatalog
 			new List<string> { "Suppengemüse", "Zwiebeln", "Petersilie" },
 			new List<PetriNetLevelOrderDefinition>
 			{
-				new PetriNetLevelOrderDefinition("Tomatensuppe: Tomaten geschnitten und mit Suppengemüse gekocht und mit Schnittlauch dekoriert", 0f, 60f),
-				new PetriNetLevelOrderDefinition("Zwiebelsuppe: Zwiebeln geschnitten und mit Suppengemüse gekocht und mit Petersilie dekoriert", 0f, 90f),
-				new PetriNetLevelOrderDefinition("Kartoffelsuppe: Kartoffeln geschnitten und mit Suppengemüse gekocht", 30f, 90f),
-				new PetriNetLevelOrderDefinition("Tomatensuppe: Tomaten geschnitten und mit Suppengemüse gekocht und mit Schnittlauch dekoriert", 60f, 120f),
-				new PetriNetLevelOrderDefinition("Zwiebelsuppe: Zwiebeln geschnitten und mit Suppengemüse gekocht und mit Petersilie dekoriert", 90f, 150f),
-				new PetriNetLevelOrderDefinition("Kartoffelsuppe: Kartoffeln geschnitten und mit Suppengemüse gekocht", 90f, 150f),
+				new PetriNetLevelOrderDefinition("Tomatensuppe", "((Tomaten geschnitten, Suppengemüse) gekocht, Schnittlauch) dekoriert", 0f, 60f),
+				new PetriNetLevelOrderDefinition("Zwiebelsuppe", "((Zwiebeln geschnitten, Suppengemüse) gekocht, Petersilie) dekoriert", 0f, 90f),
+				new PetriNetLevelOrderDefinition("Kartoffelsuppe", "(Kartoffeln geschnitten, Suppengemüse) gekocht", 30f, 90f),
+				new PetriNetLevelOrderDefinition("Tomatensuppe", "((Tomaten geschnitten, Suppengemüse) gekocht, Schnittlauch) dekoriert", 60f, 120f),
+				new PetriNetLevelOrderDefinition("Zwiebelsuppe", "((Zwiebeln geschnitten, Suppengemüse) gekocht, Petersilie) dekoriert", 90f, 150f),
+				new PetriNetLevelOrderDefinition("Kartoffelsuppe", "(Kartoffeln geschnitten, Suppengemüse) gekocht", 90f, 150f),
 			},
 			new List<string>()),
 
@@ -201,12 +208,12 @@ public static class PetriNetLevelCatalog
 			new List<string> { "Suppengemüse", "Zwiebeln", "Petersilie" },
 			new List<PetriNetLevelOrderDefinition>
 			{
-				new PetriNetLevelOrderDefinition("Tomatensuppe: Tomaten geschnitten und mit Suppengemüse gekocht und mit Schnittlauch dekoriert", 0f, 60f),
-				new PetriNetLevelOrderDefinition("Zwiebelsuppe: Zwiebeln geschnitten und mit Suppengemüse gekocht und mit Petersilie dekoriert", 0f, 90f),
-				new PetriNetLevelOrderDefinition("Kartoffelsuppe: Kartoffeln geschnitten und mit Suppengemüse gekocht", 30f, 90f),
-				new PetriNetLevelOrderDefinition("Tomatensuppe: Tomaten geschnitten und mit Suppengemüse gekocht und mit Schnittlauch dekoriert", 60f, 120f),
-				new PetriNetLevelOrderDefinition("Zwiebelsuppe: Zwiebeln geschnitten und mit Suppengemüse gekocht und mit Petersilie dekoriert", 90f, 150f),
-				new PetriNetLevelOrderDefinition("Kartoffelsuppe: Kartoffeln geschnitten und mit Suppengemüse gekocht", 90f, 150f),
+				new PetriNetLevelOrderDefinition("Tomatensuppe", "((Tomaten geschnitten, Suppengemüse) gekocht, Schnittlauch) dekoriert", 0f, 60f),
+				new PetriNetLevelOrderDefinition("Zwiebelsuppe", "((Zwiebeln geschnitten, Suppengemüse) gekocht, Petersilie) dekoriert", 0f, 90f),
+				new PetriNetLevelOrderDefinition("Kartoffelsuppe", "(Kartoffeln geschnitten, Suppengemüse) gekocht", 30f, 90f),
+				new PetriNetLevelOrderDefinition("Tomatensuppe", "((Tomaten geschnitten, Suppengemüse) gekocht, Schnittlauch) dekoriert", 60f, 120f),
+				new PetriNetLevelOrderDefinition("Zwiebelsuppe", "((Zwiebeln geschnitten, Suppengemüse) gekocht, Petersilie) dekoriert", 90f, 150f),
+				new PetriNetLevelOrderDefinition("Kartoffelsuppe", "(Kartoffeln geschnitten, Suppengemüse) gekocht", 90f, 150f),
 			},
 			new List<string>()),
 
@@ -239,12 +246,12 @@ public static class PetriNetLevelCatalog
 			bottomIngredients: new List<string> { "Suppengemüse", "Zwiebeln", "Petersilie" },
 			orders: new List<PetriNetLevelOrderDefinition>
 			{
-				new PetriNetLevelOrderDefinition("Tomatensuppe: Tomaten geschnitten und mit Suppengemüse gekocht und mit Schnittlauch dekoriert", 0f, 60f),
-				new PetriNetLevelOrderDefinition("Zwiebelsuppe: Zwiebeln geschnitten und mit Suppengemüse gekocht und mit Petersilie dekoriert", 0f, 90f),
-				new PetriNetLevelOrderDefinition("Kartoffelsuppe: Kartoffeln geschnitten und mit Suppengemüse gekocht", 30f, 90f),
-				new PetriNetLevelOrderDefinition("Tomatensuppe: Tomaten geschnitten und mit Suppengemüse gekocht und mit Schnittlauch dekoriert", 60f, 120f),
-				new PetriNetLevelOrderDefinition("Zwiebelsuppe: Zwiebeln geschnitten und mit Suppengemüse gekocht und mit Petersilie dekoriert", 90f, 150f),
-				new PetriNetLevelOrderDefinition("Kartoffelsuppe: Kartoffeln geschnitten und mit Suppengemüse gekocht", 90f, 150f),
+				new PetriNetLevelOrderDefinition("Tomatensuppe", "((Tomaten geschnitten, Suppengemüse) gekocht, Schnittlauch) dekoriert", 0f, 60f),
+				new PetriNetLevelOrderDefinition("Zwiebelsuppe", "((Zwiebeln geschnitten, Suppengemüse) gekocht, Petersilie) dekoriert", 0f, 90f),
+				new PetriNetLevelOrderDefinition("Kartoffelsuppe", "(Kartoffeln geschnitten, Suppengemüse) gekocht", 30f, 90f),
+				new PetriNetLevelOrderDefinition("Tomatensuppe", "((Tomaten geschnitten, Suppengemüse) gekocht, Schnittlauch) dekoriert", 60f, 120f),
+				new PetriNetLevelOrderDefinition("Zwiebelsuppe", "((Zwiebeln geschnitten, Suppengemüse) gekocht, Petersilie) dekoriert", 90f, 150f),
+				new PetriNetLevelOrderDefinition("Kartoffelsuppe", "(Kartoffeln geschnitten, Suppengemüse) gekocht", 90f, 150f),
 			},
 			extras: new List<string>()),
 	};

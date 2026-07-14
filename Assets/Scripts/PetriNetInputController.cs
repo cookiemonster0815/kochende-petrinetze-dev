@@ -1,6 +1,6 @@
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.InputSystem;
-using System.Collections.Generic;
 
 public partial class GameManager
 {
@@ -49,6 +49,7 @@ public partial class GameManager
 	{
 		if (IsGameplayMenuOpen() || (showLevelSelection && !gameplayInitialized && IsGameplayConnectionReady()))
 		{
+			isMiddlePanning = false;
 			return;
 		}
 
@@ -62,36 +63,43 @@ public partial class GameManager
 			return;
 		}
 
-		float scroll = 0f;
-		if (Mouse.current != null)
+		Mouse mouse = Mouse.current;
+		if (mouse == null)
 		{
-			scroll = Mouse.current.scroll.ReadValue().y;
+			isMiddlePanning = false;
+			return;
 		}
 
+		float scroll = mouse.scroll.ReadValue().y;
 		if (Mathf.Abs(scroll) > 0.001f)
 		{
 			float zoomDelta = scroll * zoomSpeed * 0.05f;
 			mainCamera.orthographicSize = Mathf.Clamp(mainCamera.orthographicSize - zoomDelta, minZoom, maxZoom);
 		}
 
-		if (Mouse.current != null && Mouse.current.middleButton.wasPressedThisFrame)
+		if (enableSharedTransitionPool)
+		{
+			isMiddlePanning = false;
+			return;
+		}
+
+		if (!mouse.middleButton.isPressed)
+		{
+			isMiddlePanning = false;
+		}
+
+		if (mouse.middleButton.wasPressedThisFrame)
 		{
 			isMiddlePanning = true;
 			panReferenceWorld = GetMouseWorldPosition();
 		}
 
-		if (Mouse.current != null && isMiddlePanning && Mouse.current.middleButton.isPressed)
+		if (isMiddlePanning && mouse.middleButton.isPressed)
 		{
 			Vector3 currentWorld = GetMouseWorldPosition();
 			Vector3 delta = panReferenceWorld - currentWorld;
 			mainCamera.transform.position += delta;
 		}
-
-		if (Mouse.current != null && Mouse.current.middleButton.wasReleasedThisFrame)
-		{
-			isMiddlePanning = false;
-		}
-
 	}
 
 	private float cameraVelocityX = 0f;
@@ -107,35 +115,8 @@ public partial class GameManager
 				mainCamera.orthographicSize = requiredSize;
 			}
 
-			Vector2 sharedCameraCenter = GetCameraGroundCenter();
-			float sharedScreenHeight = mainCamera.orthographicSize * 2f;
-			float sharedScreenWidth = sharedScreenHeight * mainCamera.aspect;
-			float sharedRestMarginX = sharedScreenWidth * cameraRestAreaMargin;
-			float sharedRestMarginY = sharedScreenHeight * cameraRestAreaMargin;
-			float sharedNewX = sharedCameraCenter.x;
-			float sharedNewY = sharedCameraCenter.y;
-
-			if (avatarPosition.x > sharedCameraCenter.x + sharedRestMarginX)
-			{
-				sharedNewX = avatarPosition.x - sharedRestMarginX;
-			}
-			else if (avatarPosition.x < sharedCameraCenter.x - sharedRestMarginX)
-			{
-				sharedNewX = avatarPosition.x + sharedRestMarginX;
-			}
-
-			if (avatarPosition.y > sharedCameraCenter.y + sharedRestMarginY)
-			{
-				sharedNewY = avatarPosition.y - sharedRestMarginY;
-			}
-			else if (avatarPosition.y < sharedCameraCenter.y - sharedRestMarginY)
-			{
-				sharedNewY = avatarPosition.y + sharedRestMarginY;
-			}
-
-			SetCameraGroundCenter(mainCamera, new Vector2(sharedNewX, sharedNewY));
-			cameraVelocityX = 0f;
-			cameraVelocityY = 0f;
+			isMiddlePanning = false;
+			UpdateSharedScreenCameraFollow();
 			return;
 		}
 
@@ -174,6 +155,64 @@ public partial class GameManager
 		SetCameraGroundCenter(mainCamera, new Vector2(newX, newY));
 	}
 
+	private void UpdateSharedScreenCameraFollow()
+	{
+		float screenHeight = mainCamera.orthographicSize * 2f;
+		float screenWidth = screenHeight * mainCamera.aspect;
+		float restMarginX = screenWidth * cameraRestAreaMargin;
+		float restMarginY = screenHeight * cameraRestAreaMargin;
+
+		Vector2 cameraCenter = GetCameraGroundCenter();
+		float targetX = cameraCenter.x;
+		float targetY = cameraCenter.y;
+		bool shouldMoveX = false;
+		bool shouldMoveY = false;
+
+		if (avatarPosition.x > cameraCenter.x + restMarginX)
+		{
+			targetX = avatarPosition.x - restMarginX;
+			shouldMoveX = true;
+		}
+		else if (avatarPosition.x < cameraCenter.x - restMarginX)
+		{
+			targetX = avatarPosition.x + restMarginX;
+			shouldMoveX = true;
+		}
+
+		if (avatarPosition.y > cameraCenter.y + restMarginY)
+		{
+			targetY = avatarPosition.y - restMarginY;
+			shouldMoveY = true;
+		}
+		else if (avatarPosition.y < cameraCenter.y - restMarginY)
+		{
+			targetY = avatarPosition.y + restMarginY;
+			shouldMoveY = true;
+		}
+
+		float newX = cameraCenter.x;
+		float newY = cameraCenter.y;
+		if (shouldMoveX)
+		{
+			newX = Mathf.SmoothDamp(cameraCenter.x, targetX, ref cameraVelocityX, 0.16f, Mathf.Infinity, Time.deltaTime);
+		}
+		else
+		{
+			cameraVelocityX = Mathf.Lerp(cameraVelocityX, 0f, Time.deltaTime * 12f);
+		}
+
+		if (shouldMoveY)
+		{
+			newY = Mathf.SmoothDamp(cameraCenter.y, targetY, ref cameraVelocityY, 0.16f, Mathf.Infinity, Time.deltaTime);
+		}
+		else
+		{
+			cameraVelocityY = Mathf.Lerp(cameraVelocityY, 0f, Time.deltaTime * 12f);
+		}
+
+		SetCameraGroundCenter(mainCamera, new Vector2(newX, newY));
+	}
+
 	private void HandleAvatarInput()
 	{
 		Keyboard keyboard = Keyboard.current;
@@ -204,9 +243,12 @@ public partial class GameManager
 
 		if (keyboard.qKey.wasPressedThisFrame)
 		{
-			HandleCraneConnectAction();
-			UpdateAvatarVisuals();
-			return;
+			if (!IsHoldingCraneObject())
+			{
+				HandleCraneConnectAction();
+				UpdateAvatarVisuals();
+				return;
+			}
 		}
 
 		if (keyboard.fKey.wasPressedThisFrame)
@@ -320,12 +362,21 @@ public partial class GameManager
 		TryPickupArcWithCrane();
 	}
 
+	private bool IsHoldingCraneObject()
+	{
+		return !string.IsNullOrEmpty(heldPlaceId)
+			|| !string.IsNullOrEmpty(heldTransitionId)
+			|| !string.IsNullOrEmpty(heldCompositeBlockId);
+	}
+
+	private Vector2 GetCraneTarget2D()
+	{
+		return new Vector2(avatarPosition.x, avatarPosition.y);
+	}
+
 	private float GetSpaceCraneDipTargetHeight()
 	{
-		if (!string.IsNullOrEmpty(heldPlaceId)
-			|| !string.IsNullOrEmpty(heldTransitionId)
-			|| !string.IsNullOrEmpty(heldCompositeBlockId)
-			|| IsCraneOverAnyNode())
+		if (IsHoldingCraneObject() || IsCraneOverAnyNode())
 		{
 			return GetCraneHeightForHookTarget(NodeVisualTopZ);
 		}
@@ -335,7 +386,7 @@ public partial class GameManager
 
 	private bool IsCraneOverAnyNode()
 	{
-		Vector2 craneTarget = new Vector2(avatarPosition.x, avatarPosition.y);
+		Vector2 craneTarget = GetCraneTarget2D();
 		foreach (KeyValuePair<string, NodeRuntime> pair in nodesById)
 		{
 			NodeRuntime node = pair.Value;
@@ -503,7 +554,7 @@ public partial class GameManager
 
 	private void HandleCraneConnectAction()
 	{
-		if (!string.IsNullOrEmpty(heldCompositeBlockId))
+		if (IsHoldingCraneObject())
 		{
 			return;
 		}
@@ -612,7 +663,7 @@ public partial class GameManager
 			return false;
 		}
 
-		Vector2 craneTarget = new Vector2(avatarPosition.x, avatarPosition.y);
+		Vector2 craneTarget = GetCraneTarget2D();
 		float distanceToStart = Vector2.Distance(craneTarget, new Vector2(start.x, start.y));
 		float distanceToEnd = Vector2.Distance(craneTarget, new Vector2(end.x, end.y));
 		bool pickupFromSide = distanceToStart <= distanceToEnd;
@@ -687,7 +738,7 @@ public partial class GameManager
 
 			Vector2 blockCenter = GetCompositeBlockCenter(block.id);
 			heldCompositeBlockId = block.id;
-			heldCompositeBlockOffset = blockCenter - new Vector2(avatarPosition.x, avatarPosition.y);
+			heldCompositeBlockOffset = blockCenter - GetCraneTarget2D();
 			if (IsCompositeBlockAvailableInSharedPool(block.id))
 			{
 				SetCompositeBlockSharedPoolState(block.id, GetLocalActorClientId(), false, true);
@@ -931,7 +982,7 @@ public partial class GameManager
 	private bool TryGetNodeAtCraneTarget(out NodeRuntime closestNode)
 	{
 		closestNode = null;
-		Vector2 craneTarget = new Vector2(avatarPosition.x, avatarPosition.y);
+		Vector2 craneTarget = GetCraneTarget2D();
 		float closestDistance = float.MaxValue;
 
 		foreach (KeyValuePair<string, NodeRuntime> pair in nodesById)
@@ -968,7 +1019,7 @@ public partial class GameManager
 
 	private bool TryGetHoverSelectableNodeAtCraneTarget(out NodeRuntime closestNode)
 	{
-		Vector2 craneTarget = new Vector2(avatarPosition.x, avatarPosition.y);
+		Vector2 craneTarget = GetCraneTarget2D();
 		return TryGetHoverSelectableNodeAtPoint(craneTarget, GetLocalActorClientId(), out closestNode);
 	}
 
@@ -1011,7 +1062,7 @@ public partial class GameManager
 
 	private bool TryGetCompositeBlockAtCraneTarget(out CompositeBlockRuntime closestBlock)
 	{
-		Vector2 craneTarget = new Vector2(avatarPosition.x, avatarPosition.y);
+		Vector2 craneTarget = GetCraneTarget2D();
 		return TryGetCompositeBlockAtPoint(craneTarget, GetLocalActorClientId(), out closestBlock);
 	}
 
@@ -1056,7 +1107,7 @@ public partial class GameManager
 
 	private bool DoesCraneShadowTouchRect(Rect rect)
 	{
-		Vector2 shadowCenter = new Vector2(avatarPosition.x, avatarPosition.y);
+		Vector2 shadowCenter = GetCraneTarget2D();
 		return DoesCraneShadowTouchRect(rect, shadowCenter);
 	}
 
@@ -1099,7 +1150,7 @@ public partial class GameManager
 	private bool TryGetTransitionAtCraneTarget(out NodeRuntime closestTransition)
 	{
 		closestTransition = null;
-		Vector2 craneTarget = new Vector2(avatarPosition.x, avatarPosition.y);
+		Vector2 craneTarget = GetCraneTarget2D();
 		float closestDistance = float.MaxValue;
 
 		foreach (KeyValuePair<string, NodeRuntime> pair in nodesById)
@@ -1129,7 +1180,7 @@ public partial class GameManager
 
 	private bool TryGetArcAtCraneTarget(out ArcRuntime closestArc)
 	{
-		Vector2 craneTarget = new Vector2(avatarPosition.x, avatarPosition.y);
+		Vector2 craneTarget = GetCraneTarget2D();
 		return TryGetArcAtPoint(craneTarget, GetLocalActorClientId(), out closestArc);
 	}
 

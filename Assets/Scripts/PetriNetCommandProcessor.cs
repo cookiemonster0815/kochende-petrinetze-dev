@@ -90,7 +90,39 @@ public partial class GameManager
 			return;
 		}
 
+		SendReliableAvatarStateBeforeCommand();
+		AttachLocalAvatarStateToCommand(cmd);
 		SendCommandToHost(cmd);
+	}
+
+	private void SendReliableAvatarStateBeforeCommand()
+	{
+		SendAvatarUpdate(avatarPosition, avatarRotation, heldTransitionId, true);
+		nextAvatarNetworkSyncTime = Time.unscaledTime + avatarNetworkSyncInterval;
+		lastAvatarPosition = avatarPosition;
+		lastAvatarNetworkSyncRotation = avatarRotation;
+		lastAvatarNetworkSyncHeldId = GetCurrentHeldNetworkKey();
+		lastAvatarNetworkSyncCraneHeight = avatarCraneCurrentHeight;
+	}
+
+	private void AttachLocalAvatarStateToCommand(CommandData cmd)
+	{
+		if (cmd == null)
+		{
+			return;
+		}
+
+		AvatarState state = BuildLocalAvatarState(avatarPosition, avatarRotation, heldTransitionId);
+		cmd.hasAvatarState = true;
+		cmd.avatarX = state.x;
+		cmd.avatarY = state.y;
+		cmd.avatarRotation = state.rotation;
+		cmd.avatarCraneHeight = state.craneHeight;
+		cmd.avatarHeldTransitionId = state.heldTransitionId;
+		cmd.avatarHeldObjectId = state.heldObjectId;
+		cmd.avatarHeldObjectKind = state.heldObjectKind;
+		cmd.avatarHeldOffsetX = state.heldOffsetX;
+		cmd.avatarHeldOffsetY = state.heldOffsetY;
 	}
 
 	private bool ApplyCommand(CommandData cmd, ulong actorClientId)
@@ -100,8 +132,17 @@ public partial class GameManager
 			return false;
 		}
 
+		if (IsGameplayCommandBlockedByPause(cmd.action, actorClientId))
+		{
+			return false;
+		}
+
 		switch (cmd.action)
 		{
+			case "PauseGameplay":
+				return PauseGameplayFromHost(actorClientId);
+			case "ResumeGameplay":
+				return ResumeGameplayFromHost(actorClientId);
 			case "CreatePlace":
 			{
 				Vector2 clampedPosition = ClampPositionToPlayerZone(new Vector2(cmd.x, cmd.y), actorClientId);
@@ -130,6 +171,9 @@ public partial class GameManager
 			case "ReturnToLevelSelection":
 				ReturnToLevelSelectionFromHost();
 				return false;
+			case "EndLevel":
+				EndLevelFromHost(actorClientId);
+				return true;
 			case "ConfirmLevelSelection":
 				ConfirmLevelSelection(cmd.amount);
 				return false;

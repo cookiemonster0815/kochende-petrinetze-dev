@@ -87,95 +87,110 @@ public class LobbyRelayManager : MonoBehaviour
         }
 
         GameManager gameManager = FindAnyObjectByType<GameManager>();
-        if (gameManager != null && gameManager.ShouldSuppressLobbyOverlay())
+        bool showLevelSelectionLobbyOverlay = gameManager != null && gameManager.ShouldShowLevelSelectionLobbyOverlay();
+        if (gameManager != null && gameManager.ShouldSuppressLobbyOverlay() && !showLevelSelectionLobbyOverlay)
         {
             return;
         }
 
-        bool connected = AreBothPlayersConnected();
-        Matrix4x4 oldMatrix = GUI.matrix;
-        if (!connected)
+        if (AreBothPlayersConnected())
         {
-            Vector2 pivot = new Vector2(Screen.width * 0.5f, Screen.height * 0.5f);
-            GUIUtility.ScaleAroundPivot(new Vector2(lobbyZoomScale, lobbyZoomScale), pivot);
+            if (showLevelSelectionLobbyOverlay)
+            {
+                DrawConnectedLevelSelectionLobbyOverlay();
+            }
+
+            return;
         }
 
-        Rect panel = connected
-            ? new Rect(12f, Screen.height - 136f, 420f, 124f)
-            : new Rect(0f, 0f, Screen.width, Screen.height);
+        Matrix4x4 oldMatrix = GUI.matrix;
+        Vector2 pivot = new Vector2(Screen.width * 0.5f, Screen.height * 0.5f);
+        GUIUtility.ScaleAroundPivot(new Vector2(lobbyZoomScale, lobbyZoomScale), pivot);
 
-        GUI.Box(panel, connected ? "Lobby + Relay (Connected)" : "Lobby + Relay");
-        float x = connected ? panel.x + 16f : panel.x + Mathf.Max(24f, panel.width * 0.18f);
-        float y = connected ? panel.y + 26f : panel.y + Mathf.Max(48f, panel.height * 0.28f);
-        float contentWidth = connected ? panel.width - 32f : Mathf.Min(820f, panel.width * 0.64f);
+        Rect panel = new Rect(0f, 0f, Screen.width, Screen.height);
+
+        GUI.Box(panel, "Lobby + Relay");
+        float x = panel.x + Mathf.Max(24f, panel.width * 0.18f);
+        float y = panel.y + Mathf.Max(48f, panel.height * 0.28f);
+        float contentWidth = Mathf.Min(820f, panel.width * 0.64f);
 
         GUI.Label(new Rect(x, y, contentWidth, 22f), "Status: " + statusMessage);
         y += 30f;
 
-        if (!connected)
+        GUI.enabled = servicesReady && !busy;
+
+        if (GUI.Button(new Rect(x, y, 240f, 38f), "Create Lobby (Host)"))
         {
-            GUI.enabled = servicesReady && !busy;
-
-            if (GUI.Button(new Rect(x, y, 240f, 38f), "Create Lobby (Host)"))
-            {
-                _ = CreateLobbyAndStartHostAsync();
-            }
-
-            GUI.Label(new Rect(x + 260f, y + 8f, 90f, 22f), "Join Code:");
-            joinCodeInput = GUI.TextField(new Rect(x + 350f, y + 6f, 150f, 28f), joinCodeInput ?? string.Empty);
-
-            if (GUI.Button(new Rect(x + 510f, y, 180f, 38f), "Join Lobby"))
-            {
-                _ = JoinLobbyAndStartClientAsync(joinCodeInput);
-            }
-
-            y += 44f;
-            GUI.enabled = servicesReady && !busy && !string.IsNullOrWhiteSpace(LoadLastLobbyCode());
-            if (GUI.Button(new Rect(x + 350f, y, 340f, 30f), "Join Last Code (J)"))
-            {
-                _ = JoinLobbyAndStartClientAsync(LoadLastLobbyCode());
-            }
-
-            y += 36f;
-            GUI.enabled = servicesReady && !busy;
-            if (GUI.Button(new Rect(x + 350f, y, 340f, 30f), "Auto Join Test Lobby (T)"))
-            {
-                _ = JoinLatestLobbyByNameAsync();
-            }
-
-            y += 36f;
-            GUI.enabled = currentLobby != null && !busy;
-            if (GUI.Button(new Rect(x, y, 150f, 30f), "Leave Lobby"))
-            {
-                _ = LeaveLobbyAsync();
-            }
-
-            GUI.enabled = true;
-            y += 38f;
-            if (!string.IsNullOrEmpty(currentJoinCode))
-            {
-                GUI.Label(new Rect(x, y, contentWidth, 22f), "Current Join Code: " + currentJoinCode);
-            }
-
-            y += 24f;
-            GUI.Label(new Rect(x, y, contentWidth, 20f), "Shortcuts: H Host | Enter Join | J Join Last | T Auto Join | L Leave");
+            _ = CreateLobbyAndStartHostAsync();
         }
-        else
+
+        GUI.Label(new Rect(x + 260f, y + 8f, 90f, 22f), "Join Code:");
+        joinCodeInput = GUI.TextField(new Rect(x + 350f, y + 6f, 150f, 28f), joinCodeInput ?? string.Empty);
+
+        if (GUI.Button(new Rect(x + 510f, y, 180f, 38f), "Join Lobby"))
         {
-            GUI.enabled = currentLobby != null && !busy;
-            if (GUI.Button(new Rect(x, y, 150f, 28f), "Leave Lobby"))
-            {
-                _ = LeaveLobbyAsync();
-            }
-
-            GUI.enabled = true;
-            if (!string.IsNullOrEmpty(currentJoinCode))
-            {
-                GUI.Label(new Rect(x + 170f, y + 4f, panel.width - 190f, 22f), "Code: " + currentJoinCode);
-            }
+            _ = JoinLobbyAndStartClientAsync(joinCodeInput);
         }
+
+        y += 44f;
+        GUI.enabled = servicesReady && !busy && !string.IsNullOrWhiteSpace(LoadLastLobbyCode());
+        if (GUI.Button(new Rect(x + 350f, y, 340f, 30f), "Join Last Code (J)"))
+        {
+            _ = JoinLobbyAndStartClientAsync(LoadLastLobbyCode());
+        }
+
+        y += 36f;
+        GUI.enabled = servicesReady && !busy;
+        if (GUI.Button(new Rect(x + 350f, y, 340f, 30f), "Auto Join Test Lobby (T)"))
+        {
+            _ = JoinLatestLobbyByNameAsync();
+        }
+
+        y += 36f;
+        GUI.enabled = currentLobby != null && !busy;
+        if (GUI.Button(new Rect(x, y, 150f, 30f), "Leave Lobby"))
+        {
+            _ = LeaveLobbyAsync();
+        }
+
+        GUI.enabled = true;
+        y += 38f;
+        if (!string.IsNullOrEmpty(currentJoinCode))
+        {
+            GUI.Label(new Rect(x, y, contentWidth, 22f), "Current Join Code: " + currentJoinCode);
+        }
+
+        y += 24f;
+        GUI.Label(new Rect(x, y, contentWidth, 20f), "Shortcuts: H Host | Enter Join | J Join Last | T Auto Join | L Leave");
 
         GUI.matrix = oldMatrix;
+    }
+
+    private void DrawConnectedLevelSelectionLobbyOverlay()
+    {
+        Rect panel = new Rect(12f, Screen.height - 136f, 420f, 124f);
+        GUI.Box(panel, "Lobby + Relay");
+
+        float x = panel.x + 16f;
+        float y = panel.y + 28f;
+
+        GUI.Label(new Rect(x, y, panel.width - 32f, 22f), "Status: " + statusMessage);
+        y += 30f;
+
+        GUI.enabled = currentLobby != null && !busy;
+        if (GUI.Button(new Rect(x, y, 150f, 28f), "Leave Lobby"))
+        {
+            _ = LeaveLobbyAsync();
+        }
+
+        GUI.enabled = true;
+        if (!string.IsNullOrEmpty(currentJoinCode))
+        {
+            GUI.Label(new Rect(x + 170f, y + 4f, panel.width - 190f, 22f), "Code: " + currentJoinCode);
+        }
+
+        y += 34f;
+        GUI.Label(new Rect(x, y, panel.width - 32f, 20f), "Levelauswahl bereit");
     }
 
     private void HandleLobbyZoom()
@@ -315,6 +330,8 @@ public class LobbyRelayManager : MonoBehaviour
         busy = true;
         try
         {
+            await CleanupExistingSessionAsync();
+
             Allocation allocation = await RelayService.Instance.CreateAllocationAsync(maxPlayers - 1);
             string relayJoinCode = await RelayService.Instance.GetJoinCodeAsync(allocation.AllocationId);
 
@@ -339,6 +356,8 @@ public class LobbyRelayManager : MonoBehaviour
             joinCodeInput = currentJoinCode;
 
             EnsureNetworkManagerExists();
+            await ResetNetworkSessionAsync();
+            EnsureNetworkManagerExists();
             UnityTransport transport = NetworkManager.Singleton.GetComponent<UnityTransport>();
             transport.SetRelayServerData(new RelayServerData(allocation, "dtls"));
 
@@ -354,6 +373,7 @@ public class LobbyRelayManager : MonoBehaviour
         {
             statusMessage = "Create host failed: " + ex.Message;
             Debug.LogException(ex);
+            await CleanupExistingSessionAsync();
         }
         finally
         {
@@ -378,6 +398,8 @@ public class LobbyRelayManager : MonoBehaviour
         busy = true;
         try
         {
+            await CleanupExistingSessionAsync();
+
             currentLobby = await LobbyService.Instance.JoinLobbyByCodeAsync(lobbyCode.Trim().ToUpperInvariant());
             currentJoinCode = currentLobby.LobbyCode;
             SaveLastLobbyCode(currentJoinCode);
@@ -390,6 +412,8 @@ public class LobbyRelayManager : MonoBehaviour
 
             JoinAllocation joinAllocation = await RelayService.Instance.JoinAllocationAsync(relayData.Value);
 
+            EnsureNetworkManagerExists();
+            await ResetNetworkSessionAsync();
             EnsureNetworkManagerExists();
             UnityTransport transport = NetworkManager.Singleton.GetComponent<UnityTransport>();
             transport.SetRelayServerData(new RelayServerData(joinAllocation, "dtls"));
@@ -405,6 +429,7 @@ public class LobbyRelayManager : MonoBehaviour
         {
             statusMessage = "Join failed: " + ex.Message;
             Debug.LogException(ex);
+            await CleanupExistingSessionAsync();
         }
         finally
         {
@@ -474,6 +499,8 @@ public class LobbyRelayManager : MonoBehaviour
                 return;
             }
 
+            await CleanupExistingSessionAsync();
+
             currentLobby = await LobbyService.Instance.JoinLobbyByIdAsync(selectedLobby.Id);
             currentJoinCode = currentLobby.LobbyCode;
             SaveLastLobbyCode(currentJoinCode);
@@ -486,6 +513,8 @@ public class LobbyRelayManager : MonoBehaviour
 
             JoinAllocation joinAllocation = await RelayService.Instance.JoinAllocationAsync(selectedRelayData.Value);
 
+            EnsureNetworkManagerExists();
+            await ResetNetworkSessionAsync();
             EnsureNetworkManagerExists();
             UnityTransport transport = NetworkManager.Singleton.GetComponent<UnityTransport>();
             transport.SetRelayServerData(new RelayServerData(joinAllocation, "dtls"));
@@ -501,6 +530,7 @@ public class LobbyRelayManager : MonoBehaviour
         {
             statusMessage = "Auto-join failed: " + ex.Message;
             Debug.LogException(ex);
+            await CleanupExistingSessionAsync();
         }
         finally
         {
@@ -513,14 +543,12 @@ public class LobbyRelayManager : MonoBehaviour
         busy = true;
         try
         {
-            if (NetworkManager.Singleton != null)
-            {
-                NetworkManager.Singleton.Shutdown();
-            }
+            bool wasHost = IsHost() || IsCurrentLobbyHost();
+            await ResetNetworkSessionAsync();
 
             if (currentLobby != null)
             {
-                if (IsHost())
+                if (wasHost)
                 {
                     await LobbyService.Instance.DeleteLobbyAsync(currentLobby.Id);
                 }
@@ -545,9 +573,70 @@ public class LobbyRelayManager : MonoBehaviour
         }
     }
 
+    private async Task CleanupExistingSessionAsync()
+    {
+        bool wasHost = IsHost() || IsCurrentLobbyHost();
+        await ResetNetworkSessionAsync();
+
+        if (currentLobby == null)
+        {
+            currentJoinCode = string.Empty;
+            return;
+        }
+
+        try
+        {
+            if (wasHost)
+            {
+                await LobbyService.Instance.DeleteLobbyAsync(currentLobby.Id);
+            }
+            else if (AuthenticationService.Instance.IsSignedIn)
+            {
+                await LobbyService.Instance.RemovePlayerAsync(currentLobby.Id, AuthenticationService.Instance.PlayerId);
+            }
+        }
+        catch (Exception ex)
+        {
+            Debug.LogWarning("Existing lobby cleanup failed: " + ex.Message);
+        }
+
+        currentLobby = null;
+        currentJoinCode = string.Empty;
+    }
+
+    private async Task ResetNetworkSessionAsync()
+    {
+        EnsureNetworkManagerExists();
+        if (NetworkManager.Singleton == null || !NetworkManager.Singleton.IsListening)
+        {
+            return;
+        }
+
+        NetworkManager.Singleton.Shutdown();
+        for (int i = 0; i < 60; i++)
+        {
+            if (NetworkManager.Singleton == null || !NetworkManager.Singleton.IsListening)
+            {
+                await Task.Delay(100);
+                return;
+            }
+
+            await Task.Delay(50);
+        }
+
+        await Task.Delay(100);
+    }
+
     private bool IsHost()
     {
         return NetworkManager.Singleton != null && NetworkManager.Singleton.IsHost;
+    }
+
+    private bool IsCurrentLobbyHost()
+    {
+        return currentLobby != null
+            && AuthenticationService.Instance.IsSignedIn
+            && currentLobby.HostId == AuthenticationService.Instance.PlayerId;
     }
 
     private void HandleEmergencyStopHotkey()
@@ -631,7 +720,7 @@ public class LobbyRelayManager : MonoBehaviour
             manager.NetworkConfig = new NetworkConfig();
         }
 
-        if (manager.NetworkConfig.NetworkTransport == null)
+        if (transport != null && manager.NetworkConfig.NetworkTransport != transport)
         {
             manager.NetworkConfig.NetworkTransport = transport;
         }
