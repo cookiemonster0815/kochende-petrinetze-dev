@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Text;
 using Unity.Collections;
@@ -33,8 +34,14 @@ public partial class GameManager
 
 	private void UnregisterNetworkHandlers()
 	{
-		if (!networkHandlersRegistered || Unity.Netcode.NetworkManager.Singleton == null)
+		if (!networkHandlersRegistered)
 		{
+			return;
+		}
+
+		if (Unity.Netcode.NetworkManager.Singleton == null)
+		{
+			networkHandlersRegistered = false;
 			return;
 		}
 
@@ -64,11 +71,14 @@ public partial class GameManager
 
 		if (showLevelSelection && !gameplayInitialized)
 		{
+			EnsureLevelSelectionAvatarStartPosition();
+			SeedRemoteAvatarLevelSelectionStartPosition(clientId, true);
 			SendLevelSelectionStateToClient(clientId, new LevelSelectionState
 			{
 				showSelection = true,
 				selectedLevelIndex = selectedLevelIndex
 			});
+			SendAvatarStateToClient(clientId, BuildLocalAvatarState(avatarPosition, avatarRotation, heldTransitionId), true);
 			return;
 		}
 
@@ -114,7 +124,7 @@ public partial class GameManager
 			return;
 		}
 
-		StoreRemoteAvatarState(new AvatarState
+		AvatarState state = new AvatarState
 		{
 			clientId = (long)senderClientId,
 			x = cmd.avatarX,
@@ -126,7 +136,14 @@ public partial class GameManager
 			heldObjectKind = cmd.avatarHeldObjectKind,
 			heldOffsetX = cmd.avatarHeldOffsetX,
 			heldOffsetY = cmd.avatarHeldOffsetY,
-		});
+			sceneMode = cmd.avatarSceneMode,
+		};
+		if (!ShouldAcceptIncomingAvatarState(state))
+		{
+			return;
+		}
+
+		StoreRemoteAvatarState(state);
 	}
 
 	private void OnSnapshotMessageReceived(ulong senderClientId, FastBufferReader reader)
@@ -166,6 +183,11 @@ public partial class GameManager
 		if (Unity.Netcode.NetworkManager.Singleton.IsHost)
 		{
 			state.clientId = (long)senderClientId;
+			if (!ShouldAcceptIncomingAvatarState(state))
+			{
+				return;
+			}
+
 			RemoteHeldObjectState incomingHeldState = GetRemoteHeldObjectState(state);
 			RemoteHeldObjectState previousHeldState = null;
 			if (remoteAvatarInventories != null)
@@ -180,6 +202,11 @@ public partial class GameManager
 		}
 
 		if ((ulong)state.clientId == GetLocalActorClientId())
+		{
+			return;
+		}
+
+		if (!ShouldAcceptIncomingAvatarState(state))
 		{
 			return;
 		}
@@ -275,16 +302,37 @@ public partial class GameManager
 		return new AvatarState
 		{
 			clientId = (long)GetLocalActorClientId(),
-				x = position.x,
-				y = position.y,
-				rotation = rotation,
-				craneHeight = avatarCraneCurrentHeight,
-				heldTransitionId = heldKind == HeldObjectKind.Transition ? (heldId ?? "") : "",
+			x = position.x,
+			y = position.y,
+			rotation = rotation,
+			craneHeight = avatarCraneCurrentHeight,
+			heldTransitionId = heldKind == HeldObjectKind.Transition ? (heldId ?? "") : "",
 			heldObjectId = heldId ?? "",
 			heldObjectKind = (int)heldKind,
 			heldOffsetX = heldOffset.x,
 			heldOffsetY = heldOffset.y,
+			sceneMode = GetCurrentAvatarSceneMode(),
 		};
+	}
+
+	private int GetCurrentAvatarSceneMode()
+	{
+		return gameplayInitialized ? AvatarSceneModeGameplay : AvatarSceneModeLevelSelection;
+	}
+
+	private bool ShouldAcceptIncomingAvatarState(AvatarState state)
+	{
+		if (state == null)
+		{
+			return false;
+		}
+
+		if (showLevelSelection && !gameplayInitialized)
+		{
+			return state.sceneMode == AvatarSceneModeLevelSelection;
+		}
+
+		return !gameplayInitialized || state.sceneMode == AvatarSceneModeGameplay;
 	}
 
 	private string GetCurrentHeldObjectId()
@@ -490,10 +538,11 @@ public partial class GameManager
 			return;
 		}
 
-			remoteAvatarPositions[clientId] = new Vector3(state.x, state.y, 0f);
-			remoteAvatarRotations[clientId] = state.rotation;
-			remoteAvatarInventories[clientId] = GetRemoteHeldObjectState(state);
-			remoteAvatarCraneHeights[clientId] = state.craneHeight >= 0f ? state.craneHeight : avatarCraneRestHeight;
+		remoteAvatarPositions[clientId] = new Vector3(state.x, state.y, 0f);
+		remoteAvatarRotations[clientId] = state.rotation;
+		remoteAvatarInventories[clientId] = GetRemoteHeldObjectState(state);
+		remoteAvatarCraneHeights[clientId] = state.craneHeight >= 0f ? state.craneHeight : avatarCraneRestHeight;
+		NormalizeCompositeBlockSorting();
 	}
 
 	private void BroadcastSnapshotToClients()
@@ -587,6 +636,7 @@ public partial class GameManager
 					heldObjectKind = (int)heldState.kind,
 					heldOffsetX = heldState.offset.x,
 					heldOffsetY = heldState.offset.y,
+					sceneMode = AvatarSceneModeGameplay,
 				});
 			}
 		}
@@ -612,6 +662,7 @@ public partial class GameManager
 				state.description = token.description ?? "";
 				CopyTokenValues(token.ingredients, state.ingredients);
 				CopyTokenValues(token.states, state.states);
+				state.ingredients.Sort(StringComparer.OrdinalIgnoreCase);
 			}
 
 			states.Add(state);
@@ -639,6 +690,7 @@ public partial class GameManager
 					token.description = state.description ?? "";
 					CopyTokenValues(state.ingredients, token.ingredients);
 					CopyTokenValues(state.states, token.states);
+					NormalizeTokenIngredients(token);
 				}
 
 				node.typedTokens.Add(token);
@@ -851,7 +903,7 @@ public partial class GameManager
 					arc.toId = state.toId;
 					arc.weight = Mathf.Max(1, state.weight);
 					arc.ownerClientId = (ulong)state.ownerClientId;
-					arc.kind = (ArcKind)state.kind;
+					arc.kind = GetEffectiveArcKind(state.fromId, state.toId, (ArcKind)state.kind);
 					UpdateArcVisual(arc);
 				}
 				else
@@ -878,7 +930,6 @@ public partial class GameManager
 			transitionCounter = Mathf.Max(transitionCounter, mergeMaxTransition + 1);
 			arcCounter = Mathf.Max(arcCounter, mergeMaxArc + 1);
 
-			TryAttachPendingCreatedPlace();
 			if (!wasGameplayInitialized)
 			{
 				gameplayInitialized = true;
@@ -891,6 +942,7 @@ public partial class GameManager
 			ApplyLevelEndSnapshotState(snapshot.levelEnded);
 			EnsureLocalAvatarStartPosition();
 			RefreshPetriNetVisuals();
+			TryAttachPendingCreatedBlock();
 			suppressNetworkSend = false;
 			return;
 		}
@@ -964,7 +1016,7 @@ public partial class GameManager
 		ApplyGameplayMenuSnapshotState(snapshot.gameplayMenuOpen, snapshot.gameplayMenuOwnerClientId);
 		ApplyLevelEndSnapshotState(snapshot.levelEnded);
 		pendingClaimedTransitionId = null;
-		TryAttachPendingCreatedPlace();
+		TryAttachPendingCreatedBlock();
 		suppressNetworkSend = false;
 	}
 

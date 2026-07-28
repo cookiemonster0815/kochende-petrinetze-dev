@@ -19,18 +19,12 @@ using UnityEditor;
 
 public class LobbyRelayManager : MonoBehaviour
 {
-    private const string LastLobbyCodePrefsKey = "BAOvercooked_LastLobbyCode";
     private const string SessionTimestampKey = "sessionTs";
 
     [Header("Lobby")]
     [SerializeField] private string lobbyName = "OvercookedPetriLobby";
     [SerializeField] private int maxPlayers = 2;
     [SerializeField] private bool showLobbyOverlay = true;
-    [SerializeField] private bool autoFillLastLobbyCode = true;
-    [SerializeField] private float lobbyZoomSpeed = 0.08f;
-    [SerializeField] private float minLobbyZoom = 0.7f;
-    [SerializeField] private float maxLobbyZoom = 1.8f;
-    [SerializeField] private float lobbyPanSpeed = 6f;
 
     [Header("Heartbeat")]
     [SerializeField] private float heartbeatIntervalSeconds = 15f;
@@ -42,20 +36,13 @@ public class LobbyRelayManager : MonoBehaviour
     private float heartbeatTimer;
     private bool servicesReady;
     private bool busy;
-    private float lobbyZoomScale = 1f;
+    private Vector2 lobbyOverlayScrollPosition;
+    private bool wasNetworkListening;
+    private bool wasTwoPlayersConnected;
 
     private async void Start()
     {
         EnsureNetworkManagerExists();
-
-        if (autoFillLastLobbyCode)
-        {
-            string savedCode = LoadLastLobbyCode();
-            if (!string.IsNullOrEmpty(savedCode))
-            {
-                joinCodeInput = savedCode;
-            }
-        }
 
         await InitializeServicesAsync();
     }
@@ -63,8 +50,7 @@ public class LobbyRelayManager : MonoBehaviour
     private void Update()
     {
         HandleEmergencyStopHotkey();
-        HandleLobbyZoom();
-        HandleLobbyKeyboardControls();
+        HandleUnexpectedNetworkDisconnect();
 
         if (currentLobby == null || !IsHost())
         {
@@ -77,6 +63,23 @@ public class LobbyRelayManager : MonoBehaviour
             heartbeatTimer = heartbeatIntervalSeconds;
             _ = LobbyService.Instance.SendHeartbeatPingAsync(currentLobby.Id);
         }
+    }
+
+    private void HandleUnexpectedNetworkDisconnect()
+    {
+        bool isListening = NetworkManager.Singleton != null && NetworkManager.Singleton.IsListening;
+        bool bothPlayersConnected = isListening && AreBothPlayersConnected();
+        if (!busy && currentLobby != null && wasNetworkListening && !isListening)
+        {
+            _ = LeaveBecausePeerDisconnectedAsync();
+        }
+        else if (!busy && currentLobby != null && wasTwoPlayersConnected && isListening && !bothPlayersConnected)
+        {
+            _ = LeaveBecausePeerDisconnectedAsync();
+        }
+
+        wasNetworkListening = isListening;
+        wasTwoPlayersConnected = bothPlayersConnected;
     }
 
     private void OnGUI()
@@ -93,7 +96,7 @@ public class LobbyRelayManager : MonoBehaviour
             return;
         }
 
-        if (AreBothPlayersConnected())
+        if (currentLobby != null && AreBothPlayersConnected())
         {
             if (showLevelSelectionLobbyOverlay)
             {
@@ -103,185 +106,158 @@ public class LobbyRelayManager : MonoBehaviour
             return;
         }
 
-        Matrix4x4 oldMatrix = GUI.matrix;
-        Vector2 pivot = new Vector2(Screen.width * 0.5f, Screen.height * 0.5f);
-        GUIUtility.ScaleAroundPivot(new Vector2(lobbyZoomScale, lobbyZoomScale), pivot);
+        float uiScale = GetLobbyUiScale();
+        GUIStyle boxStyle = CreateLobbyGuiStyle(GUI.skin.box, 44f, uiScale, TextAnchor.UpperCenter, FontStyle.Bold, false);
+        GUIStyle labelStyle = CreateLobbyGuiStyle(GUI.skin.label, 36f, uiScale, TextAnchor.MiddleLeft, FontStyle.Normal, true);
+        GUIStyle statusStyle = CreateLobbyGuiStyle(GUI.skin.label, 28f, uiScale, TextAnchor.MiddleLeft, FontStyle.Normal, true);
+        GUIStyle buttonStyle = CreateLobbyGuiStyle(GUI.skin.button, 40f, uiScale, TextAnchor.MiddleCenter, FontStyle.Bold, false);
+        GUIStyle textFieldStyle = CreateLobbyGuiStyle(GUI.skin.textField, 40f, uiScale, TextAnchor.MiddleLeft, FontStyle.Normal, false);
 
         Rect panel = new Rect(0f, 0f, Screen.width, Screen.height);
+        GUI.Box(panel, "Lobby", boxStyle);
 
-        GUI.Box(panel, "Lobby + Relay");
-        float x = panel.x + Mathf.Max(24f, panel.width * 0.18f);
-        float y = panel.y + Mathf.Max(48f, panel.height * 0.28f);
-        float contentWidth = Mathf.Min(820f, panel.width * 0.64f);
+        float outerPadding = 34f * uiScale;
+        Rect scrollViewRect = new Rect(
+            outerPadding,
+            86f * uiScale,
+            Mathf.Max(1f, panel.width - outerPadding * 2f),
+            Mathf.Max(1f, panel.height - 104f * uiScale));
+        Rect scrollContentRect = new Rect(0f, 0f, Mathf.Max(1f, scrollViewRect.width - 18f * uiScale), 850f * uiScale);
+        float contentWidth = Mathf.Clamp(scrollContentRect.width - 24f * uiScale, 320f * uiScale, 980f * uiScale);
+        float x = (scrollContentRect.width - contentWidth) * 0.5f;
+        float y = 10f * uiScale;
+        float buttonHeight = 78f * uiScale;
+        float textFieldHeight = 68f * uiScale;
+        float gap = 22f * uiScale;
+        bool canStartLobbyAction = servicesReady && !busy && currentLobby == null;
 
-        GUI.Label(new Rect(x, y, contentWidth, 22f), "Status: " + statusMessage);
-        y += 30f;
+        lobbyOverlayScrollPosition = GUI.BeginScrollView(scrollViewRect, lobbyOverlayScrollPosition, scrollContentRect);
+        string statusDisplayText = GetLobbyStatusDisplayText();
+        if (!string.IsNullOrEmpty(statusDisplayText))
+        {
+            Rect statusRect = new Rect(x, y, contentWidth, 78f * uiScale);
+            GUI.Box(statusRect, "");
+            GUI.Label(new Rect(statusRect.x + 16f * uiScale, statusRect.y, statusRect.width - 32f * uiScale, statusRect.height), statusDisplayText, statusStyle);
+            y += statusRect.height + gap;
+        }
 
-        GUI.enabled = servicesReady && !busy;
+        GUI.enabled = canStartLobbyAction;
 
-        if (GUI.Button(new Rect(x, y, 240f, 38f), "Create Lobby (Host)"))
+        if (GUI.Button(new Rect(x, y, contentWidth, buttonHeight), "Create Game", buttonStyle))
         {
             _ = CreateLobbyAndStartHostAsync();
         }
 
-        GUI.Label(new Rect(x + 260f, y + 8f, 90f, 22f), "Join Code:");
-        joinCodeInput = GUI.TextField(new Rect(x + 350f, y + 6f, 150f, 28f), joinCodeInput ?? string.Empty);
+        y += buttonHeight + gap;
+        GUI.enabled = true;
+        GUI.Label(new Rect(x, y, contentWidth, 48f * uiScale), "Join Code:", labelStyle);
+        y += 56f * uiScale;
+        GUI.enabled = canStartLobbyAction;
+        joinCodeInput = GUI.TextField(new Rect(x, y, contentWidth, textFieldHeight), joinCodeInput ?? string.Empty, textFieldStyle);
+        y += textFieldHeight + gap;
 
-        if (GUI.Button(new Rect(x + 510f, y, 180f, 38f), "Join Lobby"))
+        GUI.enabled = canStartLobbyAction && !string.IsNullOrWhiteSpace(joinCodeInput);
+        if (GUI.Button(new Rect(x, y, contentWidth, buttonHeight), "Join Game", buttonStyle))
         {
             _ = JoinLobbyAndStartClientAsync(joinCodeInput);
         }
 
-        y += 44f;
-        GUI.enabled = servicesReady && !busy && !string.IsNullOrWhiteSpace(LoadLastLobbyCode());
-        if (GUI.Button(new Rect(x + 350f, y, 340f, 30f), "Join Last Code (J)"))
-        {
-            _ = JoinLobbyAndStartClientAsync(LoadLastLobbyCode());
-        }
-
-        y += 36f;
-        GUI.enabled = servicesReady && !busy;
-        if (GUI.Button(new Rect(x + 350f, y, 340f, 30f), "Auto Join Test Lobby (T)"))
+        y += buttonHeight + gap;
+        GUI.enabled = canStartLobbyAction;
+        if (GUI.Button(new Rect(x, y, contentWidth, buttonHeight), "Auto Join Game", buttonStyle))
         {
             _ = JoinLatestLobbyByNameAsync();
         }
 
-        y += 36f;
+        y += buttonHeight + gap;
         GUI.enabled = currentLobby != null && !busy;
-        if (GUI.Button(new Rect(x, y, 150f, 30f), "Leave Lobby"))
+        if (GUI.Button(new Rect(x, y, contentWidth, buttonHeight), "Leave Game", buttonStyle))
         {
             _ = LeaveLobbyAsync();
         }
 
         GUI.enabled = true;
-        y += 38f;
+        y += buttonHeight + gap;
         if (!string.IsNullOrEmpty(currentJoinCode))
         {
-            GUI.Label(new Rect(x, y, contentWidth, 22f), "Current Join Code: " + currentJoinCode);
+            GUI.Label(new Rect(x, y, contentWidth, 48f * uiScale), "Game Code: " + currentJoinCode, labelStyle);
+            y += 58f * uiScale;
         }
 
-        y += 24f;
-        GUI.Label(new Rect(x, y, contentWidth, 20f), "Shortcuts: H Host | Enter Join | J Join Last | T Auto Join | L Leave");
-
-        GUI.matrix = oldMatrix;
+        GUI.EndScrollView();
     }
 
     private void DrawConnectedLevelSelectionLobbyOverlay()
     {
-        Rect panel = new Rect(12f, Screen.height - 136f, 420f, 124f);
-        GUI.Box(panel, "Lobby + Relay");
-
-        float x = panel.x + 16f;
-        float y = panel.y + 28f;
-
-        GUI.Label(new Rect(x, y, panel.width - 32f, 22f), "Status: " + statusMessage);
-        y += 30f;
+        float uiScale = Mathf.Clamp(Screen.height / 900f, 0.9f, 1.35f);
+        GUIStyle buttonStyle = CreateLobbyGuiStyle(GUI.skin.button, 20f, uiScale, TextAnchor.MiddleCenter, FontStyle.Bold, false);
+        float buttonWidth = Mathf.Min(150f * uiScale, Screen.width - 24f);
+        float buttonHeight = 36f * uiScale;
+        Rect buttonRect = new Rect(12f, Screen.height - buttonHeight - 12f, buttonWidth, buttonHeight);
 
         GUI.enabled = currentLobby != null && !busy;
-        if (GUI.Button(new Rect(x, y, 150f, 28f), "Leave Lobby"))
+        if (GUI.Button(buttonRect, "Leave Game", buttonStyle))
         {
             _ = LeaveLobbyAsync();
         }
 
         GUI.enabled = true;
-        if (!string.IsNullOrEmpty(currentJoinCode))
-        {
-            GUI.Label(new Rect(x + 170f, y + 4f, panel.width - 190f, 22f), "Code: " + currentJoinCode);
-        }
-
-        y += 34f;
-        GUI.Label(new Rect(x, y, panel.width - 32f, 20f), "Levelauswahl bereit");
     }
 
-    private void HandleLobbyZoom()
+    private float GetLobbyUiScale()
     {
-        if (AreBothPlayersConnected())
-        {
-            return;
-        }
-
-        float scroll = 0f;
-        if (Mouse.current != null)
-        {
-            scroll = Mouse.current.scroll.ReadValue().y;
-        }
-
-        if (Mathf.Abs(scroll) < 0.001f)
-        {
-            return;
-        }
-
-        lobbyZoomScale = Mathf.Clamp(lobbyZoomScale + scroll * lobbyZoomSpeed * 0.01f, minLobbyZoom, maxLobbyZoom);
+        return Mathf.Clamp(Screen.height / 720f, 1.15f, 2.4f);
     }
 
-    private void HandleLobbyKeyboardControls()
+    private string GetLobbyStatusDisplayText()
     {
-        Keyboard keyboard = Keyboard.current;
-        if (keyboard == null || busy)
+        if (string.IsNullOrWhiteSpace(statusMessage) || statusMessage == "Idle" || statusMessage == "Signed in.")
         {
-            return;
+            return string.Empty;
         }
 
-        if (!AreBothPlayersConnected())
-        {
-            Camera cam = Camera.main;
-            if (cam != null)
-            {
-                Vector3 move = Vector3.zero;
-                if (keyboard.leftArrowKey.isPressed) { move.x -= 1f; }
-                if (keyboard.rightArrowKey.isPressed) { move.x += 1f; }
-                if (keyboard.upArrowKey.isPressed) { move.y += 1f; }
-                if (keyboard.downArrowKey.isPressed) { move.y -= 1f; }
+        return "Status: " + ShortenLongStatusWords(statusMessage, 30);
+    }
 
-                if (move.sqrMagnitude > 0f)
-                {
-                    float speed = lobbyPanSpeed * cam.orthographicSize * 0.2f;
-                    cam.transform.position += move.normalized * speed * Time.unscaledDeltaTime;
-                }
-            }
+    private string ShortenLongStatusWords(string text, int maxWordLength)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return string.Empty;
         }
 
-        if (!AreBothPlayersConnected())
+        string[] words = text.Split(' ');
+        for (int i = 0; i < words.Length; i++)
         {
-            if (servicesReady && keyboard.hKey.wasPressedThisFrame)
-            {
-                _ = CreateLobbyAndStartHostAsync();
-            }
-
-            if (servicesReady && (keyboard.enterKey.wasPressedThisFrame || keyboard.numpadEnterKey.wasPressedThisFrame) && !string.IsNullOrWhiteSpace(joinCodeInput))
-            {
-                _ = JoinLobbyAndStartClientAsync(joinCodeInput);
-            }
-
-            if (servicesReady && keyboard.jKey.wasPressedThisFrame)
-            {
-                string savedCode = LoadLastLobbyCode();
-                if (!string.IsNullOrWhiteSpace(savedCode))
-                {
-                    _ = JoinLobbyAndStartClientAsync(savedCode);
-                }
-            }
-
-            if (servicesReady && keyboard.tKey.wasPressedThisFrame)
-            {
-                _ = JoinLatestLobbyByNameAsync();
-            }
-
-            if (keyboard.minusKey.wasPressedThisFrame)
-            {
-                lobbyZoomScale = Mathf.Clamp(lobbyZoomScale - 0.08f, minLobbyZoom, maxLobbyZoom);
-            }
-
-            if (keyboard.equalsKey.wasPressedThisFrame || keyboard.numpadPlusKey.wasPressedThisFrame)
-            {
-                lobbyZoomScale = Mathf.Clamp(lobbyZoomScale + 0.08f, minLobbyZoom, maxLobbyZoom);
-            }
+            words[i] = ShortenStatusWord(words[i], maxWordLength);
         }
 
-        if (currentLobby != null && keyboard.lKey.wasPressedThisFrame)
+        return string.Join(" ", words);
+    }
+
+    private string ShortenStatusWord(string word, int maxWordLength)
+    {
+        if (string.IsNullOrEmpty(word) || word.Length <= maxWordLength)
         {
-            _ = LeaveLobbyAsync();
+            return word;
         }
+
+        int startLength = Mathf.Max(8, maxWordLength - 12);
+        int endLength = Mathf.Max(4, maxWordLength - startLength - 3);
+        startLength = Mathf.Min(startLength, word.Length);
+        endLength = Mathf.Min(endLength, word.Length - startLength);
+        return word.Substring(0, startLength) + "..." + word.Substring(word.Length - endLength);
+    }
+
+    private GUIStyle CreateLobbyGuiStyle(GUIStyle baseStyle, float fontSize, float uiScale, TextAnchor alignment, FontStyle fontStyle, bool wordWrap)
+    {
+        return new GUIStyle(baseStyle)
+        {
+            alignment = alignment,
+            fontSize = Mathf.RoundToInt(fontSize * uiScale),
+            fontStyle = fontStyle,
+            wordWrap = wordWrap
+        };
     }
 
     private bool AreBothPlayersConnected()
@@ -309,7 +285,7 @@ public class LobbyRelayManager : MonoBehaviour
             }
 
             servicesReady = true;
-            statusMessage = "Signed in as " + AuthenticationService.Instance.PlayerId;
+            statusMessage = "Signed in.";
         }
         catch (Exception ex)
         {
@@ -352,7 +328,6 @@ public class LobbyRelayManager : MonoBehaviour
 
             currentLobby = await LobbyService.Instance.CreateLobbyAsync(lobbyName, maxPlayers, options);
             currentJoinCode = currentLobby.LobbyCode;
-            SaveLastLobbyCode(currentJoinCode);
             joinCodeInput = currentJoinCode;
 
             EnsureNetworkManagerExists();
@@ -366,12 +341,13 @@ public class LobbyRelayManager : MonoBehaviour
                 throw new InvalidOperationException("Failed to start host.");
             }
 
+            EnterGameManagerNetworkSession();
             heartbeatTimer = heartbeatIntervalSeconds;
-            statusMessage = "Host started. Lobby code: " + currentJoinCode;
+            statusMessage = "Host";
         }
         catch (Exception ex)
         {
-            statusMessage = "Create host failed: " + ex.Message;
+            statusMessage = "Create game failed: " + ex.Message;
             Debug.LogException(ex);
             await CleanupExistingSessionAsync();
         }
@@ -391,7 +367,7 @@ public class LobbyRelayManager : MonoBehaviour
 
         if (string.IsNullOrWhiteSpace(lobbyCode))
         {
-            statusMessage = "Enter lobby code first.";
+            statusMessage = "Enter join code first.";
             return;
         }
 
@@ -402,12 +378,10 @@ public class LobbyRelayManager : MonoBehaviour
 
             currentLobby = await LobbyService.Instance.JoinLobbyByCodeAsync(lobbyCode.Trim().ToUpperInvariant());
             currentJoinCode = currentLobby.LobbyCode;
-            SaveLastLobbyCode(currentJoinCode);
-            joinCodeInput = currentJoinCode;
 
             if (!currentLobby.Data.TryGetValue("relayJoinCode", out DataObject relayData) || string.IsNullOrEmpty(relayData.Value))
             {
-                throw new InvalidOperationException("Relay join code missing in lobby data.");
+                throw new InvalidOperationException("Relay join code missing in game data.");
             }
 
             JoinAllocation joinAllocation = await RelayService.Instance.JoinAllocationAsync(relayData.Value);
@@ -423,11 +397,12 @@ public class LobbyRelayManager : MonoBehaviour
                 throw new InvalidOperationException("Failed to start client.");
             }
 
-            statusMessage = "Client connected to lobby " + currentJoinCode;
+            EnterGameManagerNetworkSession();
+            statusMessage = "Client joined game " + currentJoinCode;
         }
         catch (Exception ex)
         {
-            statusMessage = "Join failed: " + ex.Message;
+            statusMessage = "Join game failed: " + ex.Message;
             Debug.LogException(ex);
             await CleanupExistingSessionAsync();
         }
@@ -461,7 +436,7 @@ public class LobbyRelayManager : MonoBehaviour
             QueryResponse response = await LobbyService.Instance.QueryLobbiesAsync(queryOptions);
             if (response == null || response.Results == null || response.Results.Count == 0)
             {
-                statusMessage = "No open test lobby found.";
+                statusMessage = "No open game found.";
                 return;
             }
 
@@ -495,7 +470,7 @@ public class LobbyRelayManager : MonoBehaviour
 
             if (selectedLobby == null)
             {
-                statusMessage = "No valid test lobby with relay data found.";
+                statusMessage = "No valid game found.";
                 return;
             }
 
@@ -503,12 +478,11 @@ public class LobbyRelayManager : MonoBehaviour
 
             currentLobby = await LobbyService.Instance.JoinLobbyByIdAsync(selectedLobby.Id);
             currentJoinCode = currentLobby.LobbyCode;
-            SaveLastLobbyCode(currentJoinCode);
-            joinCodeInput = currentJoinCode;
+            joinCodeInput = string.Empty;
 
             if (!currentLobby.Data.TryGetValue("relayJoinCode", out DataObject selectedRelayData) || string.IsNullOrEmpty(selectedRelayData.Value))
             {
-                throw new InvalidOperationException("Relay join code missing in selected lobby data.");
+                throw new InvalidOperationException("Relay join code missing in selected game data.");
             }
 
             JoinAllocation joinAllocation = await RelayService.Instance.JoinAllocationAsync(selectedRelayData.Value);
@@ -524,11 +498,12 @@ public class LobbyRelayManager : MonoBehaviour
                 throw new InvalidOperationException("Failed to start client.");
             }
 
-            statusMessage = "Client auto-joined lobby " + currentJoinCode;
+            EnterGameManagerNetworkSession();
+            statusMessage = "Client auto-joined game " + currentJoinCode;
         }
         catch (Exception ex)
         {
-            statusMessage = "Auto-join failed: " + ex.Message;
+            statusMessage = "Auto-join game failed: " + ex.Message;
             Debug.LogException(ex);
             await CleanupExistingSessionAsync();
         }
@@ -544,27 +519,33 @@ public class LobbyRelayManager : MonoBehaviour
         try
         {
             bool wasHost = IsHost() || IsCurrentLobbyHost();
+            Lobby lobbyToLeave = currentLobby;
+            currentLobby = null;
+            currentJoinCode = string.Empty;
+            joinCodeInput = string.Empty;
+            statusMessage = "Leaving game...";
+
             await ResetNetworkSessionAsync();
 
-            if (currentLobby != null)
+            if (lobbyToLeave != null)
             {
                 if (wasHost)
                 {
-                    await LobbyService.Instance.DeleteLobbyAsync(currentLobby.Id);
+                    await LobbyService.Instance.DeleteLobbyAsync(lobbyToLeave.Id);
                 }
                 else
                 {
-                    await LobbyService.Instance.RemovePlayerAsync(currentLobby.Id, AuthenticationService.Instance.PlayerId);
+                    await LobbyService.Instance.RemovePlayerAsync(lobbyToLeave.Id, AuthenticationService.Instance.PlayerId);
                 }
             }
 
-            currentLobby = null;
-            currentJoinCode = string.Empty;
-            statusMessage = "Left lobby.";
+            wasNetworkListening = false;
+            wasTwoPlayersConnected = false;
+            statusMessage = "Left game.";
         }
         catch (Exception ex)
         {
-            statusMessage = "Leave failed: " + ex.Message;
+            statusMessage = "Leave game failed: " + ex.Message;
             Debug.LogException(ex);
         }
         finally
@@ -576,11 +557,15 @@ public class LobbyRelayManager : MonoBehaviour
     private async Task CleanupExistingSessionAsync()
     {
         bool wasHost = IsHost() || IsCurrentLobbyHost();
+        Lobby lobbyToCleanUp = currentLobby;
+        currentLobby = null;
+        currentJoinCode = string.Empty;
+        joinCodeInput = string.Empty;
+
         await ResetNetworkSessionAsync();
 
-        if (currentLobby == null)
+        if (lobbyToCleanUp == null)
         {
-            currentJoinCode = string.Empty;
             return;
         }
 
@@ -588,27 +573,43 @@ public class LobbyRelayManager : MonoBehaviour
         {
             if (wasHost)
             {
-                await LobbyService.Instance.DeleteLobbyAsync(currentLobby.Id);
+                await LobbyService.Instance.DeleteLobbyAsync(lobbyToCleanUp.Id);
             }
             else if (AuthenticationService.Instance.IsSignedIn)
             {
-                await LobbyService.Instance.RemovePlayerAsync(currentLobby.Id, AuthenticationService.Instance.PlayerId);
+                await LobbyService.Instance.RemovePlayerAsync(lobbyToCleanUp.Id, AuthenticationService.Instance.PlayerId);
             }
         }
         catch (Exception ex)
         {
-            Debug.LogWarning("Existing lobby cleanup failed: " + ex.Message);
+            Debug.LogWarning("Existing game cleanup failed: " + ex.Message);
         }
+    }
 
-        currentLobby = null;
-        currentJoinCode = string.Empty;
+    private async Task LeaveBecausePeerDisconnectedAsync()
+    {
+        busy = true;
+        try
+        {
+            await CleanupExistingSessionAsync();
+            statusMessage = "Other player left game.";
+        }
+        finally
+        {
+            wasNetworkListening = false;
+            wasTwoPlayersConnected = false;
+            busy = false;
+        }
     }
 
     private async Task ResetNetworkSessionAsync()
     {
+        ResetGameManagerToLobbyStartScreen();
         EnsureNetworkManagerExists();
         if (NetworkManager.Singleton == null || !NetworkManager.Singleton.IsListening)
         {
+            wasNetworkListening = false;
+            wasTwoPlayersConnected = false;
             return;
         }
 
@@ -618,6 +619,8 @@ public class LobbyRelayManager : MonoBehaviour
             if (NetworkManager.Singleton == null || !NetworkManager.Singleton.IsListening)
             {
                 await Task.Delay(100);
+                wasNetworkListening = false;
+                wasTwoPlayersConnected = false;
                 return;
             }
 
@@ -625,6 +628,26 @@ public class LobbyRelayManager : MonoBehaviour
         }
 
         await Task.Delay(100);
+        wasNetworkListening = false;
+        wasTwoPlayersConnected = false;
+    }
+
+    private void ResetGameManagerToLobbyStartScreen()
+    {
+        GameManager gameManager = FindAnyObjectByType<GameManager>();
+        if (gameManager != null)
+        {
+            gameManager.ResetToLobbyStartScreen();
+        }
+    }
+
+    private void EnterGameManagerNetworkSession()
+    {
+        GameManager gameManager = FindAnyObjectByType<GameManager>();
+        if (gameManager != null)
+        {
+            gameManager.EnterNetworkGameSession();
+        }
     }
 
     private bool IsHost()
@@ -741,27 +764,7 @@ public class LobbyRelayManager : MonoBehaviour
 
         currentLobby = null;
         currentJoinCode = string.Empty;
+        joinCodeInput = string.Empty;
         busy = false;
-    }
-
-    private static void SaveLastLobbyCode(string lobbyCode)
-    {
-        if (string.IsNullOrWhiteSpace(lobbyCode))
-        {
-            return;
-        }
-
-        PlayerPrefs.SetString(LastLobbyCodePrefsKey, lobbyCode.Trim().ToUpperInvariant());
-        PlayerPrefs.Save();
-    }
-
-    private static string LoadLastLobbyCode()
-    {
-        if (!PlayerPrefs.HasKey(LastLobbyCodePrefsKey))
-        {
-            return string.Empty;
-        }
-
-        return PlayerPrefs.GetString(LastLobbyCodePrefsKey, string.Empty).Trim().ToUpperInvariant();
     }
 }

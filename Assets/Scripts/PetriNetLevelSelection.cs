@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.Text;
+using Unity.Netcode;
 using UnityEngine;
 using UnityEngine.InputSystem;
 
@@ -14,10 +15,14 @@ public partial class GameManager
 	private bool levelEnded;
 	private bool levelSelectionAvatarStateSent;
 	private Vector2 levelResultScrollPosition;
+	private Vector2 levelPauseScrollPosition;
 	private Transform levelSelectionRoot;
+	private Transform levelSelectionPlatform;
+	private LineRenderer levelSelectionBoundaryLine;
 	private Collider2D levelConfirmButtonCollider;
 	private TextMesh levelInfoText;
 	private readonly Dictionary<Collider2D, int> levelButtonByCollider = new Dictionary<Collider2D, int>();
+	private Rect levelSelectionMovementBounds = Rect.MinMaxRect(-4.45f, -3.25f, 4.45f, 3.25f);
 	private const int LevelSelectionGridColumns = 4;
 	private const float LevelSelectionButtonSize = 0.82f;
 	private const float LevelSelectionButtonGap = 0.24f;
@@ -26,9 +31,13 @@ public partial class GameManager
 	private const float LevelSelectionPlatformWidth = 9.6f;
 	private const float LevelSelectionPlatformHeight = 7.25f;
 	private const float LevelSelectionPlatformDepth = 0.04f;
+	private const float LevelSelectionContentPadding = 1.35f;
+	private const float LevelSelectionAvatarBoundaryPadding = 0.45f;
+	private const float LevelSelectionCameraViewPadding = 1.35f;
+	private const float LevelSelectionMinimumHalfWidth = 4.8f;
+	private const float LevelSelectionMinimumHalfHeight = 3.6f;
 	private const float LevelSelectionNumberTextSize = 0.14f;
 	private const float LevelSelectionConfirmTextSize = 0.055f;
-	private const float LevelSelectionTitleTextSize = 0.15f;
 	private const float LevelSelectionInfoTextSize = 0.052f;
 	private const string LevelSelectionButtonVisualName = "ButtonBlock3D";
 
@@ -39,10 +48,29 @@ public partial class GameManager
 			return;
 		}
 
+		if (!gameplayInitialized && IsGameplayConnectionReady())
+		{
+			DrawLevelSelectionHeaderOverlay();
+		}
+
 		if (IsGameplayMenuOpen())
 		{
 			DrawGameplayMenu();
 		}
+	}
+
+	private void DrawLevelSelectionHeaderOverlay()
+	{
+		float uiScale = Mathf.Clamp(Screen.height / 900f, 0.9f, 1.55f);
+		GUIStyle titleStyle = new GUIStyle(GUI.skin.label)
+		{
+			alignment = TextAnchor.UpperCenter,
+			fontSize = Mathf.RoundToInt(34f * uiScale),
+			fontStyle = FontStyle.Bold,
+			wordWrap = false
+		};
+		titleStyle.normal.textColor = Color.black;
+		GUI.Label(new Rect(0f, 12f * uiScale, Screen.width, 52f * uiScale), "Levelübersicht", titleStyle);
 	}
 
 	private void EnsureLevelSelectionScreen()
@@ -53,11 +81,16 @@ public partial class GameManager
 		}
 
 		EnsureGraphRootExists();
-		ConfigureLevelSelectionCamera();
+		if (levelSelectionRoot == null || mainCamera == null)
+		{
+			ConfigureLevelSelectionCamera();
+		}
+
 		EnsureLevelSelectionAvatarStartPosition();
 		EnsureLevelSelectionVisuals();
 		UpdateLevelSelectionVisuals();
 		UpdateAvatarVisuals();
+		UpdateLevelSelectionHoverVisual();
 	}
 
 	private void ConfigureLevelSelectionCamera()
@@ -81,19 +114,83 @@ public partial class GameManager
 	{
 		if (avatarStartPositionApplied)
 		{
+			EnsureLevelSelectionRemoteAvatarStartPositions(false);
 			return;
 		}
 
-		avatarPosition = IsActorTopSide(GetLocalActorClientId())
-			? new Vector3(-3.8f, 2.85f, 0f)
-			: new Vector3(-3.8f, -2.85f, 0f);
+		ResetLocalAvatarToLevelSelectionStartPosition();
+		EnsureLevelSelectionRemoteAvatarStartPositions(false);
+	}
+
+	private void ResetLocalAvatarToLevelSelectionStartPosition()
+	{
+		avatarPosition = GetDefaultLevelSelectionAvatarStartPosition(GetLocalActorClientId());
 		avatarRotation = 0f;
+		avatarCraneCurrentHeight = avatarCraneRestHeight;
+		avatarCraneDipTargetHeight = avatarCraneLoweredHeight;
+		avatarCraneAnimationStartTime = -10f;
+		heldTransitionId = null;
+		heldPlaceId = null;
+		heldCompositeBlockId = null;
+		heldCompositeBlockOffset = Vector2.zero;
+		craneConnectStartNodeId = null;
+		CancelCraneConnectPreview();
+		pendingClaimedTransitionId = null;
+		draggedNodeId = null;
+		draggedCompositeBlockId = null;
+		pendingCreatedBlockPickup = false;
+		pendingCreatedBlockExistingIds.Clear();
 		avatarStartPositionApplied = true;
 		lastAvatarPosition = avatarPosition;
 		lastAvatarNetworkSyncRotation = avatarRotation;
 		lastAvatarNetworkSyncHeldId = "";
 		lastAvatarNetworkSyncCraneHeight = avatarCraneCurrentHeight;
+		nextAvatarNetworkSyncTime = 0f;
+		nextReliableAvatarNetworkSyncTime = 0f;
 		levelSelectionAvatarStateSent = false;
+	}
+
+	private Vector3 GetDefaultLevelSelectionAvatarStartPosition(ulong actorClientId)
+	{
+		return IsActorTopSide(actorClientId)
+			? new Vector3(-3.8f, 2.85f, 0f)
+			: new Vector3(-3.8f, -2.85f, 0f);
+	}
+
+	private void EnsureLevelSelectionRemoteAvatarStartPositions(bool overwriteExisting)
+	{
+		if (Unity.Netcode.NetworkManager.Singleton == null || !Unity.Netcode.NetworkManager.Singleton.IsListening)
+		{
+			return;
+		}
+
+		if (!Unity.Netcode.NetworkManager.Singleton.IsHost)
+		{
+			SeedRemoteAvatarLevelSelectionStartPosition(NetworkManager.ServerClientId, overwriteExisting);
+		}
+
+		foreach (ulong clientId in Unity.Netcode.NetworkManager.Singleton.ConnectedClientsIds)
+		{
+			SeedRemoteAvatarLevelSelectionStartPosition(clientId, overwriteExisting);
+		}
+	}
+
+	private void SeedRemoteAvatarLevelSelectionStartPosition(ulong clientId, bool overwriteExisting)
+	{
+		if (clientId == GetLocalActorClientId())
+		{
+			return;
+		}
+
+		if (!overwriteExisting && remoteAvatarPositions.ContainsKey(clientId))
+		{
+			return;
+		}
+
+		remoteAvatarPositions[clientId] = GetDefaultLevelSelectionAvatarStartPosition(clientId);
+		remoteAvatarRotations[clientId] = 0f;
+		remoteAvatarInventories[clientId] = new RemoteHeldObjectState { kind = HeldObjectKind.None, id = "", offset = Vector2.zero };
+		remoteAvatarCraneHeights[clientId] = avatarCraneRestHeight;
 	}
 
 	private void EnsureLevelSelectionVisuals()
@@ -113,6 +210,7 @@ public partial class GameManager
 		background.transform.SetParent(levelSelectionRoot, false);
 		background.transform.position = new Vector3(0f, 0f, -LevelSelectionPlatformDepth * 0.5f);
 		background.transform.localScale = new Vector3(LevelSelectionPlatformWidth, LevelSelectionPlatformHeight, LevelSelectionPlatformDepth);
+		levelSelectionPlatform = background.transform;
 		Collider backgroundCollider = background.GetComponent<Collider>();
 		if (backgroundCollider != null)
 		{
@@ -122,9 +220,14 @@ public partial class GameManager
 		MeshRenderer backgroundRenderer = background.GetComponent<MeshRenderer>();
 		if (backgroundRenderer != null)
 		{
-			backgroundRenderer.material = CreatePrimitiveVisualMaterial(Color.white);
+			backgroundRenderer.material = CreatePrimitiveVisualMaterial(GetLevelSelectionFloorColor());
 			ConfigureMeshRendererFor3D(backgroundRenderer, false, true);
 		}
+
+		GameObject boundaryObject = new GameObject("LevelSelectionMovementBoundary");
+		boundaryObject.transform.SetParent(levelSelectionRoot, false);
+		levelSelectionBoundaryLine = boundaryObject.AddComponent<LineRenderer>();
+		ConfigureGroundLineRenderer(levelSelectionBoundaryLine, 4, 0.075f, 80, new Color(0.08f, 0.12f, 0.16f, 0.9f), 6, 8, true);
 
 		List<PetriNetLevelDefinition> levels = GetLevelDefinitions();
 		for (int i = 0; i < levels.Count; i++)
@@ -152,18 +255,6 @@ public partial class GameManager
 			new Color(0.78f, 0.92f, 1f),
 			30,
 			LevelSelectionConfirmTextSize);
-
-		GameObject titleObject = new GameObject("LevelTitle");
-		titleObject.transform.SetParent(levelSelectionRoot, false);
-		titleObject.transform.position = new Vector3(0f, 3.45f, NodeLabelLayerZ);
-		TextMesh title = titleObject.AddComponent<TextMesh>();
-		title.text = "Levelauswahl";
-		title.characterSize = LevelSelectionTitleTextSize;
-		title.fontSize = 96;
-		title.anchor = TextAnchor.MiddleCenter;
-		title.alignment = TextAlignment.Center;
-		title.color = Color.black;
-		SetTextSortingOrder(title, 72);
 
 		GameObject infoObject = new GameObject("LevelInfo");
 		infoObject.transform.SetParent(levelSelectionRoot, false);
@@ -339,6 +430,127 @@ public partial class GameManager
 		{
 			levelInfoText.text = GetLevelInfoText(levels[selectedLevelIndex]);
 		}
+
+		UpdateLevelSelectionBoundsAndFloor();
+	}
+
+	private Color GetLevelSelectionFloorColor()
+	{
+		return new Color(0.9f, 0.93f, 0.91f);
+	}
+
+	private void UpdateLevelSelectionBoundsAndFloor()
+	{
+		if (levelSelectionRoot == null)
+		{
+			return;
+		}
+
+		Rect contentRect = CalculateLevelSelectionContentRect();
+		Rect paddedRect = Rect.MinMaxRect(
+			contentRect.xMin - LevelSelectionContentPadding,
+			contentRect.yMin - LevelSelectionContentPadding,
+			contentRect.xMax + LevelSelectionContentPadding,
+			contentRect.yMax + LevelSelectionContentPadding);
+		float halfWidth = Mathf.Max(LevelSelectionMinimumHalfWidth, paddedRect.width * 0.5f);
+		float halfHeight = Mathf.Max(LevelSelectionMinimumHalfHeight, paddedRect.height * 0.5f);
+		Vector2 center = paddedRect.center;
+		levelSelectionMovementBounds = Rect.MinMaxRect(center.x - halfWidth, center.y - halfHeight, center.x + halfWidth, center.y + halfHeight);
+
+		if (levelSelectionPlatform != null)
+		{
+			levelSelectionPlatform.position = new Vector3(levelSelectionMovementBounds.center.x, levelSelectionMovementBounds.center.y, -LevelSelectionPlatformDepth * 0.5f);
+			levelSelectionPlatform.localScale = new Vector3(levelSelectionMovementBounds.width, levelSelectionMovementBounds.height, LevelSelectionPlatformDepth);
+			MeshRenderer platformRenderer = levelSelectionPlatform.GetComponent<MeshRenderer>();
+			if (platformRenderer != null)
+			{
+				SetPrimitiveVisualColor(platformRenderer, GetLevelSelectionFloorColor());
+			}
+		}
+
+		SetLevelSelectionBoundaryLine(levelSelectionMovementBounds);
+	}
+
+	private Rect CalculateLevelSelectionContentRect()
+	{
+		Rect contentRect = Rect.MinMaxRect(-LevelSelectionPlatformWidth * 0.5f, -LevelSelectionPlatformHeight * 0.5f, LevelSelectionPlatformWidth * 0.5f, LevelSelectionPlatformHeight * 0.5f);
+		List<PetriNetLevelDefinition> levels = GetLevelDefinitions();
+		for (int i = 0; i < levels.Count; i++)
+		{
+			contentRect = EncapsulateLevelSelectionRect(contentRect, GetLevelSelectionItemRect(GetLevelSelectionButtonPosition(i), new Vector2(LevelSelectionButtonSize, LevelSelectionButtonSize)));
+		}
+
+		contentRect = EncapsulateLevelSelectionRect(
+			contentRect,
+			GetLevelSelectionItemRect(GetLevelSelectionConfirmButtonPosition(levels.Count), new Vector2(2.1f, 0.66f)));
+
+		if (TryGetLevelSelectionTextRect(levelInfoText, out Rect infoRect))
+		{
+			contentRect = EncapsulateLevelSelectionRect(contentRect, infoRect);
+		}
+
+		return contentRect;
+	}
+
+	private Rect GetLevelSelectionItemRect(Vector2 center, Vector2 size)
+	{
+		Vector2 halfSize = size * 0.5f;
+		return Rect.MinMaxRect(center.x - halfSize.x, center.y - halfSize.y, center.x + halfSize.x, center.y + halfSize.y);
+	}
+
+	private bool TryGetLevelSelectionTextRect(TextMesh text, out Rect rect)
+	{
+		rect = new Rect();
+		if (text == null || string.IsNullOrEmpty(text.text))
+		{
+			return false;
+		}
+
+		MeshRenderer renderer = text.GetComponent<MeshRenderer>();
+		if (renderer != null)
+		{
+			Bounds bounds = renderer.bounds;
+			if (bounds.size.x > 0.001f && bounds.size.y > 0.001f)
+			{
+				rect = Rect.MinMaxRect(bounds.min.x, bounds.min.y, bounds.max.x, bounds.max.y);
+				return true;
+			}
+		}
+
+		string[] lines = text.text.Split('\n');
+		int maxLineLength = 0;
+		for (int i = 0; i < lines.Length; i++)
+		{
+			maxLineLength = Mathf.Max(maxLineLength, lines[i].Length);
+		}
+
+		float width = Mathf.Max(0.5f, maxLineLength * text.characterSize * 0.52f);
+		float height = Mathf.Max(0.5f, lines.Length * text.characterSize * 1.35f);
+		Vector3 position = text.transform.position;
+		rect = Rect.MinMaxRect(position.x, position.y - height, position.x + width, position.y);
+		return true;
+	}
+
+	private Rect EncapsulateLevelSelectionRect(Rect current, Rect addition)
+	{
+		return Rect.MinMaxRect(
+			Mathf.Min(current.xMin, addition.xMin),
+			Mathf.Min(current.yMin, addition.yMin),
+			Mathf.Max(current.xMax, addition.xMax),
+			Mathf.Max(current.yMax, addition.yMax));
+	}
+
+	private void SetLevelSelectionBoundaryLine(Rect bounds)
+	{
+		if (levelSelectionBoundaryLine == null)
+		{
+			return;
+		}
+
+		levelSelectionBoundaryLine.SetPosition(0, new Vector3(bounds.xMin, bounds.yMax, ArcZ));
+		levelSelectionBoundaryLine.SetPosition(1, new Vector3(bounds.xMax, bounds.yMax, ArcZ));
+		levelSelectionBoundaryLine.SetPosition(2, new Vector3(bounds.xMax, bounds.yMin, ArcZ));
+		levelSelectionBoundaryLine.SetPosition(3, new Vector3(bounds.xMin, bounds.yMin, ArcZ));
 	}
 
 	private void SetLevelSelectionButtonColor(Transform buttonTransform, Color color)
@@ -396,6 +608,7 @@ public partial class GameManager
 		{
 			SendLevelSelectionAvatarUpdateIfNeeded();
 			UpdateAvatarVisuals();
+			UpdateLevelSelectionHoverVisual();
 			return;
 		}
 
@@ -417,23 +630,195 @@ public partial class GameManager
 		if (keyboard.spaceKey.wasPressedThisFrame)
 		{
 			StartCraneDipAnimation();
-			ActivateLevelSelectionAtPoint(new Vector2(avatarPosition.x, avatarPosition.y), IsHostOrOffline());
+			ActivateLevelSelectionAtPoint(new Vector2(avatarPosition.x, avatarPosition.y), true);
 		}
 
 		if (Mouse.current != null && Mouse.current.leftButton.wasPressedThisFrame)
 		{
 			Vector3 mouseWorld = GetMouseWorldPosition();
-			ActivateLevelSelectionAtPoint(new Vector2(mouseWorld.x, mouseWorld.y), IsHostOrOffline());
+			ActivateLevelSelectionAtPoint(new Vector2(mouseWorld.x, mouseWorld.y), true);
 		}
 
 		UpdateLevelSelectionVisuals();
 		SendLevelSelectionAvatarUpdateIfNeeded();
 		UpdateAvatarVisuals();
+		UpdateLevelSelectionHoverVisual();
 	}
 
 	private Vector3 ClampLevelSelectionAvatarPosition(Vector3 desired)
 	{
-		return new Vector3(Mathf.Clamp(desired.x, -4.45f, 4.45f), Mathf.Clamp(desired.y, -3.25f, 3.25f), 0f);
+		if (levelSelectionMovementBounds.width <= 0.001f || levelSelectionMovementBounds.height <= 0.001f)
+		{
+			return new Vector3(Mathf.Clamp(desired.x, -4.45f, 4.45f), Mathf.Clamp(desired.y, -3.25f, 3.25f), 0f);
+		}
+
+		float avatarBoundaryPadding = Mathf.Max(LevelSelectionAvatarBoundaryPadding, avatarCollisionRadius);
+		Rect centerBounds = Rect.MinMaxRect(
+			levelSelectionMovementBounds.xMin + avatarBoundaryPadding,
+			levelSelectionMovementBounds.yMin + avatarBoundaryPadding,
+			levelSelectionMovementBounds.xMax - avatarBoundaryPadding,
+			levelSelectionMovementBounds.yMax - avatarBoundaryPadding);
+		if (centerBounds.width <= 0.001f || centerBounds.height <= 0.001f)
+		{
+			centerBounds = levelSelectionMovementBounds;
+		}
+
+		return new Vector3(
+			Mathf.Clamp(desired.x, centerBounds.xMin, centerBounds.xMax),
+			Mathf.Clamp(desired.y, centerBounds.yMin, centerBounds.yMax),
+			0f);
+	}
+
+	private void UpdateLevelSelectionCameraFollow()
+	{
+		if (mainCamera == null)
+		{
+			return;
+		}
+
+		float requiredSize = GetSharedScreenCameraSize();
+		if (mainCamera.orthographicSize < requiredSize)
+		{
+			mainCamera.orthographicSize = requiredSize;
+		}
+
+		isMiddlePanning = false;
+		Vector2 cameraCenter = GetCameraGroundCenter();
+		Vector2 clampedCameraCenter = ClampLevelSelectionCameraCenter(cameraCenter);
+		if ((clampedCameraCenter - cameraCenter).sqrMagnitude > 0.0001f)
+		{
+			cameraVelocityX = 0f;
+			cameraVelocityY = 0f;
+			SetCameraGroundCenter(mainCamera, clampedCameraCenter);
+			cameraCenter = clampedCameraCenter;
+		}
+
+		float screenHeight = mainCamera.orthographicSize * 2f;
+		float screenWidth = screenHeight * mainCamera.aspect;
+		float restMarginX = screenWidth * cameraRestAreaMargin;
+		float restMarginY = screenHeight * cameraRestAreaMargin;
+		Vector2 target = cameraCenter;
+		bool shouldMoveX = false;
+		bool shouldMoveY = false;
+
+		if (avatarPosition.x > cameraCenter.x + restMarginX)
+		{
+			target.x = avatarPosition.x - restMarginX;
+			shouldMoveX = true;
+		}
+		else if (avatarPosition.x < cameraCenter.x - restMarginX)
+		{
+			target.x = avatarPosition.x + restMarginX;
+			shouldMoveX = true;
+		}
+
+		if (avatarPosition.y > cameraCenter.y + restMarginY)
+		{
+			target.y = avatarPosition.y - restMarginY;
+			shouldMoveY = true;
+		}
+		else if (avatarPosition.y < cameraCenter.y - restMarginY)
+		{
+			target.y = avatarPosition.y + restMarginY;
+			shouldMoveY = true;
+		}
+
+		target = ClampLevelSelectionCameraCenter(target);
+		Vector2 newCenter = cameraCenter;
+		if (shouldMoveX && Mathf.Abs(target.x - cameraCenter.x) > 0.001f)
+		{
+			newCenter.x = SmoothCameraAxis(cameraCenter.x, target.x, ref cameraVelocityX, 0.16f);
+		}
+		else
+		{
+			cameraVelocityX = 0f;
+		}
+
+		if (shouldMoveY && Mathf.Abs(target.y - cameraCenter.y) > 0.001f)
+		{
+			newCenter.y = SmoothCameraAxis(cameraCenter.y, target.y, ref cameraVelocityY, 0.16f);
+		}
+		else
+		{
+			cameraVelocityY = 0f;
+		}
+
+		Vector2 boundedCenter = ClampLevelSelectionCameraCenter(newCenter);
+		if (Mathf.Abs(boundedCenter.x - newCenter.x) > 0.0001f)
+		{
+			cameraVelocityX = 0f;
+		}
+
+		if (Mathf.Abs(boundedCenter.y - newCenter.y) > 0.0001f)
+		{
+			cameraVelocityY = 0f;
+		}
+
+		SetCameraGroundCenter(mainCamera, boundedCenter);
+	}
+
+	private Vector2 ClampLevelSelectionCameraCenter(Vector2 desiredCenter)
+	{
+		if (levelSelectionMovementBounds.width <= 0.001f || levelSelectionMovementBounds.height <= 0.001f || mainCamera == null)
+		{
+			return desiredCenter;
+		}
+
+		Rect centerBounds = GetLevelSelectionCameraCenterBounds();
+		return new Vector2(
+			Mathf.Clamp(desiredCenter.x, centerBounds.xMin, centerBounds.xMax),
+			Mathf.Clamp(desiredCenter.y, centerBounds.yMin, centerBounds.yMax));
+	}
+
+	private Rect GetLevelSelectionCameraCenterBounds()
+	{
+		Vector2 cameraCenter = GetCameraGroundCenter();
+		Rect viewBounds = GetCameraGroundViewBounds();
+		Rect cameraViewBounds = GetLevelSelectionCameraViewBounds();
+		float leftOffset = cameraCenter.x - viewBounds.xMin;
+		float rightOffset = viewBounds.xMax - cameraCenter.x;
+		float bottomOffset = cameraCenter.y - viewBounds.yMin;
+		float topOffset = viewBounds.yMax - cameraCenter.y;
+		float minX = cameraViewBounds.xMin + leftOffset;
+		float maxX = cameraViewBounds.xMax - rightOffset;
+		float minY = cameraViewBounds.yMin + bottomOffset;
+		float maxY = cameraViewBounds.yMax - topOffset;
+
+		if (minX > maxX)
+		{
+			minX = cameraViewBounds.center.x;
+			maxX = minX;
+		}
+
+		if (minY > maxY)
+		{
+			minY = cameraViewBounds.center.y;
+			maxY = minY;
+		}
+
+		return Rect.MinMaxRect(minX, minY, maxX, maxY);
+	}
+
+	private Rect GetLevelSelectionCameraViewBounds()
+	{
+		return Rect.MinMaxRect(
+			levelSelectionMovementBounds.xMin - LevelSelectionCameraViewPadding,
+			levelSelectionMovementBounds.yMin - LevelSelectionCameraViewPadding,
+			levelSelectionMovementBounds.xMax + LevelSelectionCameraViewPadding,
+			levelSelectionMovementBounds.yMax + LevelSelectionCameraViewPadding);
+	}
+
+	private Rect GetCameraGroundViewBounds()
+	{
+		Vector3 bottomLeft = GetCameraGroundViewportPoint(new Vector2(0f, 0f));
+		Vector3 topLeft = GetCameraGroundViewportPoint(new Vector2(0f, 1f));
+		Vector3 topRight = GetCameraGroundViewportPoint(new Vector2(1f, 1f));
+		Vector3 bottomRight = GetCameraGroundViewportPoint(new Vector2(1f, 0f));
+		float minX = Mathf.Min(bottomLeft.x, topLeft.x, topRight.x, bottomRight.x);
+		float maxX = Mathf.Max(bottomLeft.x, topLeft.x, topRight.x, bottomRight.x);
+		float minY = Mathf.Min(bottomLeft.y, topLeft.y, topRight.y, bottomRight.y);
+		float maxY = Mathf.Max(bottomLeft.y, topLeft.y, topRight.y, bottomRight.y);
+		return Rect.MinMaxRect(minX, minY, maxX, maxY);
 	}
 
 	private void ActivateLevelSelectionAtPoint(Vector2 worldPoint, bool broadcastSelection)
@@ -450,6 +835,47 @@ public partial class GameManager
 		}
 	}
 
+	private void UpdateLevelSelectionHoverVisual()
+	{
+		if (levelSelectionRoot == null || gameplayInitialized)
+		{
+			HideCraneHoverNodeVisual();
+			return;
+		}
+
+		if (TryGetLevelButtonColliderAtPoint(new Vector2(avatarPosition.x, avatarPosition.y), out Collider2D levelCollider, out _))
+		{
+			ShowLevelSelectionButtonHoverVisual(levelCollider);
+			return;
+		}
+
+		if (IsLevelConfirmButtonAtPoint(new Vector2(avatarPosition.x, avatarPosition.y)))
+		{
+			ShowLevelSelectionButtonHoverVisual(levelConfirmButtonCollider);
+			return;
+		}
+
+		HideCraneHoverNodeVisual();
+	}
+
+	private void ShowLevelSelectionButtonHoverVisual(Collider2D levelCollider)
+	{
+		if (levelCollider == null)
+		{
+			HideCraneHoverNodeVisual();
+			return;
+		}
+
+		EnsureCraneHoverNodeVisual();
+		localCraneHoverNodeShadow.SetActive(true);
+		Bounds bounds = levelCollider.bounds;
+		SetCraneHoverRectOutline(new Rect(
+			bounds.min.x - 0.08f,
+			bounds.min.y - 0.08f,
+			bounds.size.x + 0.16f,
+			bounds.size.y + 0.16f));
+	}
+
 	private void SelectLevelIndex(int levelIndex, bool broadcast)
 	{
 		List<PetriNetLevelDefinition> levels = GetLevelDefinitions();
@@ -464,16 +890,27 @@ public partial class GameManager
 		{
 			BroadcastLevelSelectionStateToClients();
 		}
+		else if (broadcast)
+		{
+			RequestSelectLevelSelection(selectedLevelIndex);
+		}
 	}
 
 	private bool TryGetLevelButtonAtPoint(Vector2 worldPoint, out int levelIndex)
 	{
+		return TryGetLevelButtonColliderAtPoint(worldPoint, out _, out levelIndex);
+	}
+
+	private bool TryGetLevelButtonColliderAtPoint(Vector2 worldPoint, out Collider2D levelCollider, out int levelIndex)
+	{
+		levelCollider = null;
 		levelIndex = -1;
 		Collider2D[] hits = Physics2D.OverlapPointAll(worldPoint);
 		for (int i = 0; i < hits.Length; i++)
 		{
 			if (hits[i] != null && levelButtonByCollider.TryGetValue(hits[i], out levelIndex))
 			{
+				levelCollider = hits[i];
 				return true;
 			}
 		}
@@ -506,33 +943,45 @@ public partial class GameManager
 		float movedDistance = Vector3.Distance(lastAvatarPosition, avatarPosition);
 		bool heldObjectChanged = lastAvatarNetworkSyncHeldId != currentHeldNetworkKey;
 		bool rotationChanged = Mathf.Abs(Mathf.DeltaAngle(lastAvatarNetworkSyncRotation, avatarRotation)) > 2f;
+		bool reliableHeartbeatDue = Time.unscaledTime >= nextReliableAvatarNetworkSyncTime;
 		bool shouldSendAvatarUpdate = !levelSelectionAvatarStateSent
 			|| heldObjectChanged
 			|| movedDistance > 0.65f
+			|| reliableHeartbeatDue
 			|| ((movedDistance > 0.05f || rotationChanged) && Time.unscaledTime >= nextAvatarNetworkSyncTime);
 		if (!shouldSendAvatarUpdate)
 		{
 			return;
 		}
 
+		bool reliable = !levelSelectionAvatarStateSent || heldObjectChanged || reliableHeartbeatDue;
 		nextAvatarNetworkSyncTime = Time.unscaledTime + avatarNetworkSyncInterval;
+		if (reliable)
+		{
+			nextReliableAvatarNetworkSyncTime = Time.unscaledTime + reliableAvatarNetworkSyncInterval;
+		}
+
 		lastAvatarPosition = avatarPosition;
 		lastAvatarNetworkSyncRotation = avatarRotation;
 		lastAvatarNetworkSyncHeldId = currentHeldNetworkKey;
 		lastAvatarNetworkSyncCraneHeight = avatarCraneCurrentHeight;
 		levelSelectionAvatarStateSent = true;
-		SendAvatarUpdate(avatarPosition, avatarRotation, heldTransitionId, heldObjectChanged);
+		SendAvatarUpdate(avatarPosition, avatarRotation, heldTransitionId, reliable);
 	}
 
 	private void DestroyLevelSelectionScreen()
 	{
 		if (levelSelectionRoot != null)
 		{
+			levelSelectionRoot.gameObject.SetActive(false);
 			Destroy(levelSelectionRoot.gameObject);
 			levelSelectionRoot = null;
 		}
 
 		levelButtonByCollider.Clear();
+		levelSelectionPlatform = null;
+		levelSelectionBoundaryLine = null;
+		levelSelectionMovementBounds = Rect.MinMaxRect(-4.45f, -3.25f, 4.45f, 3.25f);
 		levelConfirmButtonCollider = null;
 		levelInfoText = null;
 	}
@@ -540,37 +989,55 @@ public partial class GameManager
 	private void DrawGameplayMenu()
 	{
 		float uiScale = GetGameplayMenuUiScale();
-		float panelWidth = (levelEnded ? 560f : 620f) * uiScale;
-		float panelHeight = (levelEnded ? 520f : 560f) * uiScale;
+		float maxPanelWidth = Mathf.Max(320f, Screen.width - 36f * uiScale);
+		float maxPanelHeight = Mathf.Max(320f, Screen.height - 36f * uiScale);
+		float panelWidth = Mathf.Min((levelEnded ? 680f : 780f) * uiScale, maxPanelWidth);
+		float panelHeight = Mathf.Min((levelEnded ? 620f : 760f) * uiScale, maxPanelHeight);
 		Rect panel = new Rect((Screen.width - panelWidth) * 0.5f, (Screen.height - panelHeight) * 0.5f, panelWidth, panelHeight);
-		GUI.Box(panel, levelEnded ? "Level beendet" : "Menü");
+		GUIStyle menuBoxStyle = new GUIStyle(GUI.skin.box)
+		{
+			alignment = TextAnchor.UpperCenter,
+			fontSize = Mathf.RoundToInt(40f * uiScale),
+			fontStyle = FontStyle.Bold
+		};
+		GUI.Box(panel, levelEnded ? "Level beendet" : "Menü", menuBoxStyle);
 		float x = panel.x + 24f * uiScale;
-		float y = panel.y + 42f * uiScale;
+		float y = panel.y + 62f * uiScale;
 		float contentWidth = panel.width - 48f * uiScale;
 		bool canControlMenu = CanControlGameplayMenu();
 		bool previousGuiEnabled = GUI.enabled;
+		GUIStyle menuButtonStyle = new GUIStyle(GUI.skin.button)
+		{
+			fontSize = Mathf.RoundToInt(34f * uiScale),
+			fontStyle = FontStyle.Bold
+		};
 
 		if (levelEnded)
 		{
-			GUI.Label(new Rect(x, y, contentWidth, 24f * uiScale), "Auswertung");
-			y += 32f * uiScale;
+			GUIStyle resultTitleStyle = new GUIStyle(GUI.skin.label)
+			{
+				fontSize = Mathf.RoundToInt(38f * uiScale),
+				fontStyle = FontStyle.Bold
+			};
+			GUI.Label(new Rect(x, y, contentWidth, 50f * uiScale), "Auswertung", resultTitleStyle);
+			y += 62f * uiScale;
 
-			Rect scrollRect = new Rect(x, y, contentWidth, panel.height - 134f * uiScale);
+			Rect scrollRect = new Rect(x, y, contentWidth, panel.height - 160f * uiScale);
 			int orderCount = GetLevelOrderCount();
-			Rect contentRect = new Rect(0f, 0f, scrollRect.width - 18f * uiScale, Mathf.Max(scrollRect.height, (90f + orderCount * 96f) * uiScale));
+			Rect contentRect = new Rect(0f, 0f, scrollRect.width - 18f * uiScale, Mathf.Max(scrollRect.height, (130f + orderCount * 136f) * uiScale));
 			GUIStyle resultStyle = new GUIStyle(GUI.skin.label)
 			{
 				wordWrap = true,
-				fontSize = Mathf.RoundToInt(13f * uiScale)
+				fontSize = Mathf.RoundToInt(28f * uiScale)
 			};
 
 			levelResultScrollPosition = GUI.BeginScrollView(scrollRect, levelResultScrollPosition, contentRect);
 			GUI.Label(contentRect, GetLevelOrderResultSummaryText(), resultStyle);
 			GUI.EndScrollView();
 
-			y = panel.y + panel.height - 58f * uiScale;
+			y = panel.y + panel.height - 68f * uiScale;
 			GUI.enabled = previousGuiEnabled && canControlMenu;
-			if (GUI.Button(new Rect(x, y, contentWidth, 34f * uiScale), "Zur Levelübersicht"))
+			if (GUI.Button(new Rect(x, y, contentWidth, 56f * uiScale), "Zur Levelübersicht", menuButtonStyle))
 			{
 				RequestReturnToLevelSelection();
 			}
@@ -584,28 +1051,35 @@ public partial class GameManager
 			: GetGameplayPauseOwnerLabel() + " hat pausiert.";
 		GUIStyle pauseLabelStyle = new GUIStyle(GUI.skin.label)
 		{
-			fontSize = Mathf.RoundToInt(22f * uiScale)
+			wordWrap = true,
+			fontSize = Mathf.RoundToInt(46f * uiScale),
+			fontStyle = FontStyle.Bold
 		};
-		GUI.Label(new Rect(x, y, contentWidth, 32f * uiScale), pauseLabel, pauseLabelStyle);
-		y += 44f * uiScale;
-
-		DrawPauseControlsInfo(new Rect(x, y, contentWidth, 288f * uiScale), uiScale);
-		y += 308f * uiScale;
+		float buttonHeight = 68f * uiScale;
+		float buttonGap = 18f * uiScale;
+		float buttonAreaHeight = buttonHeight * 3f + buttonGap * 2f;
+		Rect scrollViewRect = new Rect(x, y, contentWidth, Mathf.Max(120f * uiScale, panel.y + panel.height - y - buttonAreaHeight - 30f * uiScale));
+		Rect scrollContentRect = new Rect(0f, 0f, scrollViewRect.width - 18f * uiScale, 650f * uiScale);
+		levelPauseScrollPosition = GUI.BeginScrollView(scrollViewRect, levelPauseScrollPosition, scrollContentRect);
+		GUI.Label(new Rect(0f, 0f, scrollContentRect.width, 76f * uiScale), pauseLabel, pauseLabelStyle);
+		DrawPauseControlsInfo(new Rect(0f, 96f * uiScale, scrollContentRect.width, 520f * uiScale), uiScale);
+		GUI.EndScrollView();
 
 		GUI.enabled = previousGuiEnabled && canControlMenu;
-		if (GUI.Button(new Rect(x, y, contentWidth, 40f * uiScale), "Weiter"))
+		y = panel.y + panel.height - buttonAreaHeight - 20f * uiScale;
+		if (GUI.Button(new Rect(x, y, contentWidth, buttonHeight), "Weiter", menuButtonStyle))
 		{
 			RequestResumeGameplay();
 		}
 
-		y += 52f * uiScale;
-		if (GUI.Button(new Rect(x, y, contentWidth, 40f * uiScale), "Level beenden"))
+		y += buttonHeight + buttonGap;
+		if (GUI.Button(new Rect(x, y, contentWidth, buttonHeight), "Level beenden", menuButtonStyle))
 		{
 			RequestEndLevel();
 		}
 
-		y += 52f * uiScale;
-		if (GUI.Button(new Rect(x, y, contentWidth, 40f * uiScale), "Zur Levelübersicht"))
+		y += buttonHeight + buttonGap;
+		if (GUI.Button(new Rect(x, y, contentWidth, buttonHeight), "Zur Levelübersicht", menuButtonStyle))
 		{
 			RequestReturnToLevelSelection();
 		}
@@ -615,7 +1089,7 @@ public partial class GameManager
 
 	private float GetGameplayMenuUiScale()
 	{
-		return Mathf.Clamp(Screen.height / 900f, 1f, 1.8f);
+		return Mathf.Clamp(Screen.height / 720f, 1.15f, 2.2f);
 	}
 
 	private void DrawPauseControlsInfo(Rect rect, float uiScale)
@@ -623,26 +1097,26 @@ public partial class GameManager
 		GUI.Box(rect, "");
 		GUIStyle titleStyle = new GUIStyle(GUI.skin.label)
 		{
-			fontSize = Mathf.RoundToInt(22f * uiScale),
+			fontSize = Mathf.RoundToInt(40f * uiScale),
 			fontStyle = FontStyle.Bold
 		};
 		GUIStyle infoStyle = new GUIStyle(GUI.skin.label)
 		{
 			wordWrap = true,
-			fontSize = Mathf.RoundToInt(22f * uiScale)
+			fontSize = Mathf.RoundToInt(36f * uiScale)
 		};
 
 		string controlsText =
 			"WASD / Pfeile: bewegen\n"
 			+ "Shift: schneller fliegen\n"
 			+ "Leertaste: Haken senken, aufnehmen/absetzen, Pfeil setzen\n"
-			+ "E: neue Stelle erstellen oder platzieren\n"
+			+ "E: Lager-Block erstellen oder platzieren\n"
 			+ "Q: Verbindung starten oder Richtung umdrehen\n"
 			+ "R: löschen oder gehaltenen Pfeil abbrechen\n"
 			+ "F: Transition auslösen\n"
 			+ "Esc: Pause öffnen oder fortsetzen";
-		GUI.Label(new Rect(rect.x + 18f * uiScale, rect.y + 8f * uiScale, rect.width - 36f * uiScale, 28f * uiScale), "Tasten", titleStyle);
-		GUI.Label(new Rect(rect.x + 18f * uiScale, rect.y + 40f * uiScale, rect.width - 36f * uiScale, rect.height - 50f * uiScale), controlsText, infoStyle);
+		GUI.Label(new Rect(rect.x + 20f * uiScale, rect.y + 12f * uiScale, rect.width - 40f * uiScale, 52f * uiScale), "Tasten", titleStyle);
+		GUI.Label(new Rect(rect.x + 20f * uiScale, rect.y + 76f * uiScale, rect.width - 40f * uiScale, rect.height - 88f * uiScale), controlsText, infoStyle);
 	}
 
 	private void HandleGameplayMenuHotkey()
@@ -720,6 +1194,11 @@ public partial class GameManager
 		ExecuteOrSendCommand(new CommandData { action = "ConfirmLevelSelection", amount = selectedLevelIndex });
 	}
 
+	private void RequestSelectLevelSelection(int levelIndex)
+	{
+		ExecuteOrSendCommand(new CommandData { action = "SelectLevelSelection", amount = levelIndex });
+	}
+
 	private bool PauseGameplayFromHost(ulong actorClientId)
 	{
 		if (levelEnded || gameplayMenuOpen)
@@ -729,6 +1208,7 @@ public partial class GameManager
 
 		gameplayMenuOpen = true;
 		gameplayMenuOwnerClientId = actorClientId;
+		levelPauseScrollPosition = Vector2.zero;
 		PauseLevelOrderTimeline();
 		CancelGameplayMenuTransientInput();
 		return true;
@@ -806,6 +1286,7 @@ public partial class GameManager
 
 		if (gameplayMenuOpen && !wasGameplayMenuOpen)
 		{
+			levelPauseScrollPosition = Vector2.zero;
 			PauseLevelOrderTimeline();
 		}
 		else if (!gameplayMenuOpen && wasGameplayMenuOpen)
@@ -886,14 +1367,14 @@ public partial class GameManager
 
 		selectedLevelIndex = Mathf.Max(0, state.selectedLevelIndex);
 		if (!gameplayInitialized && nodesById.Count == 0 && arcsById.Count == 0)
-			{
-				levelSelectionConfirmed = false;
-				gameplayMenuOpen = false;
-				gameplayMenuOwnerClientId = NoGameplayMenuOwnerClientId;
-				levelEnded = false;
-				UpdateLevelSelectionVisuals();
-				return;
-			}
+		{
+			levelSelectionConfirmed = false;
+			gameplayMenuOpen = false;
+			gameplayMenuOwnerClientId = NoGameplayMenuOwnerClientId;
+			levelEnded = false;
+			UpdateLevelSelectionVisuals();
+			return;
+		}
 
 		levelSelectionConfirmed = false;
 		gameplayMenuOpen = false;
@@ -905,7 +1386,8 @@ public partial class GameManager
 		StopLevelOrderTimeline();
 		pendingClaimedTransitionId = null;
 		draggedCompositeBlockId = null;
-		pendingCreatedPlacePickup = false;
+		pendingCreatedBlockPickup = false;
+		pendingCreatedBlockExistingIds.Clear();
 		pointerDownNodeId = null;
 		pointerDownCompositeBlockId = null;
 		pointerDragActive = false;
@@ -1025,7 +1507,9 @@ public partial class GameManager
 				block.firstTransitionName,
 				block.secondTransitionName,
 				Mathf.Max(0f, block.processingSeconds),
-				block.resultState));
+				block.resultState,
+				Mathf.Max(1, block.outputTokenCount),
+				block.singleTransition));
 		}
 
 		return copy;
@@ -1079,12 +1563,21 @@ public partial class GameManager
 
 			text.Append("- ");
 			text.Append(block.firstTransitionName);
-			text.Append(" -> ");
-			text.Append(block.secondTransitionName);
+			if (!block.singleTransition)
+			{
+				text.Append(" -> ");
+				text.Append(block.secondTransitionName);
+			}
 			text.Append(" / ");
 			text.Append(block.processingSeconds.ToString("0.#"));
 			text.Append("s / ");
 			text.Append(GetFallbackText(block.resultState, "kein Zustand"));
+			if (block.outputTokenCount > 1)
+			{
+				text.Append(" / Ausgabe x");
+				text.Append(block.outputTokenCount);
+			}
+
 			text.Append('\n');
 		}
 

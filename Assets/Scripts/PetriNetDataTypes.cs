@@ -24,7 +24,8 @@ public partial class GameManager
 	private enum ArcKind
 	{
 		Normal,
-		Inhibitor
+		Inhibitor,
+		Reset
 	}
 
 	private enum HeldObjectKind
@@ -58,6 +59,7 @@ public partial class GameManager
 		public int avatarHeldObjectKind;
 		public float avatarHeldOffsetX;
 		public float avatarHeldOffsetY;
+		public int avatarSceneMode;
 	}
 
 	[Serializable]
@@ -87,6 +89,7 @@ public partial class GameManager
 		public int heldObjectKind;
 		public float heldOffsetX;
 		public float heldOffsetY;
+		public int sceneMode;
 	}
 
 	[Serializable]
@@ -172,7 +175,9 @@ public partial class GameManager
 		public GameObject gameObject;
 		public LineRenderer body;
 		public LineRenderer arrow;
+		public LineRenderer resetArrow;
 		public LineRenderer inhibitorCircle;
+		public TextMesh weightLabel;
 		public EdgeCollider2D collider;
 	}
 

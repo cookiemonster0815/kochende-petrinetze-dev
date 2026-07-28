@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Text;
 using UnityEngine;
@@ -55,7 +56,11 @@ public partial class GameManager
 
 			float appearsAt = Mathf.Max(0f, order.appearsAtSeconds);
 			float expiresAt = Mathf.Max(appearsAt + 1f, order.expiresAtSeconds);
-			copy.Add(new PetriNetLevelOrderDefinition(order.dishText.Trim(), GetOrderRequiredTokenText(order), appearsAt, expiresAt));
+			int amount = Mathf.Max(1, order.amount);
+			for (int copyIndex = 0; copyIndex < amount; copyIndex++)
+			{
+				copy.Add(new PetriNetLevelOrderDefinition(order.dishText.Trim(), GetOrderRequiredTokenText(order), appearsAt, expiresAt));
+			}
 		}
 
 		return copy;
@@ -657,16 +662,133 @@ public partial class GameManager
 			return "";
 		}
 
-		string normalized = text.Trim().ToLowerInvariant();
-		normalized = normalized.Replace("+", ",");
-		normalized = normalized.Replace(" ,", ",");
-		normalized = normalized.Replace(", ", ",");
-		while (normalized.Contains("  "))
+		string preparedText = PrepareDishTextForCanonicalization(text);
+		int index = 0;
+		return ParseDishExpression(preparedText, ref index);
+	}
+
+	private string PrepareDishTextForCanonicalization(string text)
+	{
+		string lowerText = text.Trim().ToLowerInvariant().Replace("+", ",");
+		StringBuilder result = new StringBuilder();
+		bool pendingSpace = false;
+		for (int i = 0; i < lowerText.Length; i++)
 		{
-			normalized = normalized.Replace("  ", " ");
+			char c = lowerText[i];
+			if (char.IsWhiteSpace(c))
+			{
+				pendingSpace = true;
+				continue;
+			}
+
+			if (c == ',' || c == '(' || c == ')')
+			{
+				TrimTrailingSpace(result);
+				result.Append(c);
+				pendingSpace = false;
+				continue;
+			}
+
+			if (pendingSpace && result.Length > 0 && result[result.Length - 1] != '(' && result[result.Length - 1] != ',')
+			{
+				result.Append(' ');
+			}
+
+			result.Append(c);
+			pendingSpace = false;
 		}
 
-		return normalized;
+		TrimTrailingSpace(result);
+		return result.ToString();
+	}
+
+	private string ParseDishExpression(string text, ref int index)
+	{
+		List<string> items = new List<string>();
+		while (index < text.Length)
+		{
+			SkipDishSpaces(text, ref index);
+			if (index >= text.Length || text[index] == ')')
+			{
+				break;
+			}
+
+			string item = ParseDishItem(text, ref index);
+			if (!string.IsNullOrEmpty(item))
+			{
+				items.Add(item);
+			}
+
+			SkipDishSpaces(text, ref index);
+			if (index < text.Length && text[index] == ',')
+			{
+				index++;
+				continue;
+			}
+
+			if (index >= text.Length || text[index] == ')')
+			{
+				break;
+			}
+		}
+
+		items.Sort(StringComparer.Ordinal);
+		return string.Join(",", items);
+	}
+
+	private string ParseDishItem(string text, ref int index)
+	{
+		SkipDishSpaces(text, ref index);
+		if (index >= text.Length)
+		{
+			return "";
+		}
+
+		if (text[index] != '(')
+		{
+			return ReadDishTextUntilSeparator(text, ref index);
+		}
+
+		index++;
+		string inner = ParseDishExpression(text, ref index);
+		if (index < text.Length && text[index] == ')')
+		{
+			index++;
+		}
+
+		string suffix = ReadDishTextUntilSeparator(text, ref index);
+		return string.IsNullOrEmpty(suffix)
+			? "(" + inner + ")"
+			: "(" + inner + ") " + suffix;
+	}
+
+	private string ReadDishTextUntilSeparator(string text, ref int index)
+	{
+		StringBuilder result = new StringBuilder();
+		while (index < text.Length && text[index] != ',' && text[index] != ')')
+		{
+			result.Append(text[index]);
+			index++;
+		}
+
+		TrimTrailingSpace(result);
+		return result.ToString().Trim();
+	}
+
+	private void SkipDishSpaces(string text, ref int index)
+	{
+		while (index < text.Length && char.IsWhiteSpace(text[index]))
+		{
+			index++;
+		}
+	}
+
+	private void TrimTrailingSpace(StringBuilder builder)
+	{
+		while (builder.Length > 0 && char.IsWhiteSpace(builder[builder.Length - 1]))
+		{
+			builder.Length--;
+		}
 	}
 
 	private string WrapLevelOrderText(string text, int maxLineLength)
@@ -739,6 +861,12 @@ public partial class GameManager
 			}
 
 			text.Append("- ");
+			if (order.amount > 1)
+			{
+				text.Append(order.amount);
+				text.Append("x ");
+			}
+
 			text.Append(order.dishText);
 			text.Append("\n  Gefordert: ");
 			text.Append(GetOrderRequiredTokenText(order));

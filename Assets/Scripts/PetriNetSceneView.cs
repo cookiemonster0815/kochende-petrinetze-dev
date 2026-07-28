@@ -55,6 +55,7 @@ public partial class GameManager
 
 	private void ConfigureCamera(Camera camera)
 	{
+		ResetCameraFollowVelocity();
 		camera.transform.rotation = GetGameplayCameraRotation();
 		SetCameraGroundCenter(camera, Vector2.zero);
 		camera.orthographic = true;
@@ -188,6 +189,7 @@ public partial class GameManager
 	{
 		if (petriNetRoot != null)
 		{
+			petriNetRoot.gameObject.SetActive(true);
 			return;
 		}
 
@@ -195,6 +197,7 @@ public partial class GameManager
 		if (existing != null)
 		{
 			petriNetRoot = existing;
+			petriNetRoot.gameObject.SetActive(true);
 			return;
 		}
 
@@ -232,6 +235,7 @@ public partial class GameManager
 		transitionCounter = 3;
 		arcCounter = 5;
 
+		ResetLocalAvatarToGameplayStartPosition();
 		RefreshPetriNetVisuals();
 		UpdateAllArcVisuals();
 	}
@@ -269,23 +273,12 @@ public partial class GameManager
 		placeCounter = 1;
 		transitionCounter = 1;
 		arcCounter = 1;
+		createdBlockCounter = 1;
 		collaborativeLayoutApplied = true;
 
-		// Initialize avatars
-		avatarPosition = GetDefaultAvatarStartPosition(GetLocalActorClientId());
-		avatarStartPositionApplied = true;
-		avatarRotation = 0f;
-		heldTransitionId = null;
-		heldPlaceId = null;
-		heldCompositeBlockId = null;
-		heldCompositeBlockOffset = Vector2.zero;
-		pendingCreatedPlacePickup = false;
-		lastAvatarPosition = avatarPosition;
-		lastAvatarNetworkSyncRotation = avatarRotation;
-		lastAvatarNetworkSyncHeldId = "";
-		lastAvatarNetworkSyncCraneHeight = avatarCraneCurrentHeight;
-		SeedRemoteAvatarStartPosition(topOwnerClientId);
-		SeedRemoteAvatarStartPosition(bottomOwnerClientId);
+		ResetLocalAvatarToGameplayStartPosition();
+		ResetRemoteAvatarToGameplayStartPosition(topOwnerClientId);
+		ResetRemoteAvatarToGameplayStartPosition(bottomOwnerClientId);
 
 		RefreshPetriNetVisuals();
 	}
@@ -364,6 +357,21 @@ public partial class GameManager
 			return;
 		}
 
+		if (IsSingleTransitionBlockDefinition(definition))
+		{
+			CreateTransitionNode(nodeIds[0], center + new Vector2(-1.15f, 0f), false, ownerClientId, isSharedPoolBlock, isSharedPoolAvailable);
+			CreatePlaceNode(nodeIds[1], center + new Vector2(1.15f, 0f), 0, false, ownerClientId, false, false);
+
+			if (nodesById.TryGetValue(nodeIds[0], out NodeRuntime singleTransition))
+			{
+				singleTransition.displayName = GetPoolBlockFirstTransitionName(definition);
+			}
+
+			CreateArcInternal(arcIds[0], nodeIds[0], nodeIds[1], GetPoolBlockOutputTokenCount(definition), false, ownerClientId);
+			EnsureCompositeBlockVisuals();
+			return;
+		}
+
 		CreateTransitionNode(nodeIds[0], center + new Vector2(-2.25f, 0f), false, ownerClientId, isSharedPoolBlock, isSharedPoolAvailable);
 		CreatePlaceNode(nodeIds[1], center + new Vector2(-0.75f, 0f), 0, false, ownerClientId, false, false);
 		CreateTransitionNode(nodeIds[2], center + new Vector2(0.75f, 0f), false, ownerClientId, isSharedPoolBlock, isSharedPoolAvailable);
@@ -387,8 +395,26 @@ public partial class GameManager
 
 		CreateArcInternal(arcIds[0], nodeIds[0], nodeIds[1], 1, false, ownerClientId);
 		CreateArcInternal(arcIds[1], nodeIds[1], nodeIds[2], 1, false, ownerClientId);
-		CreateArcInternal(arcIds[2], nodeIds[2], nodeIds[3], 1, false, ownerClientId);
+		CreateArcInternal(arcIds[2], nodeIds[2], nodeIds[3], GetPoolBlockOutputTokenCount(definition), false, ownerClientId);
 		EnsureCompositeBlockVisuals();
+	}
+
+	private string CreatePlaceTransitionBlock(Vector2 center, ulong ownerClientId)
+	{
+		string blockId = GetNextCreatedCompositeBlockId();
+		string[] nodeIds = GetCompositeBlockNodeIds(blockId);
+		string[] arcIds = GetCompositeBlockArcIds(blockId);
+		if (nodeIds == null || nodeIds.Length < 2 || arcIds == null || arcIds.Length < 1)
+		{
+			return null;
+		}
+
+		CreateTransitionNode(nodeIds[0], center + new Vector2(-0.75f, 0f), false, ownerClientId, false, false);
+		CreatePlaceNode(nodeIds[1], center + new Vector2(0.75f, 0f), 0, false, ownerClientId, false, false);
+		CreateArcInternal(arcIds[0], nodeIds[0], nodeIds[1], 1, false, ownerClientId);
+		EnsureCompositeBlockVisuals();
+		RefreshPetriNetVisuals();
+		return blockId;
 	}
 
 	private void CreateConfiguredInhibitorArcs()
@@ -434,7 +460,9 @@ public partial class GameManager
 			return false;
 		}
 
-		sourcePlaceId = inhibitor.sourcePlace == PetriNetLevelBlockPlace.ausgabe ? nodeIds[3] : nodeIds[1];
+		sourcePlaceId = inhibitor.sourcePlace == PetriNetLevelBlockPlace.ausgabe || nodeIds.Length <= 2
+			? nodeIds[nodeIds.Length - 1]
+			: nodeIds[1];
 		return nodesById.TryGetValue(sourcePlaceId, out NodeRuntime sourcePlace) && sourcePlace.type == NodeType.Place;
 	}
 
@@ -504,6 +532,19 @@ public partial class GameManager
 		remoteAvatarCraneHeights[clientId] = avatarCraneRestHeight;
 	}
 
+	private void ResetRemoteAvatarToGameplayStartPosition(ulong clientId)
+	{
+		if (Unity.Netcode.NetworkManager.Singleton == null || !Unity.Netcode.NetworkManager.Singleton.IsListening || clientId == GetLocalActorClientId())
+		{
+			return;
+		}
+
+		remoteAvatarPositions[clientId] = GetDefaultAvatarStartPosition(clientId);
+		remoteAvatarRotations[clientId] = 0f;
+		remoteAvatarInventories[clientId] = new RemoteHeldObjectState { kind = HeldObjectKind.None, id = "", offset = Vector2.zero };
+		remoteAvatarCraneHeights[clientId] = avatarCraneRestHeight;
+	}
+
 	private ulong GetFirstOtherConnectedClientId(ulong fallbackBaseClientId)
 	{
 		if (Unity.Netcode.NetworkManager.Singleton == null || !Unity.Netcode.NetworkManager.Singleton.IsListening)
@@ -546,13 +587,35 @@ public partial class GameManager
 			return;
 		}
 
+		ResetLocalAvatarToGameplayStartPosition();
+	}
+
+	private void ResetLocalAvatarToGameplayStartPosition()
+	{
 		avatarPosition = GetDefaultAvatarStartPosition(GetLocalActorClientId());
 		avatarRotation = 0f;
+		avatarCraneCurrentHeight = avatarCraneRestHeight;
+		avatarCraneDipTargetHeight = avatarCraneLoweredHeight;
+		avatarCraneAnimationStartTime = -10f;
+		heldTransitionId = null;
+		heldPlaceId = null;
+		heldCompositeBlockId = null;
+		heldCompositeBlockOffset = Vector2.zero;
+		craneConnectStartNodeId = null;
+		CancelCraneConnectPreview();
+		pendingClaimedTransitionId = null;
+		draggedNodeId = null;
+		draggedCompositeBlockId = null;
+		pendingCreatedBlockPickup = false;
+		pendingCreatedBlockExistingIds.Clear();
 		avatarStartPositionApplied = true;
 		lastAvatarPosition = avatarPosition;
 		lastAvatarNetworkSyncRotation = avatarRotation;
-		lastAvatarNetworkSyncHeldId = GetCurrentHeldNetworkKey();
+		lastAvatarNetworkSyncHeldId = "";
 		lastAvatarNetworkSyncCraneHeight = avatarCraneCurrentHeight;
+		nextAvatarNetworkSyncTime = 0f;
+		nextReliableAvatarNetworkSyncTime = 0f;
+		ResetCameraFollowVelocity();
 	}
 
 	private void ClearGraph()
@@ -598,7 +661,8 @@ public partial class GameManager
 		heldPlaceId = null;
 		heldCompositeBlockId = null;
 		heldCompositeBlockOffset = Vector2.zero;
-		pendingCreatedPlaceExistingIds.Clear();
+		pendingCreatedBlockPickup = false;
+		pendingCreatedBlockExistingIds.Clear();
 		DestroyCraneConnectPreviewVisual();
 		DestroyCraneHoverSelectionVisual();
 	}
@@ -795,6 +859,8 @@ public partial class GameManager
 			return false;
 		}
 
+		kind = GetEffectiveArcKind(fromId, toId, kind);
+
 		if (kind == ArcKind.Inhibitor && (fromNode.type != NodeType.Place || toNode.type != NodeType.Transition))
 		{
 			Debug.LogWarning("Inhibitor arc rejected: only Place->Transition is allowed.");
@@ -807,7 +873,7 @@ public partial class GameManager
 			return false;
 		}
 
-		if (kind == ArcKind.Normal && !IsArcAllowedByIngredientRules(fromId, toId))
+		if (kind != ArcKind.Inhibitor && !IsArcAllowedByIngredientRules(fromId, toId))
 		{
 			return false;
 		}
@@ -833,10 +899,32 @@ public partial class GameManager
 		LineRenderer arrow = arrowObject.AddComponent<LineRenderer>();
 		ConfigureGroundLineRenderer(arrow, 3, arcWidth, 25, arcColor);
 
+		GameObject resetArrowObject = new GameObject("ResetArrow");
+		resetArrowObject.transform.SetParent(arcObject.transform, false);
+		LineRenderer resetArrow = resetArrowObject.AddComponent<LineRenderer>();
+		ConfigureGroundLineRenderer(resetArrow, 3, arcWidth, 25, arcColor);
+		resetArrowObject.SetActive(false);
+
 		GameObject inhibitorCircleObject = new GameObject("InhibitorCircle");
 		inhibitorCircleObject.transform.SetParent(arcObject.transform, false);
 		LineRenderer inhibitorCircle = inhibitorCircleObject.AddComponent<LineRenderer>();
 		ConfigureGroundLineRenderer(inhibitorCircle, 24, arcWidth, 25, arcColor, 6, 8, true);
+		inhibitorCircleObject.SetActive(false);
+
+		GameObject weightLabelObject = new GameObject("WeightLabel");
+		weightLabelObject.transform.SetParent(arcObject.transform, false);
+		TextMesh weightLabel = weightLabelObject.AddComponent<TextMesh>();
+		weightLabel.text = "";
+		weightLabel.characterSize = 0.095f;
+		weightLabel.fontSize = 64;
+		weightLabel.anchor = TextAnchor.MiddleCenter;
+		weightLabel.alignment = TextAlignment.Center;
+		weightLabel.color = Color.black;
+		MeshRenderer weightLabelRenderer = weightLabelObject.GetComponent<MeshRenderer>();
+		if (weightLabelRenderer != null)
+		{
+			weightLabelRenderer.sortingOrder = 52;
+		}
 
 		EdgeCollider2D collider = arcObject.AddComponent<EdgeCollider2D>();
 		collider.edgeRadius = 0.14f;
@@ -853,7 +941,9 @@ public partial class GameManager
 			gameObject = arcObject,
 			body = body,
 			arrow = arrow,
+			resetArrow = resetArrow,
 			inhibitorCircle = inhibitorCircle,
+			weightLabel = weightLabel,
 			collider = collider,
 		};
 
@@ -943,7 +1033,7 @@ public partial class GameManager
 		return true;
 	}
 
-	private bool RemoveArcInternal(string arcId)
+	private bool RemoveArcInternal(string arcId, bool refreshVisuals = true)
 	{
 		if (!arcsById.TryGetValue(arcId, out ArcRuntime arc))
 		{
@@ -953,12 +1043,17 @@ public partial class GameManager
 		arcByCollider.Remove(arc.collider);
 		arcsById.Remove(arcId);
 		Destroy(arc.gameObject);
-		RefreshPetriNetVisuals();
+		if (refreshVisuals)
+		{
+			RefreshPetriNetVisuals();
+		}
 		return true;
 	}
 
 	private void RefreshPetriNetVisuals()
 	{
+		NormalizeArcKindsAndRemoveInvalidArcs();
+
 		foreach (KeyValuePair<string, NodeRuntime> pair in nodesById)
 		{
 			NodeRuntime node = pair.Value;
@@ -986,9 +1081,75 @@ public partial class GameManager
 		}
 
 		EnsureCompositeBlockVisuals();
+		NormalizeCompositeBlockSorting();
 		UpdateAllArcVisuals();
 		UpdateTimedPlaceProcessingVisuals();
 		UpdateVisibilityForLocalPlayer();
+	}
+
+	private void NormalizeArcKindsAndRemoveInvalidArcs()
+	{
+		List<string> arcIdsToRemove = new List<string>();
+		foreach (KeyValuePair<string, ArcRuntime> pair in arcsById)
+		{
+			ArcRuntime arc = pair.Value;
+			if (arc == null || arc.kind == ArcKind.Inhibitor)
+			{
+				continue;
+			}
+
+			if (!IsArcAllowedByIngredientRules(arc.fromId, arc.toId))
+			{
+				arcIdsToRemove.Add(arc.id);
+				continue;
+			}
+
+			arc.kind = GetEffectiveArcKind(arc.fromId, arc.toId, arc.kind);
+		}
+
+		for (int i = 0; i < arcIdsToRemove.Count; i++)
+		{
+			RemoveArcInternal(arcIdsToRemove[i], false);
+		}
+	}
+
+	private void NormalizeCompositeBlockSorting()
+	{
+		if (compositeBlocksById == null || compositeBlocksById.Count == 0)
+		{
+			return;
+		}
+
+		List<string> blockIds = new List<string>(compositeBlocksById.Keys);
+		for (int i = 0; i < blockIds.Count; i++)
+		{
+			string blockId = blockIds[i];
+			SetCompositeBlockSorting(blockId, IsCompositeBlockLifted(blockId));
+		}
+	}
+
+	private bool IsCompositeBlockLifted(string blockId)
+	{
+		return blockId == heldCompositeBlockId || IsCompositeBlockHeldByRemoteAvatar(blockId);
+	}
+
+	private bool IsCompositeBlockHeldByRemoteAvatar(string blockId)
+	{
+		if (string.IsNullOrEmpty(blockId) || remoteAvatarInventories == null)
+		{
+			return false;
+		}
+
+		foreach (KeyValuePair<ulong, RemoteHeldObjectState> pair in remoteAvatarInventories)
+		{
+			RemoteHeldObjectState heldState = pair.Value;
+			if (heldState != null && heldState.kind == HeldObjectKind.CompositeBlock && heldState.id == blockId)
+			{
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	private GameObject localAvatarVisual;
@@ -3005,10 +3166,17 @@ public partial class GameManager
 					arc.arrow.sortingOrder = lifted ? 55 : 25;
 				}
 
+				if (arc.resetArrow != null)
+				{
+					arc.resetArrow.sortingOrder = lifted ? 55 : 25;
+				}
+
 				if (arc.inhibitorCircle != null)
 				{
 					arc.inhibitorCircle.sortingOrder = lifted ? 55 : 25;
 				}
+
+				SetArcWeightLabelSorting(arc, lifted);
 			}
 		}
 
@@ -3035,10 +3203,17 @@ public partial class GameManager
 				arc.arrow.sortingOrder = lifted ? 55 : 25;
 			}
 
+			if (arc.resetArrow != null)
+			{
+				arc.resetArrow.sortingOrder = lifted ? 55 : 25;
+			}
+
 			if (arc.inhibitorCircle != null)
 			{
 				arc.inhibitorCircle.sortingOrder = lifted ? 55 : 25;
 			}
+
+			SetArcWeightLabelSorting(arc, lifted);
 		}
 
 		if (compositeBlocksById.TryGetValue(blockId, out CompositeBlockRuntime block))
@@ -3052,6 +3227,20 @@ public partial class GameManager
 			{
 				block.border.sortingOrder = lifted ? 56 : 14;
 			}
+		}
+	}
+
+	private void SetArcWeightLabelSorting(ArcRuntime arc, bool lifted)
+	{
+		if (arc == null || arc.weightLabel == null)
+		{
+			return;
+		}
+
+		MeshRenderer labelRenderer = arc.weightLabel.GetComponent<MeshRenderer>();
+		if (labelRenderer != null)
+		{
+			labelRenderer.sortingOrder = lifted ? 56 : 52;
 		}
 	}
 
@@ -3400,6 +3589,16 @@ public partial class GameManager
 		return nodeId == GetSharedPoolTrashTransitionId();
 	}
 
+	private ArcKind GetEffectiveArcKind(string fromId, string toId, ArcKind requestedKind)
+	{
+		if (requestedKind == ArcKind.Inhibitor)
+		{
+			return ArcKind.Inhibitor;
+		}
+
+		return IsSharedPoolTrashTransitionId(toId) ? ArcKind.Reset : ArcKind.Normal;
+	}
+
 	private bool IsActorTopSide(ulong actorClientId)
 	{
 		if (Unity.Netcode.NetworkManager.Singleton == null || !Unity.Netcode.NetworkManager.Singleton.IsListening)
@@ -3552,6 +3751,12 @@ public partial class GameManager
 			blockIds.Add(GetPlayerCompositeBlockIdByIndex(false, i));
 		}
 
+		List<string> createdBlockIds = GetCreatedCompositeBlockIds();
+		for (int i = 0; i < createdBlockIds.Count; i++)
+		{
+			blockIds.Add(createdBlockIds[i]);
+		}
+
 		return blockIds;
 	}
 
@@ -3559,13 +3764,75 @@ public partial class GameManager
 	{
 		return GetCompositeBlockIndex(blockId) >= 0
 			|| GetPlayerCompositeBlockIndex(blockId, true) >= 0
-			|| GetPlayerCompositeBlockIndex(blockId, false) >= 0;
+			|| GetPlayerCompositeBlockIndex(blockId, false) >= 0
+			|| IsCreatedCompositeBlockId(blockId);
 	}
 
 	private bool IsPlayerBoundCompositeBlock(string blockId)
 	{
 		return GetPlayerCompositeBlockIndex(blockId, true) >= 0
 			|| GetPlayerCompositeBlockIndex(blockId, false) >= 0;
+	}
+
+	private bool IsCreatedCompositeBlockId(string blockId)
+	{
+		return !string.IsNullOrEmpty(blockId)
+			&& blockId.StartsWith("B_CreatedBlock_")
+			&& ExtractTrailingNumber(blockId) > 0;
+	}
+
+	private string GetNextCreatedCompositeBlockId()
+	{
+		while (nodesById.ContainsKey("T_CreatedBlock_" + createdBlockCounter + "_Start")
+			|| nodesById.ContainsKey("P_CreatedBlock_" + createdBlockCounter + "_Output")
+			|| arcsById.ContainsKey("A_CreatedBlock_" + createdBlockCounter + "_1"))
+		{
+			createdBlockCounter++;
+		}
+
+		string blockId = "B_CreatedBlock_" + createdBlockCounter;
+		createdBlockCounter++;
+		return blockId;
+	}
+
+	private List<string> GetCreatedCompositeBlockIds()
+	{
+		List<string> blockIds = new List<string>();
+		foreach (KeyValuePair<string, NodeRuntime> pair in nodesById)
+		{
+			string blockId = GetCreatedCompositeBlockIdForNodeId(pair.Key);
+			if (!string.IsNullOrEmpty(blockId) && !blockIds.Contains(blockId))
+			{
+				blockIds.Add(blockId);
+			}
+		}
+
+		blockIds.Sort((left, right) => ExtractTrailingNumber(left).CompareTo(ExtractTrailingNumber(right)));
+		return blockIds;
+	}
+
+	private string GetCreatedCompositeBlockIdForNodeId(string nodeId)
+	{
+		if (string.IsNullOrEmpty(nodeId))
+		{
+			return null;
+		}
+
+		const string transitionPrefix = "T_CreatedBlock_";
+		const string placePrefix = "P_CreatedBlock_";
+		if (nodeId.StartsWith(transitionPrefix) && nodeId.EndsWith("_Start"))
+		{
+			string number = nodeId.Substring(transitionPrefix.Length, nodeId.Length - transitionPrefix.Length - "_Start".Length);
+			return "B_CreatedBlock_" + number;
+		}
+
+		if (nodeId.StartsWith(placePrefix) && nodeId.EndsWith("_Output"))
+		{
+			string number = nodeId.Substring(placePrefix.Length, nodeId.Length - placePrefix.Length - "_Output".Length);
+			return "B_CreatedBlock_" + number;
+		}
+
+		return null;
 	}
 
 	private PoolBlockDefinition GetCompositeBlockDefinition(string blockId)
@@ -3640,6 +3907,16 @@ public partial class GameManager
 		return "";
 	}
 
+	private int GetPoolBlockOutputTokenCount(PoolBlockDefinition definition)
+	{
+		return definition != null ? Mathf.Max(1, definition.outputTokenCount) : 1;
+	}
+
+	private bool IsSingleTransitionBlockDefinition(PoolBlockDefinition definition)
+	{
+		return definition != null && definition.singleTransition;
+	}
+
 	private string GetCompositeBlockIdByIndex(int index)
 	{
 		return "B_PoolBlock_" + (index + 1);
@@ -3664,6 +3941,12 @@ public partial class GameManager
 	private string GetCompositeBlockDisplayNameForNodeId(string nodeId)
 	{
 		string blockId = GetCompositeBlockIdForNodeId(nodeId);
+		if (IsCreatedCompositeBlockId(blockId))
+		{
+			string[] createdNodeIds = GetCompositeBlockNodeIds(blockId);
+			return createdNodeIds != null && nodeId == createdNodeIds[0] ? "Lager" : null;
+		}
+
 		PoolBlockDefinition definition = GetCompositeBlockDefinition(blockId);
 		if (definition == null)
 		{
@@ -3681,7 +3964,7 @@ public partial class GameManager
 			return GetPoolBlockFirstTransitionName(definition);
 		}
 
-		if (nodeId == nodeIds[2])
+		if (nodeIds.Length > 2 && nodeId == nodeIds[2])
 		{
 			return GetPoolBlockSecondTransitionName(definition);
 		}
@@ -3697,21 +3980,36 @@ public partial class GameManager
 		}
 
 		string prefix = GetCompositeBlockNodePrefix(blockId);
+		if (IsCreatedCompositeBlockId(blockId))
+		{
+			return new[] { "T_" + prefix + "_Start", "P_" + prefix + "_Output" };
+		}
+
+		if (IsSingleTransitionBlockDefinition(GetCompositeBlockDefinition(blockId)))
+		{
+			return new[] { "T_" + prefix + "_Start", "P_" + prefix + "_Output" };
+		}
+
 		return new[] { "T_" + prefix + "_Start", "P_" + prefix + "_Buffer", "T_" + prefix + "_End", "P_" + prefix + "_Output" };
 	}
 
 	private bool IsCompositeBlockBufferPlaceId(string nodeId)
 	{
 		string blockId = GetCompositeBlockIdForNodeId(nodeId);
+		if (IsCreatedCompositeBlockId(blockId))
+		{
+			return false;
+		}
+
 		string[] nodeIds = GetCompositeBlockNodeIds(blockId);
-		return nodeIds != null && nodeId == nodeIds[1];
+		return nodeIds != null && nodeIds.Length > 2 && nodeId == nodeIds[1];
 	}
 
 	private float GetTimedPlaceProcessingDuration(string nodeId)
 	{
 		string blockId = GetCompositeBlockIdForNodeId(nodeId);
 		string[] nodeIds = GetCompositeBlockNodeIds(blockId);
-		if (nodeIds == null || nodeId != nodeIds[1])
+		if (nodeIds == null || nodeIds.Length < 4 || nodeId != nodeIds[1])
 		{
 			return 0f;
 		}
@@ -3727,6 +4025,16 @@ public partial class GameManager
 		}
 
 		string prefix = GetCompositeBlockNodePrefix(blockId);
+		if (IsCreatedCompositeBlockId(blockId))
+		{
+			return new[] { "A_" + prefix + "_1" };
+		}
+
+		if (IsSingleTransitionBlockDefinition(GetCompositeBlockDefinition(blockId)))
+		{
+			return new[] { "A_" + prefix + "_1" };
+		}
+
 		return new[] { "A_" + prefix + "_1", "A_" + prefix + "_2", "A_" + prefix + "_3" };
 	}
 
@@ -3751,6 +4059,12 @@ public partial class GameManager
 		if (string.IsNullOrEmpty(nodeId))
 		{
 			return null;
+		}
+
+		string createdBlockId = GetCreatedCompositeBlockIdForNodeId(nodeId);
+		if (!string.IsNullOrEmpty(createdBlockId))
+		{
+			return createdBlockId;
 		}
 
 		List<string> blockIds = GetAllCompositeBlockIds();
@@ -3819,7 +4133,7 @@ public partial class GameManager
 	{
 		string blockId = GetCompositeBlockIdForNodeId(nodeId);
 		string[] nodeIds = GetCompositeBlockNodeIds(blockId);
-		return nodeIds != null && nodeId == nodeIds[3];
+		return nodeIds != null && nodeIds.Length > 0 && nodeId == nodeIds[nodeIds.Length - 1];
 	}
 
 	private bool IsCompositeBlockInternalConnection(string fromId, string toId)
@@ -3831,10 +4145,20 @@ public partial class GameManager
 		}
 
 		string[] nodeIds = GetCompositeBlockNodeIds(blockId);
-		return nodeIds != null
-			&& ((fromId == nodeIds[0] && toId == nodeIds[1])
-				|| (fromId == nodeIds[1] && toId == nodeIds[2])
-				|| (fromId == nodeIds[2] && toId == nodeIds[3]));
+		if (nodeIds == null)
+		{
+			return false;
+		}
+
+		for (int i = 0; i < nodeIds.Length - 1; i++)
+		{
+			if (fromId == nodeIds[i] && toId == nodeIds[i + 1])
+			{
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	private bool IsArcAllowedByCompositeBlockRules(string fromId, string toId)
@@ -4152,7 +4476,11 @@ public partial class GameManager
 			return false;
 		}
 
-		RemoveExternalArcsForCompositeBlock(blockId);
+		if (HasExternalArcsForCompositeBlock(blockId))
+		{
+			return false;
+		}
+
 		if (!MoveCompositeBlockInternal(blockId, poolCenter, false))
 		{
 			return false;
@@ -4340,13 +4668,60 @@ public partial class GameManager
 		}
 	}
 
-	private void RemoveExternalArcsForCompositeBlock(string blockId)
+	private bool HasExternalArcsForCompositeBlock(string blockId)
 	{
+		foreach (KeyValuePair<string, ArcRuntime> pair in arcsById)
+		{
+			ArcRuntime arc = pair.Value;
+			if (arc == null || IsCompositeBlockInternalArc(arc))
+			{
+				continue;
+			}
+
+			if (GetCompositeBlockIdForNodeId(arc.fromId) == blockId || GetCompositeBlockIdForNodeId(arc.toId) == blockId)
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	private bool CanDeleteCreatedCompositeBlock(string blockId, ulong actorClientId)
+	{
+		if (!IsCreatedCompositeBlockId(blockId) || GetCompositeBlockOwner(blockId) != actorClientId)
+		{
+			return false;
+		}
+
+		string outputPlaceId = GetCreatedCompositeBlockOutputPlaceId(blockId);
+		if (string.IsNullOrEmpty(outputPlaceId) || !nodesById.TryGetValue(outputPlaceId, out NodeRuntime outputPlace))
+		{
+			return false;
+		}
+
+		return outputPlace.type == NodeType.Place && outputPlace.tokens <= 0;
+	}
+
+	private string GetCreatedCompositeBlockOutputPlaceId(string blockId)
+	{
+		string[] nodeIds = GetCompositeBlockNodeIds(blockId);
+		return nodeIds != null && nodeIds.Length >= 2 ? nodeIds[1] : null;
+	}
+
+	private bool RemoveCompositeBlockInternal(string blockId)
+	{
+		string[] nodeIds = GetCompositeBlockNodeIds(blockId);
+		if (nodeIds == null)
+		{
+			return false;
+		}
+
 		List<string> arcIdsToRemove = new List<string>();
 		foreach (KeyValuePair<string, ArcRuntime> pair in arcsById)
 		{
 			ArcRuntime arc = pair.Value;
-			if (arc == null || arc.kind == ArcKind.Inhibitor || IsCompositeBlockInternalArc(arc))
+			if (arc == null)
 			{
 				continue;
 			}
@@ -4359,7 +4734,95 @@ public partial class GameManager
 
 		for (int i = 0; i < arcIdsToRemove.Count; i++)
 		{
-			RemoveArcInternal(arcIdsToRemove[i]);
+			RemoveArcInternal(arcIdsToRemove[i], false);
+		}
+
+		for (int i = 0; i < nodeIds.Length; i++)
+		{
+			string nodeId = nodeIds[i];
+			if (!nodesById.TryGetValue(nodeId, out NodeRuntime node))
+			{
+				continue;
+			}
+
+			if (connectStartNodeId == nodeId)
+			{
+				connectStartNodeId = null;
+			}
+
+			if (craneConnectStartNodeId == nodeId)
+			{
+				CancelCraneConnectPreview();
+			}
+
+			if (heldTransitionId == nodeId)
+			{
+				heldTransitionId = null;
+			}
+
+			if (heldPlaceId == nodeId)
+			{
+				heldPlaceId = null;
+			}
+
+			nodeByCollider.Remove(node.collider);
+			nodesById.Remove(nodeId);
+			if (node.transform != null)
+			{
+				Destroy(node.transform.gameObject);
+			}
+		}
+
+		if (heldCompositeBlockId == blockId)
+		{
+			heldCompositeBlockId = null;
+			heldCompositeBlockOffset = Vector2.zero;
+		}
+
+		if (draggedCompositeBlockId == blockId)
+		{
+			draggedCompositeBlockId = null;
+		}
+
+		if (pointerDownCompositeBlockId == blockId)
+		{
+			pointerDownCompositeBlockId = null;
+		}
+
+		RemoveCompositeBlockVisual(blockId);
+		RefreshPetriNetVisuals();
+		return true;
+	}
+
+	private void SetCompositeBlockActive(string blockId, bool active)
+	{
+		string[] nodeIds = GetCompositeBlockNodeIds(blockId);
+		if (nodeIds != null)
+		{
+			for (int i = 0; i < nodeIds.Length; i++)
+			{
+				if (nodesById.TryGetValue(nodeIds[i], out NodeRuntime node) && node.transform != null)
+				{
+					node.transform.gameObject.SetActive(active);
+				}
+			}
+		}
+
+		string[] arcIds = GetCompositeBlockArcIds(blockId);
+		if (arcIds != null)
+		{
+			for (int i = 0; i < arcIds.Length; i++)
+			{
+				if (arcsById.TryGetValue(arcIds[i], out ArcRuntime arc) && arc.gameObject != null)
+				{
+					arc.gameObject.SetActive(active);
+				}
+			}
+		}
+
+		if (compositeBlocksById.TryGetValue(blockId, out CompositeBlockRuntime block) && block.gameObject != null)
+		{
+			block.gameObject.SetActive(active);
 		}
 	}
 
@@ -4411,6 +4874,11 @@ public partial class GameManager
 		}
 
 		if (IsDeliveryTransitionId(fromId))
+		{
+			return false;
+		}
+
+		if (IsSharedPoolTrashTransitionId(fromId))
 		{
 			return false;
 		}
@@ -5009,6 +5477,7 @@ public partial class GameManager
 	{
 		TokenRuntime token = new TokenRuntime();
 		AddUniqueTokenValue(token.ingredients, ingredientName);
+		NormalizeTokenIngredients(token);
 		token.description = ingredientName != null ? ingredientName.Trim() : "";
 		return token;
 	}
@@ -5024,6 +5493,7 @@ public partial class GameManager
 		clone.description = source.description ?? "";
 		CopyTokenValues(source.ingredients, clone.ingredients);
 		CopyTokenValues(source.states, clone.states);
+		NormalizeTokenIngredients(clone);
 		return clone;
 	}
 
@@ -5047,6 +5517,7 @@ public partial class GameManager
 			CopyTokenValues(token.states, combined.states);
 		}
 
+		NormalizeTokenIngredients(combined);
 		combined.description = JoinTokenDescriptions(tokensToCombine);
 		return combined;
 	}
@@ -5088,6 +5559,16 @@ public partial class GameManager
 		values.Add(trimmedValue);
 	}
 
+	private void NormalizeTokenIngredients(TokenRuntime token)
+	{
+		if (token == null || token.ingredients == null)
+		{
+			return;
+		}
+
+		token.ingredients.Sort(StringComparer.OrdinalIgnoreCase);
+	}
+
 	private string GetIngredientNameForTransition(string transitionId)
 	{
 		if (!IsIngredientTransitionId(transitionId))
@@ -5104,12 +5585,17 @@ public partial class GameManager
 		string blockId = GetCompositeBlockIdForNodeId(transitionId);
 		string[] nodeIds = GetCompositeBlockNodeIds(blockId);
 		PoolBlockDefinition definition = GetCompositeBlockDefinition(blockId);
-		if (definition == null || nodeIds == null || transitionId != nodeIds[2])
+		if (definition == null || nodeIds == null)
 		{
 			return "";
 		}
 
-		return GetPoolBlockResultState(definition);
+		if (IsSingleTransitionBlockDefinition(definition))
+		{
+			return transitionId == nodeIds[0] ? GetPoolBlockResultState(definition) : "";
+		}
+
+		return nodeIds.Length > 2 && transitionId == nodeIds[2] ? GetPoolBlockResultState(definition) : "";
 	}
 
 	private TokenRuntime CreateOutputTokenForTransition(string transitionId, List<TokenRuntime> consumedTokens)
@@ -5168,7 +5654,7 @@ public partial class GameManager
 			return "unbekannt";
 		}
 
-		string ingredients = JoinTokenValues(token.ingredients);
+		string ingredients = JoinTokenValues(token.ingredients, true);
 		string states = JoinTokenValues(token.states);
 		if (!string.IsNullOrEmpty(ingredients) && !string.IsNullOrEmpty(states))
 		{
@@ -5195,7 +5681,7 @@ public partial class GameManager
 			return "";
 		}
 
-		StringBuilder result = new StringBuilder();
+		List<string> descriptions = new List<string>();
 		for (int i = 0; i < tokensToCombine.Count; i++)
 		{
 			TokenRuntime token = tokensToCombine[i];
@@ -5210,12 +5696,20 @@ public partial class GameManager
 				continue;
 			}
 
+			AddUniqueTokenValue(descriptions, description);
+		}
+
+		descriptions.Sort(StringComparer.OrdinalIgnoreCase);
+
+		StringBuilder result = new StringBuilder();
+		for (int i = 0; i < descriptions.Count; i++)
+		{
 			if (result.Length > 0)
 			{
 				result.Append(", ");
 			}
 
-			result.Append(description);
+			result.Append(descriptions[i]);
 		}
 
 		return result.ToString();
@@ -5276,28 +5770,33 @@ public partial class GameManager
 		return label.ToString();
 	}
 
-	private string JoinTokenValues(List<string> values)
+	private string JoinTokenValues(List<string> values, bool sortValues = false)
 	{
 		if (values == null || values.Count <= 0)
 		{
 			return "";
 		}
 
-		StringBuilder result = new StringBuilder();
+		List<string> normalizedValues = new List<string>();
 		for (int i = 0; i < values.Count; i++)
 		{
-			string value = values[i] != null ? values[i].Trim() : "";
-			if (string.IsNullOrEmpty(value))
-			{
-				continue;
-			}
+			AddUniqueTokenValue(normalizedValues, values[i]);
+		}
 
+		if (sortValues)
+		{
+			normalizedValues.Sort(StringComparer.OrdinalIgnoreCase);
+		}
+
+		StringBuilder result = new StringBuilder();
+		for (int i = 0; i < normalizedValues.Count; i++)
+		{
 			if (result.Length > 0)
 			{
 				result.Append(", ");
 			}
 
-			result.Append(value);
+			result.Append(normalizedValues[i]);
 		}
 
 		return result.ToString();
@@ -5513,21 +6012,131 @@ public partial class GameManager
 
 		Vector3 start = from + dir * fromOffset;
 		Vector3 end = to - dir * toOffset;
+		arc.kind = GetEffectiveArcKind(arc.fromId, arc.toId, arc.kind);
 
 		if (arc.kind == ArcKind.Inhibitor)
 		{
 			SetLineWithInhibitorCircle(arc.body, arc.arrow, arc.inhibitorCircle, start, end, dir);
+			HideArcLine(arc.resetArrow);
+		}
+		else if (arc.kind == ArcKind.Reset)
+		{
+			SetLineWithResetArrow(arc.body, arc.arrow, arc.resetArrow, start, end, dir);
+			HideArcLine(arc.inhibitorCircle);
 		}
 		else
 		{
 			SetLineWithArrow(arc.body, arc.arrow, start, end, dir);
-			if (arc.inhibitorCircle != null)
-			{
-				arc.inhibitorCircle.gameObject.SetActive(false);
-			}
+			HideArcLine(arc.resetArrow);
+			HideArcLine(arc.inhibitorCircle);
 		}
 
 		arc.collider.points = new[] { new Vector2(start.x, start.y), new Vector2(end.x, end.y) };
+		UpdateArcWeightLabel(arc, start, end, dir);
+	}
+
+	private void UpdateArcWeightLabel(ArcRuntime arc, Vector3 start, Vector3 end, Vector3 dir)
+	{
+		if (arc == null || arc.weightLabel == null)
+		{
+			return;
+		}
+
+		if (arc.weight <= 1 || arc.kind == ArcKind.Inhibitor)
+		{
+			arc.weightLabel.gameObject.SetActive(false);
+			return;
+		}
+
+		Vector3 mid = (start + end) * 0.5f;
+		Vector3 normal = new Vector3(dir.y, -dir.x, 0f).normalized;
+		Vector3 labelPosition = mid + normal * 0.22f + new Vector3(0f, 0f, NodeLabelLayerZ);
+		Rect blockBoundsForLabel = new Rect();
+		bool constrainToBlock = false;
+		string blockId = GetCompositeBlockIdForNodeId(arc.fromId);
+		if (!string.IsNullOrEmpty(blockId) && blockId == GetCompositeBlockIdForNodeId(arc.toId) && TryGetCompositeBlockBounds(blockId, out Rect blockBounds))
+		{
+			const float labelInset = 0.18f;
+			float distanceToEdge = GetDistanceFromPointToRectEdge(mid, normal, blockBounds) - labelInset;
+			if (distanceToEdge > 0.01f)
+			{
+				labelPosition = mid + normal * (distanceToEdge * 0.5f) + new Vector3(0f, 0f, NodeLabelLayerZ);
+			}
+
+			blockBoundsForLabel = Rect.MinMaxRect(blockBounds.xMin + labelInset, blockBounds.yMin + labelInset, blockBounds.xMax - labelInset, blockBounds.yMax - labelInset);
+			labelPosition.x = Mathf.Clamp(labelPosition.x, blockBoundsForLabel.xMin, blockBoundsForLabel.xMax);
+			labelPosition.y = Mathf.Clamp(labelPosition.y, blockBoundsForLabel.yMin, blockBoundsForLabel.yMax);
+			constrainToBlock = true;
+		}
+
+		arc.weightLabel.gameObject.SetActive(true);
+		arc.weightLabel.text = arc.weight.ToString();
+		arc.weightLabel.characterSize = 0.095f;
+		PositionArcWeightLabel(arc.weightLabel, labelPosition, constrainToBlock, blockBoundsForLabel);
+	}
+
+	private void PositionArcWeightLabel(TextMesh label, Vector3 targetPosition, bool constrainToBlock, Rect blockBounds)
+	{
+		if (label == null)
+		{
+			return;
+		}
+
+		label.transform.position = targetPosition;
+		MeshRenderer renderer = label.GetComponent<MeshRenderer>();
+		if (renderer == null)
+		{
+			return;
+		}
+
+		Bounds visibleBounds = renderer.bounds;
+		Vector3 visualCenterCorrection = targetPosition - visibleBounds.center;
+		label.transform.position += visualCenterCorrection;
+
+		if (!constrainToBlock)
+		{
+			return;
+		}
+
+		visibleBounds = renderer.bounds;
+		Vector3 blockCorrection = Vector3.zero;
+		if (visibleBounds.min.x < blockBounds.xMin)
+		{
+			blockCorrection.x += blockBounds.xMin - visibleBounds.min.x;
+		}
+		else if (visibleBounds.max.x > blockBounds.xMax)
+		{
+			blockCorrection.x -= visibleBounds.max.x - blockBounds.xMax;
+		}
+
+		if (visibleBounds.min.y < blockBounds.yMin)
+		{
+			blockCorrection.y += blockBounds.yMin - visibleBounds.min.y;
+		}
+		else if (visibleBounds.max.y > blockBounds.yMax)
+		{
+			blockCorrection.y -= visibleBounds.max.y - blockBounds.yMax;
+		}
+
+		label.transform.position += blockCorrection;
+	}
+
+	private float GetDistanceFromPointToRectEdge(Vector3 point, Vector3 direction, Rect rect)
+	{
+		float distance = float.PositiveInfinity;
+		if (Mathf.Abs(direction.x) > 0.0001f)
+		{
+			float edgeX = direction.x > 0f ? rect.xMax : rect.xMin;
+			distance = Mathf.Min(distance, (edgeX - point.x) / direction.x);
+		}
+
+		if (Mathf.Abs(direction.y) > 0.0001f)
+		{
+			float edgeY = direction.y > 0f ? rect.yMax : rect.yMin;
+			distance = Mathf.Min(distance, (edgeY - point.y) / direction.y);
+		}
+
+		return float.IsInfinity(distance) ? 0f : Mathf.Max(0f, distance);
 	}
 
 	private void SetLineWithArrow(LineRenderer body, LineRenderer arrow, Vector3 start, Vector3 end, Vector3 dir)
@@ -5539,17 +6148,38 @@ public partial class GameManager
 			body.SetPosition(1, end + zOffset);
 		}
 
+		SetArrowHead(arrow, end, dir);
+	}
+
+	private void SetLineWithResetArrow(LineRenderer body, LineRenderer arrow, LineRenderer resetArrow, Vector3 start, Vector3 end, Vector3 dir)
+	{
+		SetLineWithArrow(body, arrow, start, end, dir);
+		SetArrowHead(resetArrow, end - dir * (arrowHeadLength * 0.72f), dir);
+	}
+
+	private void SetArrowHead(LineRenderer arrow, Vector3 end, Vector3 dir)
+	{
 		if (arrow == null)
 		{
 			return;
 		}
 
 		arrow.gameObject.SetActive(true);
+		arrow.positionCount = 3;
+		Vector3 zOffset = new Vector3(0f, 0f, ArcZ);
 		Vector3 leftDir = Quaternion.Euler(0f, 0f, 180f - arrowHeadAngle) * dir;
 		Vector3 rightDir = Quaternion.Euler(0f, 0f, 180f + arrowHeadAngle) * dir;
 		arrow.SetPosition(0, end + leftDir * arrowHeadLength + zOffset);
 		arrow.SetPosition(1, end + zOffset);
 		arrow.SetPosition(2, end + rightDir * arrowHeadLength + zOffset);
+	}
+
+	private void HideArcLine(LineRenderer line)
+	{
+		if (line != null)
+		{
+			line.gameObject.SetActive(false);
+		}
 	}
 
 	private void SetLineWithInhibitorCircle(LineRenderer body, LineRenderer arrow, LineRenderer inhibitorCircle, Vector3 start, Vector3 end, Vector3 dir)

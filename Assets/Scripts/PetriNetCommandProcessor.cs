@@ -13,6 +13,11 @@ public partial class GameManager
 		ExecuteOrSendCommand(new CommandData { action = "CreateHeldPlace", x = world.x, y = world.y });
 	}
 
+	private void RequestCreateHeldPlaceTransitionBlock(Vector3 world)
+	{
+		ExecuteOrSendCommand(new CommandData { action = "CreateHeldPlaceTransitionBlock", x = world.x, y = world.y });
+	}
+
 	private void RequestCreateTransition(Vector3 world)
 	{
 		Debug.Log("CreateTransition is disabled. Use shared pool transitions.");
@@ -26,6 +31,11 @@ public partial class GameManager
 	private void RequestDeleteNode(string nodeId)
 	{
 		ExecuteOrSendCommand(new CommandData { action = "DeleteNode", id = nodeId });
+	}
+
+	private void RequestDeleteCompositeBlock(string blockId)
+	{
+		ExecuteOrSendCommand(new CommandData { action = "DeleteCompositeBlock", id = blockId });
 	}
 
 	private void RequestDeleteArc(string arcId)
@@ -99,6 +109,7 @@ public partial class GameManager
 	{
 		SendAvatarUpdate(avatarPosition, avatarRotation, heldTransitionId, true);
 		nextAvatarNetworkSyncTime = Time.unscaledTime + avatarNetworkSyncInterval;
+		nextReliableAvatarNetworkSyncTime = Time.unscaledTime + reliableAvatarNetworkSyncInterval;
 		lastAvatarPosition = avatarPosition;
 		lastAvatarNetworkSyncRotation = avatarRotation;
 		lastAvatarNetworkSyncHeldId = GetCurrentHeldNetworkKey();
@@ -123,6 +134,7 @@ public partial class GameManager
 		cmd.avatarHeldObjectKind = state.heldObjectKind;
 		cmd.avatarHeldOffsetX = state.heldOffsetX;
 		cmd.avatarHeldOffsetY = state.heldOffsetY;
+		cmd.avatarSceneMode = state.sceneMode;
 	}
 
 	private bool ApplyCommand(CommandData cmd, ulong actorClientId)
@@ -166,10 +178,28 @@ public partial class GameManager
 				CreatePlaceNode(newId, new Vector2(cmd.x, cmd.y), 0, true, actorClientId, false, false);
 				return true;
 			}
+			case "CreateHeldPlaceTransitionBlock":
+			{
+				Vector2 center = new Vector2(cmd.x, cmd.y);
+				if (IsInsideSharedPoolZone(center))
+				{
+					return false;
+				}
+
+				return CreatePlaceTransitionBlock(center, actorClientId) != null;
+			}
 			case "CreateTransition":
 				return false;
 			case "ReturnToLevelSelection":
 				ReturnToLevelSelectionFromHost();
+				return false;
+			case "SelectLevelSelection":
+				if (!showLevelSelection || gameplayInitialized)
+				{
+					return false;
+				}
+
+				SelectLevelIndex(cmd.amount, true);
 				return false;
 			case "EndLevel":
 				EndLevelFromHost(actorClientId);
@@ -202,6 +232,15 @@ public partial class GameManager
 
 				return RemoveNodeInternal(cmd.id);
 			}
+			case "DeleteCompositeBlock":
+			{
+				if (!CanDeleteCreatedCompositeBlock(cmd.id, actorClientId))
+				{
+					return false;
+				}
+
+				return RemoveCompositeBlockInternal(cmd.id);
+			}
 			case "DeleteArc":
 			{
 				if (!arcsById.TryGetValue(cmd.id, out ArcRuntime arc) || arc.ownerClientId != actorClientId)
@@ -231,6 +270,7 @@ public partial class GameManager
 				string oldFromId = arc.fromId;
 				arc.fromId = arc.toId;
 				arc.toId = oldFromId;
+				arc.kind = GetEffectiveArcKind(arc.fromId, arc.toId, arc.kind);
 				UpdateAllArcVisuals();
 				RefreshPetriNetVisuals();
 				return true;
@@ -455,6 +495,17 @@ public partial class GameManager
 				previousTokenCounts.Add(place.tokens);
 			}
 
+			if (arc.kind == ArcKind.Reset)
+			{
+				int tokensToReset = place.tokens;
+				for (int tokenIndex = 0; tokenIndex < tokensToReset; tokenIndex++)
+				{
+					consumedTokens.Add(TakeTokenFromPlace(place));
+				}
+
+				continue;
+			}
+
 			for (int weightIndex = 0; weightIndex < arc.weight; weightIndex++)
 			{
 				consumedTokens.Add(TakeTokenFromPlace(place));
@@ -524,6 +575,7 @@ public partial class GameManager
 		}
 
 		bool hasInputPlace = false;
+		bool hasResetInputPlaceWithTokens = false;
 		bool hasOutputPlace = false;
 		foreach (KeyValuePair<string, ArcRuntime> pair in arcsById)
 		{
@@ -571,6 +623,21 @@ public partial class GameManager
 
 			EnsureTypedTokenList(place);
 			hasInputPlace = true;
+			if (arc.kind == ArcKind.Reset)
+			{
+				if (place.tokens > 0)
+				{
+					hasResetInputPlaceWithTokens = true;
+				}
+
+				if (place.tokens > 0 && IsTimedPlaceProcessing(place))
+				{
+					return false;
+				}
+
+				continue;
+			}
+
 			if (place.tokens < arc.weight)
 			{
 				return false;
@@ -580,6 +647,11 @@ public partial class GameManager
 			{
 				return false;
 			}
+		}
+
+		if (IsSharedPoolTrashTransitionId(transition.id))
+		{
+			return hasResetInputPlaceWithTokens;
 		}
 
 		if (!IsIngredientTransition(transition) && !hasInputPlace)

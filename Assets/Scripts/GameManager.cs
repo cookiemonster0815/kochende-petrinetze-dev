@@ -323,6 +323,11 @@ public partial class GameManager : NetworkBehaviour
 		HandleNetworkHooks();
 		HandleCameraControls();
 
+		if (forceLobbyStartScreen)
+		{
+			return;
+		}
+
 		if (!IsGameplayConnectionReady())
 		{
 			return;
@@ -379,7 +384,23 @@ public partial class GameManager : NetworkBehaviour
 
 	private void LateUpdate()
 	{
-		if (!gameplayInitialized || mainCamera == null)
+		if (mainCamera == null)
+		{
+			return;
+		}
+
+		if (forceLobbyStartScreen)
+		{
+			return;
+		}
+
+		if (showLevelSelection && !gameplayInitialized && IsGameplayConnectionReady())
+		{
+			UpdateLevelSelectionCameraFollow();
+			return;
+		}
+
+		if (!gameplayInitialized)
 		{
 			return;
 		}
@@ -396,6 +417,11 @@ public partial class GameManager : NetworkBehaviour
 
 	private bool IsGameplayConnectionReady()
 	{
+		if (forceLobbyStartScreen)
+		{
+			return false;
+		}
+
 		if (!enableNetworkAuthoritativeSync)
 		{
 			return true;
@@ -444,7 +470,58 @@ public partial class GameManager : NetworkBehaviour
 			EnsureLocalAvatarStartPosition();
 			gameplayInitialized = true;
 			StartLevelOrderTimeline();
-			SendAvatarUpdate(avatarPosition, avatarRotation, heldTransitionId);
+			SendAvatarUpdate(avatarPosition, avatarRotation, heldTransitionId, true);
 		}
+	}
+
+	public void ResetToLobbyStartScreen()
+	{
+		forceLobbyStartScreen = true;
+		UnregisterNetworkHandlers();
+		suppressNetworkSend = false;
+		gameplayInitialized = false;
+		levelSelectionConfirmed = false;
+		gameplayMenuOpen = false;
+		gameplayMenuOwnerClientId = NoGameplayMenuOwnerClientId;
+		levelEnded = false;
+		collaborativeLayoutApplied = false;
+		avatarStartPositionApplied = false;
+		levelSelectionAvatarStateSent = false;
+		currentMode = EditMode.Select;
+		connectStartNodeId = null;
+		craneConnectStartNodeId = null;
+		CancelCraneConnectPreview();
+		pendingClaimedTransitionId = null;
+		draggedNodeId = null;
+		draggedCompositeBlockId = null;
+		heldTransitionId = null;
+		heldPlaceId = null;
+		heldCompositeBlockId = null;
+		heldCompositeBlockOffset = Vector2.zero;
+		pendingCreatedBlockPickup = false;
+		pendingCreatedBlockExistingIds.Clear();
+		pointerDownNodeId = null;
+		pointerDownCompositeBlockId = null;
+		pointerDragActive = false;
+		isMiddlePanning = false;
+		ResetCameraFollowVelocity();
+		StopLevelOrderTimeline();
+		ClearGraph();
+		DestroyLevelSelectionScreen();
+		DestroyAvatarVisuals();
+		if (petriNetRoot != null)
+		{
+			petriNetRoot.gameObject.SetActive(false);
+		}
+
+		if (mainCamera != null)
+		{
+			ConfigureCamera(mainCamera);
+		}
+	}
+
+	public void EnterNetworkGameSession()
+	{
+		forceLobbyStartScreen = false;
 	}
 }

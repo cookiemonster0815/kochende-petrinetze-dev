@@ -73,7 +73,7 @@ public partial class GameManager
 		float scroll = mouse.scroll.ReadValue().y;
 		if (Mathf.Abs(scroll) > 0.001f)
 		{
-			float zoomDelta = scroll * zoomSpeed * 0.05f;
+			float zoomDelta = GetCameraZoomDelta(scroll);
 			mainCamera.orthographicSize = Mathf.Clamp(mainCamera.orthographicSize - zoomDelta, minZoom, maxZoom);
 		}
 
@@ -102,8 +102,57 @@ public partial class GameManager
 		}
 	}
 
+	private float GetCameraZoomDelta(float rawScroll)
+	{
+		float scroll = GetDeviceAdjustedScroll(rawScroll);
+		return scroll * zoomSpeed * zoomScrollScale;
+	}
+
+	private float GetDeviceAdjustedScroll(float rawScroll)
+	{
+		float absScroll = Mathf.Abs(rawScroll);
+		float threshold = Mathf.Max(0.001f, mouseWheelScrollThreshold);
+		if (absScroll <= threshold)
+		{
+			return rawScroll * Mathf.Max(1f, mouseWheelZoomMultiplier);
+		}
+
+		return rawScroll;
+	}
+
 	private float cameraVelocityX = 0f;
 	private float cameraVelocityY = 0f;
+
+	private void ResetCameraFollowVelocity()
+	{
+		cameraVelocityX = 0f;
+		cameraVelocityY = 0f;
+	}
+
+	private float SmoothCameraAxis(float current, float target, ref float velocity, float smoothTime)
+	{
+		float delta = target - current;
+		if (Mathf.Abs(delta) <= 0.001f)
+		{
+			velocity = 0f;
+			return target;
+		}
+
+		if (Mathf.Abs(velocity) > 0.001f && Mathf.Sign(velocity) != Mathf.Sign(delta))
+		{
+			velocity = 0f;
+		}
+
+		float next = Mathf.SmoothDamp(current, target, ref velocity, smoothTime, Mathf.Infinity, Time.deltaTime);
+		float remainingDelta = target - next;
+		if (Mathf.Abs(remainingDelta) <= 0.001f || Mathf.Sign(remainingDelta) != Mathf.Sign(delta))
+		{
+			velocity = 0f;
+			return target;
+		}
+
+		return next;
+	}
 
 	private void UpdateCameraFollowAvatar()
 	{
@@ -136,20 +185,20 @@ public partial class GameManager
 
 		if (deltaX > restMarginX)
 		{
-			newX = Mathf.SmoothDamp(cameraCenter.x, avatarPosition.x, ref cameraVelocityX, 0.18f, Mathf.Infinity, Time.deltaTime);
+			newX = SmoothCameraAxis(cameraCenter.x, avatarPosition.x, ref cameraVelocityX, 0.18f);
 		}
 		else
 		{
-			cameraVelocityX = Mathf.Lerp(cameraVelocityX, 0f, Time.deltaTime * 10f);
+			cameraVelocityX = 0f;
 		}
 
 		if (deltaY > restMarginY)
 		{
-			newY = Mathf.SmoothDamp(cameraCenter.y, avatarPosition.y, ref cameraVelocityY, 0.18f, Mathf.Infinity, Time.deltaTime);
+			newY = SmoothCameraAxis(cameraCenter.y, avatarPosition.y, ref cameraVelocityY, 0.18f);
 		}
 		else
 		{
-			cameraVelocityY = Mathf.Lerp(cameraVelocityY, 0f, Time.deltaTime * 10f);
+			cameraVelocityY = 0f;
 		}
 
 		SetCameraGroundCenter(mainCamera, new Vector2(newX, newY));
@@ -194,20 +243,20 @@ public partial class GameManager
 		float newY = cameraCenter.y;
 		if (shouldMoveX)
 		{
-			newX = Mathf.SmoothDamp(cameraCenter.x, targetX, ref cameraVelocityX, 0.16f, Mathf.Infinity, Time.deltaTime);
+			newX = SmoothCameraAxis(cameraCenter.x, targetX, ref cameraVelocityX, 0.16f);
 		}
 		else
 		{
-			cameraVelocityX = Mathf.Lerp(cameraVelocityX, 0f, Time.deltaTime * 12f);
+			cameraVelocityX = 0f;
 		}
 
 		if (shouldMoveY)
 		{
-			newY = Mathf.SmoothDamp(cameraCenter.y, targetY, ref cameraVelocityY, 0.16f, Mathf.Infinity, Time.deltaTime);
+			newY = SmoothCameraAxis(cameraCenter.y, targetY, ref cameraVelocityY, 0.16f);
 		}
 		else
 		{
-			cameraVelocityY = Mathf.Lerp(cameraVelocityY, 0f, Time.deltaTime * 12f);
+			cameraVelocityY = 0f;
 		}
 
 		SetCameraGroundCenter(mainCamera, new Vector2(newX, newY));
@@ -221,37 +270,43 @@ public partial class GameManager
 			return;
 		}
 
+		TryAttachPendingCreatedBlock();
+
 		Vector3 moveDirection = Vector3.zero;
 		if (keyboard.upArrowKey.isPressed || keyboard.wKey.isPressed) { moveDirection.y += 1f; }
 		if (keyboard.downArrowKey.isPressed || keyboard.sKey.isPressed) { moveDirection.y -= 1f; }
 		if (keyboard.leftArrowKey.isPressed || keyboard.aKey.isPressed) { moveDirection.x -= 1f; }
 		if (keyboard.rightArrowKey.isPressed || keyboard.dKey.isPressed) { moveDirection.x += 1f; }
 
+		bool createBlockPressed = keyboard.eKey.wasPressedThisFrame;
 		if (keyboard.eKey.wasPressedThisFrame)
 		{
 			HandleCreatePlaceAction();
+			TryAttachPendingCreatedBlock();
 			UpdateAvatarVisuals();
-			return;
 		}
 
-		if (keyboard.rKey.wasPressedThisFrame)
+		if (!createBlockPressed && keyboard.rKey.wasPressedThisFrame)
 		{
 			HandlePlaceDeleteAction();
 			UpdateAvatarVisuals();
 			return;
 		}
 
-		if (keyboard.qKey.wasPressedThisFrame)
+		if (!createBlockPressed && keyboard.qKey.wasPressedThisFrame)
 		{
-			if (!IsHoldingCraneObject())
+			if (IsHoldingCraneObject())
 			{
-				HandleCraneConnectAction();
 				UpdateAvatarVisuals();
 				return;
 			}
+
+			HandleCraneConnectAction();
+			UpdateAvatarVisuals();
+			return;
 		}
 
-		if (keyboard.fKey.wasPressedThisFrame)
+		if (!createBlockPressed && keyboard.fKey.wasPressedThisFrame)
 		{
 			HandleCraneFireAction();
 			UpdateAvatarVisuals();
@@ -288,7 +343,7 @@ public partial class GameManager
 		}
 
 		// Pickup/Drop with spacebar
-		if (keyboard.spaceKey.wasPressedThisFrame)
+		if (!createBlockPressed && keyboard.spaceKey.wasPressedThisFrame)
 		{
 			HandleAvatarInteraction();
 			StartCraneDipAnimation(GetSpaceCraneDipTargetHeight());
@@ -299,18 +354,27 @@ public partial class GameManager
 		bool heldObjectChanged = lastAvatarNetworkSyncHeldId != currentHeldNetworkKey;
 		bool rotationChanged = Mathf.Abs(Mathf.DeltaAngle(lastAvatarNetworkSyncRotation, avatarRotation)) > 2f;
 		bool craneHeightChanged = Mathf.Abs(lastAvatarNetworkSyncCraneHeight - avatarCraneCurrentHeight) > 0.025f;
+		bool avatarStateChanged = movedDistance > 0.05f || rotationChanged || craneHeightChanged || heldObjectChanged;
+		bool reliableHeartbeatDue = avatarStateChanged && Time.unscaledTime >= nextReliableAvatarNetworkSyncTime;
 		bool shouldSendAvatarUpdate = heldObjectChanged
 			|| movedDistance > 0.65f
+			|| reliableHeartbeatDue
 			|| (craneHeightChanged && Time.unscaledTime >= nextAvatarNetworkSyncTime)
 			|| ((movedDistance > 0.05f || rotationChanged) && Time.unscaledTime >= nextAvatarNetworkSyncTime);
 		if (shouldSendAvatarUpdate)
 		{
+			bool reliable = heldObjectChanged || reliableHeartbeatDue;
 			nextAvatarNetworkSyncTime = Time.unscaledTime + avatarNetworkSyncInterval;
+			if (reliable)
+			{
+				nextReliableAvatarNetworkSyncTime = Time.unscaledTime + reliableAvatarNetworkSyncInterval;
+			}
+
 			lastAvatarPosition = avatarPosition;
 			lastAvatarNetworkSyncRotation = avatarRotation;
 			lastAvatarNetworkSyncHeldId = currentHeldNetworkKey;
 			lastAvatarNetworkSyncCraneHeight = avatarCraneCurrentHeight;
-			SendAvatarUpdate(avatarPosition, avatarRotation, heldTransitionId, heldObjectChanged);
+			SendAvatarUpdate(avatarPosition, avatarRotation, heldTransitionId, reliable);
 		}
 
 		// Update avatar visual every frame
@@ -525,12 +589,13 @@ public partial class GameManager
 			}
 
 			// Place transition outside pool
+			string transitionId = heldTransitionId;
 			transition.transform.position = dropPosition;
 			transition.ownerClientId = GetLocalActorClientId();
 			transition.isSharedPoolAvailable = false;
 			transition.isSharedPoolTransition = false; // No longer a pool transition once placed
-			RequestPlaceTransition(heldTransitionId, dropPosition);
 			heldTransitionId = null;
+			RequestPlaceTransition(transitionId, dropPosition);
 			StartCraneDipAnimation();
 			RefreshPetriNetVisuals();
 		}
@@ -538,18 +603,27 @@ public partial class GameManager
 
 	private void HandleCreatePlaceAction()
 	{
-		if (!string.IsNullOrEmpty(heldPlaceId))
+		if (!string.IsNullOrEmpty(heldCompositeBlockId))
 		{
-			DropHeldPlace();
+			if (IsCreatedCompositeBlockId(heldCompositeBlockId))
+			{
+				DropHeldCompositeBlock();
+			}
+
 			return;
 		}
 
-		if (!string.IsNullOrEmpty(heldTransitionId) || !string.IsNullOrEmpty(heldCompositeBlockId))
+		if (!string.IsNullOrEmpty(heldTransitionId) || !string.IsNullOrEmpty(heldPlaceId))
 		{
 			return;
 		}
 
-		CreateAndHoldPlaceAtCraneTarget();
+		if (!string.IsNullOrEmpty(craneConnectStartNodeId))
+		{
+			return;
+		}
+
+		CreateAndHoldPlaceTransitionBlockAtCraneTarget();
 	}
 
 	private void HandleCraneConnectAction()
@@ -791,6 +865,11 @@ public partial class GameManager
 				return;
 			}
 
+			SetCompositeBlockSorting(blockId, false);
+			SetCompositeBlockNodeHeight(blockId, GroundZ);
+			heldCompositeBlockId = null;
+			heldCompositeBlockOffset = Vector2.zero;
+
 			if (IsHostOrOffline())
 			{
 				BroadcastSnapshotToClients();
@@ -800,10 +879,6 @@ public partial class GameManager
 				RequestReturnCompositeBlock(blockId);
 			}
 
-			SetCompositeBlockSorting(blockId, false);
-			SetCompositeBlockNodeHeight(blockId, GroundZ);
-			heldCompositeBlockId = null;
-			heldCompositeBlockOffset = Vector2.zero;
 			StartCraneDipAnimation();
 			RefreshPetriNetVisuals();
 			return;
@@ -816,11 +891,11 @@ public partial class GameManager
 		}
 
 		SetCompositeBlockSharedPoolState(blockId, GetLocalActorClientId(), false, false);
-		RequestMoveCompositeBlock(blockId, new Vector3(desiredCenter.x, desiredCenter.y, 0f));
 		SetCompositeBlockSorting(blockId, false);
 		SetCompositeBlockNodeHeight(blockId, GroundZ);
 		heldCompositeBlockId = null;
 		heldCompositeBlockOffset = Vector2.zero;
+		RequestMoveCompositeBlock(blockId, new Vector3(desiredCenter.x, desiredCenter.y, 0f));
 		StartCraneDipAnimation();
 		RefreshPetriNetVisuals();
 	}
@@ -840,12 +915,19 @@ public partial class GameManager
 
 		if (!string.IsNullOrEmpty(heldCompositeBlockId))
 		{
+			TryDeleteCreatedCompositeBlockWithCrane(heldCompositeBlockId);
 			return;
 		}
 
 		if (!string.IsNullOrEmpty(heldPlaceId) && nodesById.TryGetValue(heldPlaceId, out NodeRuntime heldPlace))
 		{
 			TryDeletePlaceWithCrane(heldPlace);
+			return;
+		}
+
+		if (TryGetCompositeBlockAtCraneTarget(out CompositeBlockRuntime block))
+		{
+			TryDeleteCreatedCompositeBlockWithCrane(block.id);
 			return;
 		}
 
@@ -861,31 +943,29 @@ public partial class GameManager
 		}
 	}
 
-	private void CreateAndHoldPlaceAtCraneTarget()
+	private void CreateAndHoldPlaceTransitionBlockAtCraneTarget()
 	{
-		if (pendingCreatedPlacePickup)
+		if (pendingCreatedBlockPickup)
 		{
 			return;
 		}
 
-		if (IsPlaceOverSharedTransitionPool(avatarPosition, null))
+		if (IsInsideSharedPoolZone(avatarPosition))
 		{
 			return;
 		}
 
-		pendingCreatedPlacePickup = true;
-		pendingCreatedPlacePickupPosition = avatarPosition;
-		pendingCreatedPlaceExistingIds.Clear();
-		foreach (KeyValuePair<string, NodeRuntime> pair in nodesById)
+		pendingCreatedBlockPickup = true;
+		pendingCreatedBlockPickupPosition = avatarPosition;
+		pendingCreatedBlockExistingIds.Clear();
+		List<string> existingBlockIds = GetAllCompositeBlockIds();
+		for (int i = 0; i < existingBlockIds.Count; i++)
 		{
-			if (pair.Value.type == NodeType.Place)
-			{
-				pendingCreatedPlaceExistingIds.Add(pair.Key);
-			}
+			pendingCreatedBlockExistingIds.Add(existingBlockIds[i]);
 		}
 
-		RequestCreateHeldPlace(avatarPosition);
-		TryAttachPendingCreatedPlace();
+		RequestCreateHeldPlaceTransitionBlock(avatarPosition);
+		TryAttachPendingCreatedBlock();
 	}
 
 	private void DropHeldPlace()
@@ -902,9 +982,10 @@ public partial class GameManager
 			return;
 		}
 
+		string placeId = heldPlaceId;
 		place.transform.position = dropPosition;
-		RequestMoveNode(heldPlaceId, dropPosition);
 		heldPlaceId = null;
+		RequestMoveNode(placeId, dropPosition);
 		StartCraneDipAnimation();
 		RefreshPetriNetVisuals();
 	}
@@ -931,6 +1012,28 @@ public partial class GameManager
 		if (!IsHostOrOffline() && place.transform != null)
 		{
 			place.transform.gameObject.SetActive(false);
+		}
+
+		RefreshPetriNetVisuals();
+	}
+
+	private void TryDeleteCreatedCompositeBlockWithCrane(string blockId)
+	{
+		if (!CanDeleteCreatedCompositeBlock(blockId, GetLocalActorClientId()))
+		{
+			return;
+		}
+
+		if (heldCompositeBlockId == blockId)
+		{
+			heldCompositeBlockId = null;
+			heldCompositeBlockOffset = Vector2.zero;
+		}
+
+		RequestDeleteCompositeBlock(blockId);
+		if (!IsHostOrOffline())
+		{
+			SetCompositeBlockActive(blockId, false);
 		}
 
 		RefreshPetriNetVisuals();
@@ -1276,44 +1379,59 @@ public partial class GameManager
 		return Vector2.Distance(point, closest);
 	}
 
-	private void TryAttachPendingCreatedPlace()
+	private bool TryAttachPendingCreatedBlock()
 	{
-		if (!pendingCreatedPlacePickup)
+		if (!pendingCreatedBlockPickup)
 		{
-			return;
+			return false;
 		}
 
-		NodeRuntime bestPlace = null;
+		string bestBlockId = null;
 		float bestDistance = float.MaxValue;
 		int bestTrailingNumber = -1;
-
-		foreach (KeyValuePair<string, NodeRuntime> pair in nodesById)
+		List<string> blockIds = GetAllCompositeBlockIds();
+		for (int i = 0; i < blockIds.Count; i++)
 		{
-			NodeRuntime node = pair.Value;
-			if (node.type != NodeType.Place || node.transform == null || !node.transform.gameObject.activeInHierarchy || !CanActorEditNode(node, GetLocalActorClientId()) || IsProtectedInputPlace(node) || pendingCreatedPlaceExistingIds.Contains(node.id))
+			string blockId = blockIds[i];
+			if (!IsCreatedCompositeBlockId(blockId)
+				|| pendingCreatedBlockExistingIds.Contains(blockId)
+				|| !CanActorPickupCompositeBlock(blockId, GetLocalActorClientId()))
 			{
 				continue;
 			}
 
-			float distance = Vector2.Distance(pendingCreatedPlacePickupPosition, node.transform.position);
-			int trailingNumber = ExtractTrailingNumber(node.id);
+			Vector2 blockCenter = GetCompositeBlockCenter(blockId);
+			float distance = Vector2.Distance(pendingCreatedBlockPickupPosition, blockCenter);
+			int trailingNumber = ExtractTrailingNumber(blockId);
 			if (distance < bestDistance - 0.001f || (Mathf.Abs(distance - bestDistance) <= 0.001f && trailingNumber > bestTrailingNumber))
 			{
-				bestPlace = node;
+				bestBlockId = blockId;
 				bestDistance = distance;
 				bestTrailingNumber = trailingNumber;
 			}
 		}
 
-		if (bestPlace == null || bestDistance > avatarCollisionRadius + GetPlaceInteractionRadius(bestPlace) + 0.08f)
+		if (string.IsNullOrEmpty(bestBlockId) || bestDistance > 2.2f)
+		{
+			return false;
+		}
+
+		AttachCreatedBlockToCrane(bestBlockId);
+		return true;
+	}
+
+	private void AttachCreatedBlockToCrane(string blockId)
+	{
+		if (string.IsNullOrEmpty(blockId) || !compositeBlocksById.ContainsKey(blockId))
 		{
 			return;
 		}
 
-		heldPlaceId = bestPlace.id;
-		pendingCreatedPlacePickup = false;
-		pendingCreatedPlaceExistingIds.Clear();
-		UpdateHeldPlaceVisual();
+		heldCompositeBlockId = blockId;
+		heldCompositeBlockOffset = Vector2.zero;
+		pendingCreatedBlockPickup = false;
+		pendingCreatedBlockExistingIds.Clear();
+		UpdateHeldCompositeBlockVisual();
 		RefreshPetriNetVisuals();
 	}
 
@@ -1875,8 +1993,21 @@ public partial class GameManager
 
 	private void HandleDeleteModeClick(Vector3 worldPosition)
 	{
+		if (TryGetCompositeBlockAtPoint(worldPosition, out CompositeBlockRuntime block) && CanDeleteCreatedCompositeBlock(block.id, GetLocalActorClientId()))
+		{
+			RequestDeleteCompositeBlock(block.id);
+			return;
+		}
+
 		if (TryGetNodeAtPoint(worldPosition, out NodeRuntime node))
 		{
+			string blockId = GetCompositeBlockIdForNodeId(node.id);
+			if (CanDeleteCreatedCompositeBlock(blockId, GetLocalActorClientId()))
+			{
+				RequestDeleteCompositeBlock(blockId);
+				return;
+			}
+
 			if (!CanDeleteNode(node))
 			{
 				return;

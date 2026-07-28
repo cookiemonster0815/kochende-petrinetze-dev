@@ -65,6 +65,9 @@ public partial class GameManager
 
 	[Header("Editor")]
 	[SerializeField] private float zoomSpeed = 0.5f;
+	[SerializeField] private float zoomScrollScale = 0.05f;
+	[SerializeField] private float mouseWheelZoomMultiplier = 8f;
+	[SerializeField] private float mouseWheelScrollThreshold = 1.5f;
 	[SerializeField] private float minZoom = 1.8f;
 	[SerializeField] private float maxZoom = 12f;
 
@@ -91,17 +94,31 @@ public partial class GameManager
 		public string secondTransitionName = "Ende";
 		public float processingSeconds = 5f;
 		public string resultState = "";
+		public int outputTokenCount = 1;
+		public bool singleTransition = false;
 
 		public PoolBlockDefinition()
 		{
 		}
 
 		public PoolBlockDefinition(string firstTransitionName, string secondTransitionName, float processingSeconds, string resultState)
+			: this(firstTransitionName, secondTransitionName, processingSeconds, resultState, 1)
+		{
+		}
+
+		public PoolBlockDefinition(string firstTransitionName, string secondTransitionName, float processingSeconds, string resultState, int outputTokenCount)
+			: this(firstTransitionName, secondTransitionName, processingSeconds, resultState, outputTokenCount, false)
+		{
+		}
+
+		public PoolBlockDefinition(string firstTransitionName, string secondTransitionName, float processingSeconds, string resultState, int outputTokenCount, bool singleTransition)
 		{
 			this.firstTransitionName = firstTransitionName;
 			this.secondTransitionName = secondTransitionName;
 			this.processingSeconds = processingSeconds;
 			this.resultState = resultState;
+			this.outputTokenCount = outputTokenCount;
+			this.singleTransition = singleTransition;
 		}
 	}
 
@@ -145,6 +162,7 @@ public partial class GameManager
 	private int placeCounter = 1;
 	private int transitionCounter = 1;
 	private int arcCounter = 1;
+	private int createdBlockCounter = 1;
 	private Sprite circleSprite;
 	private Sprite squareSprite;
 	private Material runtimeArcMaterial;
@@ -153,6 +171,7 @@ public partial class GameManager
 	private bool suppressNetworkSend;
 	private bool collaborativeLayoutApplied;
 	private bool gameplayInitialized;
+	private bool forceLobbyStartScreen;
 	private float nextDragNetworkSyncTime;
 	private Vector3 lastDragNetworkSyncPosition;
 	private string pointerDownNodeId;
@@ -170,15 +189,17 @@ public partial class GameManager
 	private string heldPlaceId;
 	private string heldCompositeBlockId;
 	private Vector2 heldCompositeBlockOffset;
-	private bool pendingCreatedPlacePickup;
-	private Vector3 pendingCreatedPlacePickupPosition;
-	private HashSet<string> pendingCreatedPlaceExistingIds = new HashSet<string>();
+	private bool pendingCreatedBlockPickup;
+	private Vector3 pendingCreatedBlockPickupPosition;
+	private HashSet<string> pendingCreatedBlockExistingIds = new HashSet<string>();
 	private Vector3 lastAvatarPosition;
 	private float lastAvatarNetworkSyncRotation;
 	private string lastAvatarNetworkSyncHeldId = "";
 	private float lastAvatarNetworkSyncCraneHeight = 1.75f;
 	private float nextAvatarNetworkSyncTime;
+	private float nextReliableAvatarNetworkSyncTime;
 	private float avatarNetworkSyncInterval = 0.05f;
+	private float reliableAvatarNetworkSyncInterval = 0.5f;
 	private float avatarSpeed = 8f;
 	private float avatarSprintMultiplier = 1.5f;
 	private float avatarCollisionRadius = 0.4f; // Matches CircleCollider2D radius on avatar visual
@@ -188,8 +209,10 @@ public partial class GameManager
 	private float avatarCraneLoweredHeight = 1.1f;
 	private float avatarCraneDipTargetHeight = 1.1f;
 	private float avatarCraneCurrentHeight = 1.75f;
-	private float avatarCraneAnimationStartTime = -10f;
-	private float avatarCraneAnimationDuration = 0.36f;
+		private float avatarCraneAnimationStartTime = -10f;
+		private float avatarCraneAnimationDuration = 0.36f;
+		private const int AvatarSceneModeLevelSelection = 0;
+		private const int AvatarSceneModeGameplay = 1;
 
 	// Remote avatar (other player)
 	private Dictionary<ulong, Vector3> remoteAvatarPositions = new Dictionary<ulong, Vector3>();

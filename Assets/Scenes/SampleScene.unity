@@ -429,13 +429,13 @@ MonoBehaviour:
   arcWidth: 0.08
   arrowHeadLength: 0.28
   arrowHeadAngle: 28
-  cuttingTransitionPrefab: {fileID: 0}
-  cuttingToolAnimatorController: {fileID: 0}
-  cuttingToolColorMap: {fileID: 0}
+  cuttingTransitionPrefab: {fileID: 919132149155446097, guid: e68eeeaac8af9421d8176dc9df6323b0, type: 3}
+  cuttingToolAnimatorController: {fileID: 9100000, guid: ee5ba975fecbd4a8ab95c7cbf7cf49a8, type: 2}
+  cuttingToolColorMap: {fileID: 2800000, guid: 86c25a3dcb2d2492da6708afd157b3af, type: 3}
   cuttingTransitionPrefabLocalPosition: {x: 0, y: 0, z: -0.2}
   cuttingTransitionPrefabLocalEuler: {x: 18, y: -35, z: 25}
   cuttingTransitionPrefabLocalScale: {x: 0.55, y: 0.55, z: 0.55}
-  avatarDronePrefab: {fileID: 0}
+  avatarDronePrefab: {fileID: 193520, guid: 979fc5f838d46744aa26f426a3934492, type: 3}
   avatarDroneAnimatorController: {fileID: 0}
   avatarDroneAnimationClips: []
   avatarDroneUseImportedAnimationClips: 0
@@ -446,8 +446,8 @@ MonoBehaviour:
   avatarDroneLocalScale: {x: 0.675, y: 0.675, z: 0.675}
   avatarDroneRotorDegreesPerSecond: 720
   avatarDroneRotorLocalAxis: {x: 0, y: 0, z: 0}
-  avatarCraneChainPrefab: {fileID: 0}
-  avatarCraneHookPrefab: {fileID: 0}
+  avatarCraneChainPrefab: {fileID: 3884199339140817556, guid: 17fbc06140f388c4f9fcf0884a60b1ad, type: 3}
+  avatarCraneHookPrefab: {fileID: 4472794406405912961, guid: 5148c925e0a9fcd47adfc92a5ab6ebbb, type: 3}
   avatarCraneChainLocalEuler: {x: -90, y: 0, z: 0}
   avatarCraneHookLocalEuler: {x: -90, y: 0, z: 0}
   avatarCraneChainLocalScale: {x: 0.18, y: 1, z: 0.18}
@@ -459,6 +459,9 @@ MonoBehaviour:
   avatarCraneHookVisualDrop: 0.16
   avatarCraneHookClearance: 0.03
   zoomSpeed: 0.5
+  zoomScrollScale: 0.05
+  mouseWheelZoomMultiplier: 8
+  mouseWheelScrollThreshold: 1.5
   minZoom: 1.8
   maxZoom: 12
   enforceMinimumWindowResolution: 1
