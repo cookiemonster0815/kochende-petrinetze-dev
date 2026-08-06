@@ -47,9 +47,10 @@ public partial class GameManager
 
 	private void HandleCameraControls()
 	{
-		if (IsGameplayMenuOpen() || (showLevelSelection && !gameplayInitialized && IsGameplayConnectionReady()))
+		if (IsGameplayMenuOpen() || !gameplayInitialized)
 		{
 			isMiddlePanning = false;
+			manualCameraPanActive = false;
 			return;
 		}
 
@@ -67,6 +68,7 @@ public partial class GameManager
 		if (mouse == null)
 		{
 			isMiddlePanning = false;
+			manualCameraPanActive = false;
 			return;
 		}
 
@@ -75,31 +77,49 @@ public partial class GameManager
 		{
 			float zoomDelta = GetCameraZoomDelta(scroll);
 			mainCamera.orthographicSize = Mathf.Clamp(mainCamera.orthographicSize - zoomDelta, minZoom, maxZoom);
+			CompleteLevelTutorialExploreStep();
 		}
 
-		if (enableSharedTransitionPool)
-		{
-			isMiddlePanning = false;
-			return;
-		}
-
-		if (!mouse.middleButton.isPressed)
+		bool panButtonHeld = mouse.leftButton.isPressed || mouse.middleButton.isPressed;
+		if (!panButtonHeld)
 		{
 			isMiddlePanning = false;
 		}
 
-		if (mouse.middleButton.wasPressedThisFrame)
+		if (mouse.middleButton.wasPressedThisFrame || (mouse.leftButton.wasPressedThisFrame && CanStartCameraPanAtMousePosition()))
 		{
 			isMiddlePanning = true;
+			panStartScreen = mouse.position.ReadValue();
 			panReferenceWorld = GetMouseWorldPosition();
+			ResetCameraFollowVelocity();
 		}
 
-		if (isMiddlePanning && mouse.middleButton.isPressed)
+		if (isMiddlePanning && panButtonHeld)
 		{
+			if ((mouse.position.ReadValue() - panStartScreen).sqrMagnitude < 16f)
+			{
+				return;
+			}
+
+			manualCameraPanActive = true;
 			Vector3 currentWorld = GetMouseWorldPosition();
 			Vector3 delta = panReferenceWorld - currentWorld;
 			mainCamera.transform.position += delta;
+			CompleteLevelTutorialExploreStep();
 		}
+	}
+
+	private bool CanStartCameraPanAtMousePosition()
+	{
+		if (mainCamera == null || Mouse.current == null)
+		{
+			return false;
+		}
+
+		Vector3 worldPosition = GetMouseWorldPosition();
+		return !TryGetNodeAtPoint(worldPosition, out _)
+			&& !TryGetCompositeBlockAtPoint(worldPosition, out _)
+			&& !TryGetArcAtPoint(worldPosition, out _);
 	}
 
 	private float GetCameraZoomDelta(float rawScroll)
@@ -120,13 +140,8 @@ public partial class GameManager
 		return rawScroll;
 	}
 
-	private float cameraVelocityX = 0f;
-	private float cameraVelocityY = 0f;
-
 	private void ResetCameraFollowVelocity()
 	{
-		cameraVelocityX = 0f;
-		cameraVelocityY = 0f;
 	}
 
 	private float SmoothCameraAxis(float current, float target, ref float velocity, float smoothTime)
@@ -163,103 +178,17 @@ public partial class GameManager
 			{
 				mainCamera.orthographicSize = requiredSize;
 			}
+		}
 
-			isMiddlePanning = false;
-			UpdateSharedScreenCameraFollow();
+		if (manualCameraPanActive || isMiddlePanning)
+		{
 			return;
 		}
 
-		// Rest area: only start moving camera once avatar leaves the inner margin
-		float screenHeight = mainCamera.orthographicSize * 2f;
-		float screenWidth = screenHeight * mainCamera.aspect;
-		float restMarginX = screenWidth * cameraRestAreaMargin;
-		float restMarginY = screenHeight * cameraRestAreaMargin;
-
-		Vector2 cameraCenter = GetCameraGroundCenter();
-		float deltaX = Mathf.Abs(avatarPosition.x - cameraCenter.x);
-		float deltaY = Mathf.Abs(avatarPosition.y - cameraCenter.y);
-
-		// Handle each axis independently to prevent diagonal drift
-		float newX = cameraCenter.x;
-		float newY = cameraCenter.y;
-
-		if (deltaX > restMarginX)
-		{
-			newX = SmoothCameraAxis(cameraCenter.x, avatarPosition.x, ref cameraVelocityX, 0.18f);
-		}
-		else
-		{
-			cameraVelocityX = 0f;
-		}
-
-		if (deltaY > restMarginY)
-		{
-			newY = SmoothCameraAxis(cameraCenter.y, avatarPosition.y, ref cameraVelocityY, 0.18f);
-		}
-		else
-		{
-			cameraVelocityY = 0f;
-		}
-
-		SetCameraGroundCenter(mainCamera, new Vector2(newX, newY));
-	}
-
-	private void UpdateSharedScreenCameraFollow()
-	{
-		float screenHeight = mainCamera.orthographicSize * 2f;
-		float screenWidth = screenHeight * mainCamera.aspect;
-		float restMarginX = screenWidth * cameraRestAreaMargin;
-		float restMarginY = screenHeight * cameraRestAreaMargin;
-
-		Vector2 cameraCenter = GetCameraGroundCenter();
-		float targetX = cameraCenter.x;
-		float targetY = cameraCenter.y;
-		bool shouldMoveX = false;
-		bool shouldMoveY = false;
-
-		if (avatarPosition.x > cameraCenter.x + restMarginX)
-		{
-			targetX = avatarPosition.x - restMarginX;
-			shouldMoveX = true;
-		}
-		else if (avatarPosition.x < cameraCenter.x - restMarginX)
-		{
-			targetX = avatarPosition.x + restMarginX;
-			shouldMoveX = true;
-		}
-
-		if (avatarPosition.y > cameraCenter.y + restMarginY)
-		{
-			targetY = avatarPosition.y - restMarginY;
-			shouldMoveY = true;
-		}
-		else if (avatarPosition.y < cameraCenter.y - restMarginY)
-		{
-			targetY = avatarPosition.y + restMarginY;
-			shouldMoveY = true;
-		}
-
-		float newX = cameraCenter.x;
-		float newY = cameraCenter.y;
-		if (shouldMoveX)
-		{
-			newX = SmoothCameraAxis(cameraCenter.x, targetX, ref cameraVelocityX, 0.16f);
-		}
-		else
-		{
-			cameraVelocityX = 0f;
-		}
-
-		if (shouldMoveY)
-		{
-			newY = SmoothCameraAxis(cameraCenter.y, targetY, ref cameraVelocityY, 0.16f);
-		}
-		else
-		{
-			cameraVelocityY = 0f;
-		}
-
-		SetCameraGroundCenter(mainCamera, new Vector2(newX, newY));
+		manualCameraPanActive = false;
+		isMiddlePanning = false;
+		ResetCameraFollowVelocity();
+		SetCameraGroundCenter(mainCamera, new Vector2(avatarPosition.x, avatarPosition.y));
 	}
 
 	private void HandleAvatarInput()
@@ -284,6 +213,7 @@ public partial class GameManager
 			HandleCreatePlaceAction();
 			TryAttachPendingCreatedBlock();
 			UpdateAvatarVisuals();
+			CompleteLevelTutorialCreateStorageStep();
 		}
 
 		if (!createBlockPressed && keyboard.rKey.wasPressedThisFrame)
@@ -314,8 +244,16 @@ public partial class GameManager
 		}
 
 		// Update avatar position
+		Vector3 previousAvatarPosition = avatarPosition;
 		if (moveDirection.sqrMagnitude > 0.1f)
 		{
+			if (manualCameraPanActive || isMiddlePanning)
+			{
+				manualCameraPanActive = false;
+				isMiddlePanning = false;
+				ResetCameraFollowVelocity();
+			}
+
 			moveDirection = moveDirection.normalized;
 			bool sprinting = keyboard.leftShiftKey.isPressed || keyboard.rightShiftKey.isPressed;
 			float currentSpeed = sprinting ? avatarSpeed * avatarSprintMultiplier : avatarSpeed;
@@ -340,6 +278,7 @@ public partial class GameManager
 			{
 				UpdateHeldCompositeBlockVisual();
 			}
+
 		}
 
 		// Pickup/Drop with spacebar
@@ -487,9 +426,6 @@ public partial class GameManager
 			return;
 		}
 
-		// Find closest available transition in pool nearby
-		// Pickup range = touching distance (sum of radii) + small buffer
-		float pickupRange = avatarCollisionRadius + transitionCollisionRadius + 0.2f;
 		float closestDistance = float.MaxValue;
 		NodeRuntime closestTransition = null;
 
@@ -501,7 +437,7 @@ public partial class GameManager
 				continue;
 			}
 
-			if (IsIngredientTransition(node) || IsDeliveryTransition(node) || IsCompositeBlockNode(node))
+			if (IsIngredientTransition(node) || IsCompositeBlockNode(node))
 			{
 				continue;
 			}
@@ -513,8 +449,9 @@ public partial class GameManager
 				continue;
 			}
 
-			float distance = Vector3.Distance(avatarPosition, node.transform.position);
-			if (distance < pickupRange && distance < closestDistance)
+			Rect pickupBounds = ExpandRect(GetTransitionPlacementBounds(node, node.transform.position), avatarCollisionRadius + 0.2f);
+			float distance = GetPointRectDistance(new Vector2(avatarPosition.x, avatarPosition.y), pickupBounds);
+			if (distance <= 0f && distance < closestDistance)
 			{
 				closestDistance = distance;
 				closestTransition = node;
@@ -533,6 +470,7 @@ public partial class GameManager
 			StartCraneDipAnimation();
 			UpdateHeldTransitionVisual();
 			RefreshPetriNetVisuals();
+			CompleteLevelTutorialTrashPickupStep(closestTransition.id);
 		}
 	}
 
@@ -545,10 +483,15 @@ public partial class GameManager
 		}
 
 		Vector3 dropPosition = avatarPosition;
+		Vector2 clampedDropPosition = ClampMovableNodePositionToActorArea(
+			transition,
+			new Vector2(dropPosition.x, dropPosition.y),
+			GetLocalActorClientId());
+		dropPosition = new Vector3(clampedDropPosition.x, clampedDropPosition.y, dropPosition.z);
 
 		// Check if drop position is in pool zone
 		Vector2 dropPos2D = new Vector2(dropPosition.x, dropPosition.y);
-		if (IsInsideSharedPoolZone(dropPos2D))
+		if (!IsDeliveryTransition(transition) && IsInsideSharedPoolZone(dropPos2D))
 		{
 			if (!IsTransitionFullyInPoolZone(dropPosition))
 			{
@@ -578,6 +521,7 @@ public partial class GameManager
 				// RefreshPetriNetVisuals will be called in ApplySnapshot and make it visible again
 			}
 			StartCraneDipAnimation();
+			CompleteLevelTutorialTrashReturnStep(transitionId);
 		}
 		else
 		{
@@ -688,6 +632,7 @@ public partial class GameManager
 		}
 
 		RequestCreateArc(fromId, toId);
+		CompleteLevelTutorialConnectionStep(fromId, toId);
 		CancelCraneConnectPreview();
 	}
 
@@ -799,6 +744,8 @@ public partial class GameManager
 		}
 
 		RequestFireTransition(transition.id);
+		CompleteLevelTutorialIngredientFireStep(transition.id);
+		CompleteLevelTutorialPlayerExchangeStep(transition.id);
 	}
 
 	private bool TryPickupCompositeBlockAtCraneTarget()
@@ -826,6 +773,7 @@ public partial class GameManager
 			StartCraneDipAnimation();
 			UpdateHeldCompositeBlockVisual();
 			RefreshPetriNetVisuals();
+			CompleteLevelTutorialBlockPickupStep();
 			return true;
 		}
 
@@ -896,6 +844,8 @@ public partial class GameManager
 		heldCompositeBlockId = null;
 		heldCompositeBlockOffset = Vector2.zero;
 		RequestMoveCompositeBlock(blockId, new Vector3(desiredCenter.x, desiredCenter.y, 0f));
+		CompleteLevelTutorialBlockPlacementStep(blockId);
+		CompleteLevelTutorialCreateStoragePlacementStep(blockId);
 		StartCraneDipAnimation();
 		RefreshPetriNetVisuals();
 	}
@@ -1009,6 +959,7 @@ public partial class GameManager
 		}
 
 		RequestDeleteNode(placeId);
+		CompleteLevelTutorialDeleteEmptyStorageStep();
 		if (!IsHostOrOffline() && place.transform != null)
 		{
 			place.transform.gameObject.SetActive(false);
@@ -1031,6 +982,7 @@ public partial class GameManager
 		}
 
 		RequestDeleteCompositeBlock(blockId);
+		CompleteLevelTutorialDeleteEmptyStorageStep();
 		if (!IsHostOrOffline())
 		{
 			SetCompositeBlockActive(blockId, false);
@@ -1048,6 +1000,7 @@ public partial class GameManager
 
 		string arcId = arc.id;
 		RequestDeleteArc(arcId);
+		CompleteLevelTutorialDeleteEmptyStorageStep();
 		if (!IsHostOrOffline() && arc.gameObject != null)
 		{
 			arc.gameObject.SetActive(false);
@@ -1291,7 +1244,7 @@ public partial class GameManager
 	{
 		closestArc = null;
 		float closestDistance = float.MaxValue;
-		float selectionDistance = Mathf.Max(0.2f, avatarCollisionRadius * 0.55f);
+		float selectionDistance = Mathf.Max(0.2f, arcSelectionRadius);
 
 		foreach (KeyValuePair<string, ArcRuntime> pair in arcsById)
 		{
@@ -1433,6 +1386,20 @@ public partial class GameManager
 		pendingCreatedBlockExistingIds.Clear();
 		UpdateHeldCompositeBlockVisual();
 		RefreshPetriNetVisuals();
+		CompleteLevelTutorialBlockPickupStep();
+	}
+
+	private bool IsTutorialMovementInputPressed(Keyboard keyboard)
+	{
+		return keyboard != null
+			&& (keyboard.wKey.isPressed
+				|| keyboard.aKey.isPressed
+				|| keyboard.sKey.isPressed
+				|| keyboard.dKey.isPressed
+				|| keyboard.upArrowKey.isPressed
+				|| keyboard.downArrowKey.isPressed
+				|| keyboard.leftArrowKey.isPressed
+				|| keyboard.rightArrowKey.isPressed);
 	}
 
 	private float GetPlaceInteractionRadius(NodeRuntime node)
@@ -1636,15 +1603,17 @@ public partial class GameManager
 
 	private Rect GetTransitionPlacementBounds(NodeRuntime node, Vector3 centerPosition)
 	{
-		Vector2 halfExtents = new Vector2(transitionCollisionRadius, transitionCollisionRadius);
+		float expectedWidth = node != null ? GetTransitionVisualWidthForDisplayName(GetNodeDisplayName(node)) : NodeVisualFootprint;
+		float fallbackHalfExtent = Mathf.Max(transitionCollisionRadius, NodeVisualFootprint * 0.5f);
+		Vector2 halfExtents = new Vector2(Mathf.Max(expectedWidth * 0.5f, fallbackHalfExtent), fallbackHalfExtent);
 		Vector2 offset = Vector2.zero;
 
 		if (node != null && node.collider is BoxCollider2D boxCollider)
 		{
 			Vector3 scale = boxCollider.transform.lossyScale;
 			halfExtents = new Vector2(
-				Mathf.Abs(boxCollider.size.x * scale.x) * 0.5f,
-				Mathf.Abs(boxCollider.size.y * scale.y) * 0.5f);
+				Mathf.Max(halfExtents.x, Mathf.Abs(boxCollider.size.x * scale.x) * 0.5f),
+				Mathf.Max(halfExtents.y, Mathf.Abs(boxCollider.size.y * scale.y) * 0.5f));
 			offset = new Vector2(boxCollider.offset.x * scale.x, boxCollider.offset.y * scale.y);
 		}
 
@@ -1668,25 +1637,13 @@ public partial class GameManager
 
 	private bool IsTransitionFullyInPoolZone(Vector3 transitionPosition)
 	{
-		// Check if the entire transition (with its collision radius) is inside the pool zone
-		// We need to check all four corners/edges of the transition's bounding box
+		NodeRuntime transition = null;
+		if (!string.IsNullOrEmpty(heldTransitionId))
+		{
+			nodesById.TryGetValue(heldTransitionId, out transition);
+		}
 
-		float halfWidth = GetSharedPoolHalfWidth();
-		float halfHeight = sharedPoolHalfHeight;
-
-		float poolLeft = -halfWidth;
-		float poolRight = halfWidth;
-		float poolBottom = sharedPoolY - halfHeight;
-		float poolTop = sharedPoolY + halfHeight;
-
-		// Transition bounds (considering it's roughly square with transitionCollisionRadius)
-		float transLeft = transitionPosition.x - transitionCollisionRadius;
-		float transRight = transitionPosition.x + transitionCollisionRadius;
-		float transBottom = transitionPosition.y - transitionCollisionRadius;
-		float transTop = transitionPosition.y + transitionCollisionRadius;
-
-		// Check if all edges are inside the pool
-		return transLeft >= poolLeft && transRight <= poolRight && transBottom >= poolBottom && transTop <= poolTop;
+		return IsTransitionBoundsFullyInPoolZone(GetTransitionPlacementBounds(transition, transitionPosition));
 	}
 
 	private void RequestClaimTransition(string transitionId)
@@ -1781,7 +1738,10 @@ public partial class GameManager
 
 		if (pointerDragActive && draggedNodeId != null && nodesById.TryGetValue(draggedNodeId, out NodeRuntime node))
 		{
-			Vector2 clampedDragPosition = ClampPositionToActorArea(new Vector2(worldPosition.x + dragOffset.x, worldPosition.y + dragOffset.y), GetLocalActorClientId(), 0f);
+			Vector2 clampedDragPosition = ClampMovableNodePositionToActorArea(
+				node,
+				new Vector2(worldPosition.x + dragOffset.x, worldPosition.y + dragOffset.y),
+				GetLocalActorClientId());
 			Vector3 desiredPosition = new Vector3(clampedDragPosition.x, clampedDragPosition.y, 0f);
 			if (IsNodeMovePositionBlocked(node, desiredPosition))
 			{
@@ -1901,6 +1861,8 @@ public partial class GameManager
 		}
 
 		RequestFireTransition(node.id);
+		CompleteLevelTutorialIngredientFireStep(node.id);
+		CompleteLevelTutorialPlayerExchangeStep(node.id);
 	}
 
 	private bool CanStartDraggingNode(NodeRuntime node)
@@ -1996,6 +1958,7 @@ public partial class GameManager
 		if (TryGetCompositeBlockAtPoint(worldPosition, out CompositeBlockRuntime block) && CanDeleteCreatedCompositeBlock(block.id, GetLocalActorClientId()))
 		{
 			RequestDeleteCompositeBlock(block.id);
+			CompleteLevelTutorialDeleteEmptyStorageStep();
 			return;
 		}
 
@@ -2005,6 +1968,7 @@ public partial class GameManager
 			if (CanDeleteCreatedCompositeBlock(blockId, GetLocalActorClientId()))
 			{
 				RequestDeleteCompositeBlock(blockId);
+				CompleteLevelTutorialDeleteEmptyStorageStep();
 				return;
 			}
 
@@ -2014,6 +1978,7 @@ public partial class GameManager
 			}
 
 			RequestDeleteNode(node.id);
+			CompleteLevelTutorialDeleteEmptyStorageStep();
 			return;
 		}
 
@@ -2025,6 +1990,7 @@ public partial class GameManager
 			}
 
 			RequestDeleteArc(arc.id);
+			CompleteLevelTutorialDeleteEmptyStorageStep();
 		}
 	}
 

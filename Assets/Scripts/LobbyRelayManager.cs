@@ -91,6 +91,12 @@ public class LobbyRelayManager : MonoBehaviour
 
         GameManager gameManager = FindAnyObjectByType<GameManager>();
         bool showLevelSelectionLobbyOverlay = gameManager != null && gameManager.ShouldShowLevelSelectionLobbyOverlay();
+        if (showLevelSelectionLobbyOverlay)
+        {
+            DrawConnectedLevelSelectionLobbyOverlay();
+            return;
+        }
+
         if (gameManager != null && gameManager.ShouldSuppressLobbyOverlay() && !showLevelSelectionLobbyOverlay)
         {
             return;
@@ -122,17 +128,58 @@ public class LobbyRelayManager : MonoBehaviour
             86f * uiScale,
             Mathf.Max(1f, panel.width - outerPadding * 2f),
             Mathf.Max(1f, panel.height - 104f * uiScale));
-        Rect scrollContentRect = new Rect(0f, 0f, Mathf.Max(1f, scrollViewRect.width - 18f * uiScale), 850f * uiScale);
-        float contentWidth = Mathf.Clamp(scrollContentRect.width - 24f * uiScale, 320f * uiScale, 980f * uiScale);
-        float x = (scrollContentRect.width - contentWidth) * 0.5f;
-        float y = 10f * uiScale;
         float buttonHeight = 78f * uiScale;
         float textFieldHeight = 68f * uiScale;
         float gap = 22f * uiScale;
         bool canStartLobbyAction = servicesReady && !busy && currentLobby == null;
-
-        lobbyOverlayScrollPosition = GUI.BeginScrollView(scrollViewRect, lobbyOverlayScrollPosition, scrollContentRect);
         string statusDisplayText = GetLobbyStatusDisplayText();
+        bool showExitButton = ShouldShowExitToDesktopButton();
+        float fixedExitButtonHeight = showExitButton ? 58f * uiScale : 0f;
+        float fixedExitButtonGap = showExitButton ? 14f * uiScale : 0f;
+        scrollViewRect.height = Mathf.Max(
+            1f,
+            scrollViewRect.height - fixedExitButtonHeight - fixedExitButtonGap);
+
+        float measuredY = 10f * uiScale;
+        if (!string.IsNullOrEmpty(statusDisplayText))
+        {
+            measuredY += 78f * uiScale + gap;
+        }
+
+        measuredY += buttonHeight + gap;
+        measuredY += 56f * uiScale;
+        measuredY += textFieldHeight + gap;
+        measuredY += buttonHeight + gap;
+        measuredY += buttonHeight + gap;
+        float contentBottom = measuredY + buttonHeight;
+
+        measuredY += buttonHeight + gap;
+        if (!string.IsNullOrEmpty(currentJoinCode))
+        {
+            contentBottom = measuredY + 48f * uiScale;
+        }
+
+        float naturalContentHeight = contentBottom + 10f * uiScale;
+        bool needsVerticalScroll = naturalContentHeight > scrollViewRect.height;
+        float scrollbarWidth = needsVerticalScroll ? 18f * uiScale : 0f;
+        Rect scrollContentRect = new Rect(
+            0f,
+            0f,
+            Mathf.Max(1f, scrollViewRect.width - scrollbarWidth),
+            Mathf.Max(scrollViewRect.height, naturalContentHeight));
+        float contentWidth = Mathf.Clamp(scrollContentRect.width - 24f * uiScale, 320f * uiScale, 980f * uiScale);
+        float x = (scrollContentRect.width - contentWidth) * 0.5f;
+        float y = 10f * uiScale;
+        float maximumScrollY = Mathf.Max(0f, naturalContentHeight - scrollViewRect.height);
+        lobbyOverlayScrollPosition.x = 0f;
+        lobbyOverlayScrollPosition.y = Mathf.Clamp(lobbyOverlayScrollPosition.y, 0f, maximumScrollY);
+
+        lobbyOverlayScrollPosition = GUI.BeginScrollView(
+            scrollViewRect,
+            lobbyOverlayScrollPosition,
+            scrollContentRect,
+            false,
+            false);
         if (!string.IsNullOrEmpty(statusDisplayText))
         {
             Rect statusRect = new Rect(x, y, contentWidth, 78f * uiScale);
@@ -163,17 +210,17 @@ public class LobbyRelayManager : MonoBehaviour
         }
 
         y += buttonHeight + gap;
-        GUI.enabled = canStartLobbyAction;
-        if (GUI.Button(new Rect(x, y, contentWidth, buttonHeight), "Auto Join Game", buttonStyle))
+        GUI.enabled = currentLobby != null && !busy;
+        if (GUI.Button(new Rect(x, y, contentWidth, buttonHeight), "Return to Lobby", buttonStyle))
         {
-            _ = JoinLatestLobbyByNameAsync();
+            _ = LeaveLobbyAsync();
         }
 
         y += buttonHeight + gap;
-        GUI.enabled = currentLobby != null && !busy;
-        if (GUI.Button(new Rect(x, y, contentWidth, buttonHeight), "Leave Game", buttonStyle))
+        GUI.enabled = !busy && currentLobby == null;
+        if (GUI.Button(new Rect(x, y, contentWidth, buttonHeight), "Single Player Game", buttonStyle))
         {
-            _ = LeaveLobbyAsync();
+            _ = StartSinglePlayerGameAsync();
         }
 
         GUI.enabled = true;
@@ -185,20 +232,51 @@ public class LobbyRelayManager : MonoBehaviour
         }
 
         GUI.EndScrollView();
+
+        if (showExitButton)
+        {
+            GUI.enabled = !busy;
+            float exitButtonWidth = Mathf.Min(360f * uiScale, panel.width - outerPadding * 2f);
+            Rect exitButtonRect = new Rect(
+                outerPadding,
+                panel.height - fixedExitButtonHeight - 18f * uiScale,
+                exitButtonWidth,
+                fixedExitButtonHeight);
+            if (GUI.Button(exitButtonRect, "Exit Game", buttonStyle))
+            {
+                RequestExitToDesktop();
+            }
+
+            GUI.enabled = true;
+        }
     }
 
     private void DrawConnectedLevelSelectionLobbyOverlay()
     {
         float uiScale = Mathf.Clamp(Screen.height / 900f, 0.9f, 1.35f);
         GUIStyle buttonStyle = CreateLobbyGuiStyle(GUI.skin.button, 20f, uiScale, TextAnchor.MiddleCenter, FontStyle.Bold, false);
-        float buttonWidth = Mathf.Min(150f * uiScale, Screen.width - 24f);
+        float buttonWidth = Mathf.Min(190f * uiScale, Screen.width - 24f);
         float buttonHeight = 36f * uiScale;
-        Rect buttonRect = new Rect(12f, Screen.height - buttonHeight - 12f, buttonWidth, buttonHeight);
+        float gap = 8f * uiScale;
+        bool showExitButton = ShouldShowExitToDesktopButton();
+        Rect exitButtonRect = new Rect(12f, Screen.height - buttonHeight - 12f, buttonWidth, buttonHeight);
+        Rect leaveButtonRect = showExitButton
+            ? new Rect(12f, exitButtonRect.y - buttonHeight - gap, buttonWidth, buttonHeight)
+            : exitButtonRect;
 
-        GUI.enabled = currentLobby != null && !busy;
-        if (GUI.Button(buttonRect, "Leave Game", buttonStyle))
+        GUI.enabled = !busy;
+        if (GUI.Button(leaveButtonRect, "Return to Lobby", buttonStyle))
         {
             _ = LeaveLobbyAsync();
+        }
+
+        if (showExitButton)
+        {
+            GUI.enabled = !busy;
+            if (GUI.Button(exitButtonRect, "Exit Game", buttonStyle))
+            {
+                RequestExitToDesktop();
+            }
         }
 
         GUI.enabled = true;
@@ -350,6 +428,34 @@ public class LobbyRelayManager : MonoBehaviour
             statusMessage = "Create game failed: " + ex.Message;
             Debug.LogException(ex);
             await CleanupExistingSessionAsync();
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+
+    private async Task StartSinglePlayerGameAsync()
+    {
+        if (busy || currentLobby != null)
+        {
+            return;
+        }
+
+        busy = true;
+        try
+        {
+            await CleanupExistingSessionAsync();
+            EnterGameManagerSinglePlayerSession();
+            wasNetworkListening = false;
+            wasTwoPlayersConnected = false;
+            statusMessage = "Single Player";
+        }
+        catch (Exception ex)
+        {
+            statusMessage = "Single player start failed: " + ex.Message;
+            Debug.LogException(ex);
+            ResetGameManagerToLobbyStartScreen();
         }
         finally
         {
@@ -554,6 +660,53 @@ public class LobbyRelayManager : MonoBehaviour
         }
     }
 
+    public void RequestExitToDesktop()
+    {
+        if (busy)
+        {
+            return;
+        }
+
+        _ = ExitToDesktopAsync();
+    }
+
+    private async Task ExitToDesktopAsync()
+    {
+        busy = true;
+        statusMessage = "Exiting...";
+        try
+        {
+            await CleanupExistingSessionAsync();
+        }
+        catch (Exception ex)
+        {
+            Debug.LogWarning("Exit cleanup failed: " + ex.Message);
+        }
+        finally
+        {
+            busy = false;
+            QuitApplicationNow();
+        }
+    }
+
+    private bool ShouldShowExitToDesktopButton()
+    {
+#if UNITY_WEBGL
+        return false;
+#else
+        return true;
+#endif
+    }
+
+    private void QuitApplicationNow()
+    {
+#if UNITY_EDITOR
+        ForceStopPlayMode();
+#else
+        Application.Quit();
+#endif
+    }
+
     private async Task CleanupExistingSessionAsync()
     {
         bool wasHost = IsHost() || IsCurrentLobbyHost();
@@ -647,6 +800,15 @@ public class LobbyRelayManager : MonoBehaviour
         if (gameManager != null)
         {
             gameManager.EnterNetworkGameSession();
+        }
+    }
+
+    private void EnterGameManagerSinglePlayerSession()
+    {
+        GameManager gameManager = FindAnyObjectByType<GameManager>();
+        if (gameManager != null)
+        {
+            gameManager.EnterSinglePlayerGameSession();
         }
     }
 

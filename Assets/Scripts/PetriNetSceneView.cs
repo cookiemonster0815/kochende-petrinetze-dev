@@ -8,7 +8,6 @@ using UnityEngine.Rendering;
 public partial class GameManager
 {
 	private const string CuttingActivityVisualName = "CuttingActivityPrefab3D";
-	private const string CuttingToolModelName = "CuttingToolModel";
 	private const string AvatarDroneVisualName = "AvatarDroneVisual";
 	private const string GroundPlaneName = "PetriNetGroundXY";
 	private const float GroundZ = 0f;
@@ -19,11 +18,25 @@ public partial class GameManager
 	private const float NodeVisualCenterZ = -NodeVisualHeight * 0.5f;
 	private const float NodeVisualTopZ = -NodeVisualHeight;
 	private const float PlaceVisualHeightScale = NodeVisualHeight * 0.5f;
+	private const float TransitionLabelCharacterSize = 0.058f;
+	private const float TransitionLabelEstimatedCharacterWidth = TransitionLabelCharacterSize * 2.45f;
+	private const float TransitionLabelHorizontalPadding = 0.85f;
+	private const float TransitionMultilineMinimumVisualWidth = 1.95f;
+	private const float CompositeBlockNodeGap = 0.68f;
+	private const float CompositeBlockPaddingX = 0.06f;
+	private const float CompositeBlockPaddingY = 0.06f;
+	private const float CompositeBlockBaseShadowCasterDepth = 0.035f;
+	private const float IngredientAreaTransitionEdgePadding = 0.08f;
+	private const float IngredientPlaceGap = 0.55f;
 	private const float HeldObjectUnderHookGap = 0.025f;
 	private const float TokenLayerZ = NodeVisualTopZ - 0.08f;
 	private const float NodeLabelLayerZ = NodeVisualTopZ - 0.12f;
+	private const float ArcWeightLabelCharacterSize = 0.095f;
+	private const float InhibitorCircleRadius = 0.23f;
 	private const float GameplayCameraDistance = 10f;
 	private const float GameplayCameraTiltPercent = 0.6f;
+	private const int LiftedObjectRenderQueue = 3100;
+	private readonly Dictionary<Material, int> liftedObjectOriginalRenderQueues = new Dictionary<Material, int>();
 
 	private void EnsureBaseSceneComponents()
 	{
@@ -83,6 +96,24 @@ public partial class GameManager
 		camera.transform.rotation = GetGameplayCameraRotation();
 		Vector3 center = new Vector3(groundCenter.x, groundCenter.y, GroundZ);
 		camera.transform.position = center - camera.transform.forward * GameplayCameraDistance;
+	}
+
+	private void CenterGameplayCameraOnLocalAvatar()
+	{
+		if (mainCamera == null)
+		{
+			mainCamera = Camera.main;
+		}
+
+		if (mainCamera == null)
+		{
+			return;
+		}
+
+		manualCameraPanActive = false;
+		isMiddlePanning = false;
+		ResetCameraFollowVelocity();
+		SetCameraGroundCenter(mainCamera, new Vector2(avatarPosition.x, avatarPosition.y));
 	}
 
 	private Vector2 GetCameraGroundCenter()
@@ -213,7 +244,7 @@ public partial class GameManager
 		if (enableSharedTransitionPool && IsHostOrOffline())
 		{
 			ulong topOwner = GetLocalActorClientId();
-			ulong bottomOwner = GetFirstOtherConnectedClientId(topOwner);
+			ulong bottomOwner = singlePlayerMode ? topOwner : GetFirstOtherConnectedClientId(topOwner);
 			BuildCollaborativeTwoPlayerLayout(topOwner, bottomOwner);
 			return;
 		}
@@ -256,14 +287,17 @@ public partial class GameManager
 		float bottomY = sharedPoolY - playerZoneYSpacing;
 		float horizontalOffset = Mathf.Min(2.2f, playerZoneXOffset * 0.35f);
 
-		CreatePlaceNode("P_Top_In", new Vector2(-horizontalOffset, topY), 0, false, topOwnerClientId, false, false);
-		CreateTransitionNode("T_Top_Out", new Vector2(horizontalOffset, topY), false, topOwnerClientId, false, false);
+		if (!singlePlayerMode)
+		{
+			CreatePlaceNode("P_Top_In", new Vector2(-horizontalOffset, topY), 0, false, topOwnerClientId, false, false);
+			CreateTransitionNode("T_Top_Out", new Vector2(horizontalOffset, topY), false, topOwnerClientId, false, false);
 
-		CreatePlaceNode("P_Bottom_In", new Vector2(horizontalOffset, bottomY), 0, false, bottomOwnerClientId, false, false);
-		CreateTransitionNode("T_Bottom_Out", new Vector2(-horizontalOffset, bottomY), false, bottomOwnerClientId, false, false);
+			CreatePlaceNode("P_Bottom_In", new Vector2(horizontalOffset, bottomY), 0, false, bottomOwnerClientId, false, false);
+			CreateTransitionNode("T_Bottom_Out", new Vector2(-horizontalOffset, bottomY), false, bottomOwnerClientId, false, false);
 
-		CreateArcInternal("A_Top_1", "T_Top_Out", "P_Bottom_In", 1, false, topOwnerClientId);
-		CreateArcInternal("A_Bottom_1", "T_Bottom_Out", "P_Top_In", 1, false, bottomOwnerClientId);
+			CreateArcInternal("A_Top_1", "T_Top_Out", "P_Bottom_In", 1, false, topOwnerClientId);
+			CreateArcInternal("A_Bottom_1", "T_Bottom_Out", "P_Top_In", 1, false, bottomOwnerClientId);
+		}
 
 		CreateIngredientSourceNodes(true, topOwnerClientId);
 		CreateIngredientSourceNodes(false, bottomOwnerClientId);
@@ -357,25 +391,32 @@ public partial class GameManager
 			return;
 		}
 
+		float[] nodeOffsets = GetCompositeBlockNodeXOffsets(blockId, definition);
+		if (nodeOffsets.Length < nodeIds.Length)
+		{
+			return;
+		}
+
 		if (IsSingleTransitionBlockDefinition(definition))
 		{
-			CreateTransitionNode(nodeIds[0], center + new Vector2(-1.15f, 0f), false, ownerClientId, isSharedPoolBlock, isSharedPoolAvailable);
-			CreatePlaceNode(nodeIds[1], center + new Vector2(1.15f, 0f), 0, false, ownerClientId, false, false);
+			CreateTransitionNode(nodeIds[0], center + new Vector2(nodeOffsets[0], 0f), false, ownerClientId, isSharedPoolBlock, isSharedPoolAvailable);
+			CreatePlaceNode(nodeIds[1], center + new Vector2(nodeOffsets[1], 0f), 0, false, ownerClientId, false, false);
 
 			if (nodesById.TryGetValue(nodeIds[0], out NodeRuntime singleTransition))
 			{
 				singleTransition.displayName = GetPoolBlockFirstTransitionName(definition);
 			}
 
+			UpdateCompositeBlockTransitionDimensions(blockId);
 			CreateArcInternal(arcIds[0], nodeIds[0], nodeIds[1], GetPoolBlockOutputTokenCount(definition), false, ownerClientId);
 			EnsureCompositeBlockVisuals();
 			return;
 		}
 
-		CreateTransitionNode(nodeIds[0], center + new Vector2(-2.25f, 0f), false, ownerClientId, isSharedPoolBlock, isSharedPoolAvailable);
-		CreatePlaceNode(nodeIds[1], center + new Vector2(-0.75f, 0f), 0, false, ownerClientId, false, false);
-		CreateTransitionNode(nodeIds[2], center + new Vector2(0.75f, 0f), false, ownerClientId, isSharedPoolBlock, isSharedPoolAvailable);
-		CreatePlaceNode(nodeIds[3], center + new Vector2(2.25f, 0f), 0, false, ownerClientId, false, false);
+		CreateTransitionNode(nodeIds[0], center + new Vector2(nodeOffsets[0], 0f), false, ownerClientId, isSharedPoolBlock, isSharedPoolAvailable);
+		CreatePlaceNode(nodeIds[1], center + new Vector2(nodeOffsets[1], 0f), 0, false, ownerClientId, false, false);
+		CreateTransitionNode(nodeIds[2], center + new Vector2(nodeOffsets[2], 0f), false, ownerClientId, isSharedPoolBlock, isSharedPoolAvailable);
+		CreatePlaceNode(nodeIds[3], center + new Vector2(nodeOffsets[3], 0f), 0, false, ownerClientId, false, false);
 
 		if (nodesById.TryGetValue(nodeIds[0], out NodeRuntime firstTransition))
 		{
@@ -393,6 +434,7 @@ public partial class GameManager
 			EnsureTimedPlaceProcessingVisual(bufferPlace);
 		}
 
+		UpdateCompositeBlockTransitionDimensions(blockId);
 		CreateArcInternal(arcIds[0], nodeIds[0], nodeIds[1], 1, false, ownerClientId);
 		CreateArcInternal(arcIds[1], nodeIds[1], nodeIds[2], 1, false, ownerClientId);
 		CreateArcInternal(arcIds[2], nodeIds[2], nodeIds[3], GetPoolBlockOutputTokenCount(definition), false, ownerClientId);
@@ -409,8 +451,20 @@ public partial class GameManager
 			return null;
 		}
 
-		CreateTransitionNode(nodeIds[0], center + new Vector2(-0.75f, 0f), false, ownerClientId, false, false);
-		CreatePlaceNode(nodeIds[1], center + new Vector2(0.75f, 0f), 0, false, ownerClientId, false, false);
+		float[] nodeOffsets = GetCompositeBlockNodeXOffsets(blockId, null);
+		if (nodeOffsets.Length < nodeIds.Length)
+		{
+			return null;
+		}
+
+		CreateTransitionNode(nodeIds[0], center + new Vector2(nodeOffsets[0], 0f), false, ownerClientId, false, false);
+		CreatePlaceNode(nodeIds[1], center + new Vector2(nodeOffsets[1], 0f), 0, false, ownerClientId, false, false);
+		if (nodesById.TryGetValue(nodeIds[0], out NodeRuntime storageTransition))
+		{
+			storageTransition.displayName = "Lager";
+		}
+
+		UpdateCompositeBlockTransitionDimensions(blockId);
 		CreateArcInternal(arcIds[0], nodeIds[0], nodeIds[1], 1, false, ownerClientId);
 		EnsureCompositeBlockVisuals();
 		RefreshPetriNetVisuals();
@@ -530,6 +584,7 @@ public partial class GameManager
 		remoteAvatarRotations[clientId] = 0f;
 		remoteAvatarInventories[clientId] = new RemoteHeldObjectState { kind = HeldObjectKind.None, id = "", offset = Vector2.zero };
 		remoteAvatarCraneHeights[clientId] = avatarCraneRestHeight;
+		remoteCraneConnectStates.Remove(clientId);
 	}
 
 	private void ResetRemoteAvatarToGameplayStartPosition(ulong clientId)
@@ -543,6 +598,7 @@ public partial class GameManager
 		remoteAvatarRotations[clientId] = 0f;
 		remoteAvatarInventories[clientId] = new RemoteHeldObjectState { kind = HeldObjectKind.None, id = "", offset = Vector2.zero };
 		remoteAvatarCraneHeights[clientId] = avatarCraneRestHeight;
+		remoteCraneConnectStates.Remove(clientId);
 	}
 
 	private ulong GetFirstOtherConnectedClientId(ulong fallbackBaseClientId)
@@ -615,7 +671,7 @@ public partial class GameManager
 		lastAvatarNetworkSyncCraneHeight = avatarCraneCurrentHeight;
 		nextAvatarNetworkSyncTime = 0f;
 		nextReliableAvatarNetworkSyncTime = 0f;
-		ResetCameraFollowVelocity();
+		CenterGameplayCameraOnLocalAvatar();
 	}
 
 	private void ClearGraph()
@@ -664,7 +720,9 @@ public partial class GameManager
 		pendingCreatedBlockPickup = false;
 		pendingCreatedBlockExistingIds.Clear();
 		DestroyCraneConnectPreviewVisual();
+		DestroyRemoteCraneConnectPreviewVisuals();
 		DestroyCraneHoverSelectionVisual();
+		DestroyLevelTutorialVisuals();
 	}
 
 	private void DestroyAvatarVisuals()
@@ -709,10 +767,12 @@ public partial class GameManager
 
 		remoteAvatarVisuals.Clear();
 		DestroyRemoteCraneHoverVisuals();
+		DestroyRemoteCraneConnectPreviewVisuals();
 		remoteAvatarPositions.Clear();
 		remoteAvatarRotations.Clear();
 		remoteAvatarInventories.Clear();
 		remoteAvatarCraneHeights.Clear();
+		remoteCraneConnectStates.Clear();
 	}
 
 	private void CreatePlaceNode(string id, Vector2 position, int initialTokens, bool refreshVisuals, ulong ownerClientId, bool isSharedPoolTransition, bool isSharedPoolAvailable)
@@ -753,6 +813,9 @@ public partial class GameManager
 		tokenRoot.localPosition = new Vector3(0f, 0f, TokenLayerZ);
 
 		TextMesh label = CreateNodeLabel(nodeObject.transform, new Vector3(0f, -1.1f, 0f), 0.08f);
+		TextMesh capacityLabel = CreateNodeLabel(nodeObject.transform, new Vector3(0f, 0.78f, 0f), ArcWeightLabelCharacterSize);
+		capacityLabel.gameObject.name = "CapacityLabel";
+		capacityLabel.gameObject.SetActive(false);
 
 		NodeRuntime node = new NodeRuntime
 		{
@@ -768,6 +831,7 @@ public partial class GameManager
 			visual3DRenderer = visual3DRenderer,
 			collider = collider,
 			label = label,
+			capacityLabel = capacityLabel,
 			tokenRoot = tokenRoot,
 		};
 
@@ -796,6 +860,8 @@ public partial class GameManager
 
 		SpriteRenderer renderer = nodeObject.AddComponent<SpriteRenderer>();
 		renderer.sprite = GetSquareSprite();
+		renderer.drawMode = SpriteDrawMode.Sliced;
+		renderer.size = new Vector2(NodeVisualFootprint, NodeVisualFootprint);
 		renderer.sortingOrder = 30;
 		renderer.color = transitionEnabledColor;
 		if (transitionMaterial != null)
@@ -814,6 +880,7 @@ public partial class GameManager
 			Quaternion.identity);
 
 		BoxCollider2D collider = nodeObject.AddComponent<BoxCollider2D>();
+		collider.size = new Vector2(NodeVisualFootprint, NodeVisualFootprint);
 		TextMesh label = CreateNodeLabel(nodeObject.transform, new Vector3(0f, 0f, 0f), 0.06f);
 
 		NodeRuntime node = new NodeRuntime
@@ -908,14 +975,14 @@ public partial class GameManager
 		GameObject inhibitorCircleObject = new GameObject("InhibitorCircle");
 		inhibitorCircleObject.transform.SetParent(arcObject.transform, false);
 		LineRenderer inhibitorCircle = inhibitorCircleObject.AddComponent<LineRenderer>();
-		ConfigureGroundLineRenderer(inhibitorCircle, 24, arcWidth, 25, arcColor, 6, 8, true);
+		ConfigureGroundLineRenderer(inhibitorCircle, 32, arcWidth, 25, arcColor, 6, 8, true);
 		inhibitorCircleObject.SetActive(false);
 
 		GameObject weightLabelObject = new GameObject("WeightLabel");
 		weightLabelObject.transform.SetParent(arcObject.transform, false);
 		TextMesh weightLabel = weightLabelObject.AddComponent<TextMesh>();
 		weightLabel.text = "";
-		weightLabel.characterSize = 0.095f;
+		weightLabel.characterSize = ArcWeightLabelCharacterSize;
 		weightLabel.fontSize = 64;
 		weightLabel.anchor = TextAnchor.MiddleCenter;
 		weightLabel.alignment = TextAlignment.Center;
@@ -1064,17 +1131,18 @@ public partial class GameManager
 				node.label.characterSize = 0.04f;
 				node.label.lineSpacing = 0.78f;
 				SetNodeVisualColor(node, placeColor);
+				UpdatePlaceCapacityLabel(node);
 				RefreshTokenVisuals(node);
 				SetPlaceSorting(node, node.id == heldPlaceId || IsHeldCompositeBlockNode(node));
 			}
 			else
 			{
-				string transitionLabel = FormatTransitionLabel(GetNodeDisplayName(node));
+					string transitionLabel = FormatTransitionLabel(GetLocalizedNodeDisplayName(node));
 				node.label.text = transitionLabel;
 				node.label.color = Color.black;
 				node.label.characterSize = GetTransitionLabelCharacterSize(transitionLabel);
 				node.label.lineSpacing = transitionLabel.Contains("\n") ? 0.78f : 1f;
-				FitTransitionLabelInsideNode(node);
+				UpdateTransitionVisualDimensions(node, transitionLabel);
 				SetTransitionSorting(node, node.id == heldTransitionId || IsHeldCompositeBlockNode(node));
 				SetNodeVisualColor(node, IsTransitionEnabled(node.id) ? transitionEnabledColor : transitionDisabledColor);
 			}
@@ -1167,6 +1235,7 @@ public partial class GameManager
 	private LineRenderer localCraneConnectPreviewArrow;
 	private Dictionary<ulong, GameObject> remoteAvatarVisuals = new Dictionary<ulong, GameObject>();
 	private Dictionary<ulong, CraneHoverSelectionVisual> remoteCraneHoverVisuals = new Dictionary<ulong, CraneHoverSelectionVisual>();
+	private Dictionary<ulong, CraneConnectPreviewVisual> remoteCraneConnectPreviewVisuals = new Dictionary<ulong, CraneConnectPreviewVisual>();
 
 	private class CraneHoverSelectionVisual
 	{
@@ -1176,6 +1245,13 @@ public partial class GameManager
 		public GameObject arcRoot;
 		public LineRenderer arcBody;
 		public LineRenderer arcArrow;
+	}
+
+	private class CraneConnectPreviewVisual
+	{
+		public GameObject root;
+		public LineRenderer body;
+		public LineRenderer arrow;
 	}
 
 	private Color GetAvatarColor(ulong clientId)
@@ -1220,184 +1296,18 @@ public partial class GameManager
 			return;
 		}
 
-		bool useCuttingVisual = ShouldUseCuttingPlaceVisual(placeNode) && cuttingTransitionPrefab != null;
 		Transform cuttingVisualTransform = placeNode.transform.Find(CuttingActivityVisualName);
-		if (!useCuttingVisual)
+		if (cuttingVisualTransform != null)
 		{
-			if (cuttingVisualTransform != null)
-			{
-				cuttingVisualTransform.gameObject.SetActive(false);
-			}
-
-			return;
+			cuttingVisualTransform.gameObject.SetActive(false);
+			Destroy(cuttingVisualTransform.gameObject);
 		}
-
-		GameObject cuttingVisual;
-		if (cuttingVisualTransform == null)
-		{
-			cuttingVisual = new GameObject(CuttingActivityVisualName);
-			cuttingVisual.transform.SetParent(placeNode.transform, false);
-			GameObject cuttingModel = Instantiate(cuttingTransitionPrefab, cuttingVisual.transform);
-			cuttingModel.name = CuttingToolModelName;
-			cuttingModel.transform.localPosition = Vector3.zero;
-			cuttingModel.transform.localRotation = Quaternion.identity;
-			cuttingModel.transform.localScale = Vector3.one;
-			cuttingVisual.name = CuttingActivityVisualName;
-			DestroyRuntimeColliders(cuttingModel);
-			ApplyCuttingToolColorMap(cuttingModel);
-			EnsureCuttingToolAnimator(cuttingModel);
-		}
-		else
-		{
-			cuttingVisual = cuttingVisualTransform.gameObject;
-		}
-
-		bool hasWorkItem = placeNode.tokens > 0;
-		cuttingVisual.SetActive(hasWorkItem);
-		if (!hasWorkItem)
-		{
-			return;
-		}
-
-		cuttingVisual.transform.localPosition = cuttingTransitionPrefabLocalPosition;
-		cuttingVisual.transform.localRotation = Quaternion.Euler(cuttingTransitionPrefabLocalEuler);
-		cuttingVisual.transform.localScale = cuttingTransitionPrefabLocalScale;
-		UpdateCuttingToolAnimator(cuttingVisual, processingActive);
-		SetMeshRenderersSortingOrder(cuttingVisual.transform, IsHeldCompositeBlockNode(placeNode) ? 58 : 43);
-	}
-
-	private bool ShouldUseCuttingPlaceVisual(NodeRuntime placeNode)
-	{
-		if (placeNode == null || !IsCompositeBlockBufferPlaceId(placeNode.id))
-		{
-			return false;
-		}
-
-		string blockId = GetCompositeBlockIdForNodeId(placeNode.id);
-		PoolBlockDefinition definition = GetCompositeBlockDefinition(blockId);
-		if (definition == null)
-		{
-			return false;
-		}
-
-		return IsCuttingName(GetPoolBlockFirstTransitionName(definition))
-			|| IsCuttingName(GetPoolBlockSecondTransitionName(definition))
-			|| IsCuttingName(GetPoolBlockResultState(definition));
 	}
 
 	private bool IsCuttingName(string value)
 	{
 		return !string.IsNullOrEmpty(value)
 			&& value.IndexOf("schneid", StringComparison.OrdinalIgnoreCase) >= 0;
-	}
-
-	private void UpdateCuttingToolAnimator(GameObject cuttingVisual, bool processingActive)
-	{
-		Transform model = cuttingVisual != null ? cuttingVisual.transform.Find(CuttingToolModelName) : null;
-		if (model == null)
-		{
-			model = cuttingVisual != null ? cuttingVisual.transform : null;
-		}
-
-		if (model == null)
-		{
-			return;
-		}
-
-		Animator animator = EnsureCuttingToolAnimator(model.gameObject);
-		if (animator == null || animator.runtimeAnimatorController == null)
-		{
-			ResetCuttingToolModelTransform(model);
-			return;
-		}
-
-		animator.enabled = processingActive;
-		if (!processingActive)
-		{
-			ResetCuttingToolModelTransform(model);
-		}
-	}
-
-	private Animator EnsureCuttingToolAnimator(GameObject model)
-	{
-		if (model == null)
-		{
-			return null;
-		}
-
-		Animator animator = model.GetComponent<Animator>();
-		if (animator == null && cuttingToolAnimatorController != null)
-		{
-			animator = model.AddComponent<Animator>();
-		}
-
-		if (animator == null)
-		{
-			return null;
-		}
-
-		if (cuttingToolAnimatorController != null)
-		{
-			animator.runtimeAnimatorController = cuttingToolAnimatorController;
-		}
-
-		animator.applyRootMotion = false;
-		return animator;
-	}
-
-	private void ResetCuttingToolModelTransform(Transform model)
-	{
-		if (model == null)
-		{
-			return;
-		}
-
-		model.localPosition = Vector3.zero;
-		model.localRotation = Quaternion.identity;
-	}
-
-	private void ApplyCuttingToolColorMap(GameObject root)
-	{
-		if (root == null || cuttingToolColorMap == null)
-		{
-			return;
-		}
-
-		MeshRenderer[] renderers = root.GetComponentsInChildren<MeshRenderer>(true);
-		for (int rendererIndex = 0; rendererIndex < renderers.Length; rendererIndex++)
-		{
-			Material[] materials = renderers[rendererIndex].materials;
-			for (int materialIndex = 0; materialIndex < materials.Length; materialIndex++)
-			{
-				Material material = materials[materialIndex];
-				if (material == null)
-				{
-					continue;
-				}
-
-				ApplyTexture(material, "_BaseMap", cuttingToolColorMap);
-				ApplyTexture(material, "_MainTex", cuttingToolColorMap);
-			}
-		}
-	}
-
-	private void ApplyTexture(Material material, string propertyName, Texture2D texture)
-	{
-		if (material == null || texture == null || !material.HasProperty(propertyName))
-		{
-			return;
-		}
-
-		material.SetTexture(propertyName, texture);
-		if (material.HasProperty("_BaseColor"))
-		{
-			material.SetColor("_BaseColor", Color.white);
-		}
-
-		if (material.HasProperty("_Color"))
-		{
-			material.SetColor("_Color", Color.white);
-		}
 	}
 
 	private void DestroyRuntimeColliders(GameObject root)
@@ -1432,6 +1342,68 @@ public partial class GameManager
 		{
 			renderers[i].sortingOrder = sortingOrder;
 			ConfigureMeshRendererFor3D(renderers[i], true, true);
+		}
+	}
+
+	private void EnsureRenderersMinimumSortingOrder(Transform root, int minimumSortingOrder)
+	{
+		if (root == null)
+		{
+			return;
+		}
+
+		Renderer[] renderers = root.GetComponentsInChildren<Renderer>(true);
+		for (int i = 0; i < renderers.Length; i++)
+		{
+			if (renderers[i] != null && renderers[i].sortingOrder < minimumSortingOrder)
+			{
+				renderers[i].sortingOrder = minimumSortingOrder;
+			}
+		}
+	}
+
+	private void SetRenderersAboveTutorialBubbles(Transform root, bool lifted)
+	{
+		if (root == null)
+		{
+			return;
+		}
+
+		Renderer[] renderers = root.GetComponentsInChildren<Renderer>(true);
+		for (int rendererIndex = 0; rendererIndex < renderers.Length; rendererIndex++)
+		{
+			Renderer renderer = renderers[rendererIndex];
+			if (renderer == null)
+			{
+				continue;
+			}
+
+			Material[] materials = lifted ? renderer.materials : renderer.sharedMaterials;
+			for (int materialIndex = 0; materialIndex < materials.Length; materialIndex++)
+			{
+				Material material = materials[materialIndex];
+				if (material == null)
+				{
+					continue;
+				}
+
+				if (lifted)
+				{
+					if (!liftedObjectOriginalRenderQueues.ContainsKey(material))
+					{
+						liftedObjectOriginalRenderQueues[material] = material.renderQueue;
+					}
+
+					material.renderQueue = Mathf.Max(
+						liftedObjectOriginalRenderQueues[material],
+						LiftedObjectRenderQueue);
+				}
+				else if (liftedObjectOriginalRenderQueues.TryGetValue(material, out int originalRenderQueue))
+				{
+					material.renderQueue = originalRenderQueue;
+					liftedObjectOriginalRenderQueues.Remove(material);
+				}
+			}
 		}
 	}
 
@@ -1601,7 +1573,7 @@ public partial class GameManager
 				Quaternion.identity);
 			if (bodyRenderer != null)
 			{
-				bodyRenderer.sortingOrder = 60;
+					bodyRenderer.sortingOrder = 70;
 			}
 
 			EnsureAvatarDroneVisual(localAvatarVisual.transform, GetLocalActorClientId(), true);
@@ -1664,6 +1636,7 @@ public partial class GameManager
 		UpdateCraneConnectPreviewVisual();
 		UpdateRemoteAvatarVisuals();
 		UpdateRemoteCraneHoverSelectionVisuals();
+		UpdateRemoteCraneConnectPreviewVisuals();
 	}
 
 	private void UpdateRemoteAvatarVisuals()
@@ -1753,7 +1726,7 @@ public partial class GameManager
 			Quaternion.identity);
 		if (body != null)
 		{
-			body.sortingOrder = 60;
+				body.sortingOrder = 70;
 		}
 
 		Transform drone = EnsureAvatarDroneVisual(root.transform, clientId, false);
@@ -1792,6 +1765,11 @@ public partial class GameManager
 		if (!nodesById.TryGetValue(heldState.id, out NodeRuntime heldNode) || heldNode == null || heldNode.transform == null)
 		{
 			return;
+		}
+
+		if (heldState.kind == HeldObjectKind.Transition && IsDeliveryTransition(heldNode))
+		{
+			heldCenter = ClampDeliveryTransitionPositionToOwnSide(heldNode, heldCenter);
 		}
 
 		heldNode.transform.position = new Vector3(heldCenter.x, heldCenter.y, GetRemoteHeldObjectZ(clientId));
@@ -1949,11 +1927,7 @@ public partial class GameManager
 		}
 		else
 		{
-			SetCraneHoverRectOutline(visual.nodeOutline, new Rect(
-				nodePosition.x - NodeVisualFootprint * 0.58f,
-				nodePosition.y - NodeVisualFootprint * 0.58f,
-				NodeVisualFootprint * 1.16f,
-				NodeVisualFootprint * 1.16f));
+			SetCraneHoverRectOutline(visual.nodeOutline, ExpandRect(GetTransitionPlacementBounds(node, nodePosition), 0.08f));
 		}
 	}
 
@@ -2084,7 +2058,7 @@ public partial class GameManager
 
 		drone.localRotation = GetAvatarDroneRotation();
 		drone.localScale = avatarDroneLocalScale;
-		SetMeshRenderersSortingOrder(drone, 60);
+		SetMeshRenderersSortingOrder(drone, 70);
 		return drone;
 	}
 
@@ -2191,6 +2165,13 @@ public partial class GameManager
 			{
 				Material sourceMaterial = sourceMaterials[materialIndex];
 				Material material = sourceMaterial != null ? new Material(sourceMaterial) : null;
+				if (material != null)
+				{
+					// TextMesh labels render in the transparent queue. Put the drone there as well
+					// so its higher sorting order can correctly draw it in front of labels.
+					material.renderQueue = (int)RenderQueue.Transparent;
+				}
+
 				materials[materialIndex] = material;
 			}
 
@@ -2308,7 +2289,7 @@ public partial class GameManager
 		}
 
 		child.gameObject.SetActive(true);
-		SetMeshRenderersSortingOrder(child, 62);
+			SetMeshRenderersSortingOrder(child, 72);
 		return child;
 	}
 
@@ -2347,7 +2328,7 @@ public partial class GameManager
 		hook.rotation = Quaternion.Euler(avatarCraneHookLocalEuler);
 		hook.localScale = avatarCraneHookLocalScale;
 		hook.position = GetCraneHookVisualPosition(chainEndPosition);
-		SetMeshRenderersSortingOrder(hook, 63);
+			SetMeshRenderersSortingOrder(hook, 73);
 
 		if (!TryGetRendererBounds(hook, out Bounds bounds))
 		{
@@ -2405,7 +2386,7 @@ public partial class GameManager
 			link.position = new Vector3(craneVisualPosition.x, craneVisualPosition.y, Mathf.Lerp(craneVisualPosition.z, hookZ, t));
 			link.rotation = Quaternion.Euler(linkEuler);
 			link.localScale = avatarCraneChainLocalScale;
-			SetMeshRenderersSortingOrder(link, 62);
+				SetMeshRenderersSortingOrder(link, 72);
 		}
 
 		for (int i = linkCount; i < chainRoot.childCount; i++)
@@ -2579,7 +2560,18 @@ public partial class GameManager
 
 	private Vector3 GetHeldTransitionVisualPosition()
 	{
-		return GetHeldNodeVisualPosition();
+		Vector3 position = GetHeldNodeVisualPosition();
+		if (nodesById.TryGetValue(heldTransitionId, out NodeRuntime heldTransition)
+			&& IsDeliveryTransition(heldTransition))
+		{
+			Vector2 clamped = ClampDeliveryTransitionPositionToOwnSide(
+				heldTransition,
+				new Vector2(position.x, position.y));
+			position.x = clamped.x;
+			position.y = clamped.y;
+		}
+
+		return position;
 	}
 
 	private void UpdateHeldPlaceVisual()
@@ -2762,11 +2754,7 @@ public partial class GameManager
 		}
 		else
 		{
-			SetCraneHoverRectOutline(new Rect(
-				nodePosition.x - NodeVisualFootprint * 0.58f,
-				nodePosition.y - NodeVisualFootprint * 0.58f,
-				NodeVisualFootprint * 1.16f,
-				NodeVisualFootprint * 1.16f));
+			SetCraneHoverRectOutline(ExpandRect(GetTransitionPlacementBounds(node, nodePosition), 0.08f));
 		}
 	}
 
@@ -2948,6 +2936,32 @@ public partial class GameManager
 		ConfigureGroundLineRenderer(line, positionCount, arcWidth, sortingOrder, previewColor);
 	}
 
+	private CraneConnectPreviewVisual EnsureRemoteCraneConnectPreviewVisual(ulong clientId)
+	{
+		if (remoteCraneConnectPreviewVisuals.TryGetValue(clientId, out CraneConnectPreviewVisual visual)
+			&& visual != null
+			&& visual.root != null)
+		{
+			return visual;
+		}
+
+		visual = new CraneConnectPreviewVisual();
+		visual.root = new GameObject("RemoteCraneConnectPreview_" + clientId);
+		visual.root.transform.SetParent(petriNetRoot, false);
+
+		visual.body = visual.root.AddComponent<LineRenderer>();
+		ConfigureCraneConnectPreviewLine(visual.body, 56, 2);
+
+		GameObject arrowObject = new GameObject("Arrow");
+		arrowObject.transform.SetParent(visual.root.transform, false);
+		visual.arrow = arrowObject.AddComponent<LineRenderer>();
+		ConfigureCraneConnectPreviewLine(visual.arrow, 57, 3);
+
+		visual.root.SetActive(false);
+		remoteCraneConnectPreviewVisuals[clientId] = visual;
+		return visual;
+	}
+
 	private void UpdateCraneConnectPreviewVisual()
 	{
 		if (string.IsNullOrEmpty(craneConnectStartNodeId))
@@ -2988,6 +3002,66 @@ public partial class GameManager
 		SetLineWithArrow(localCraneConnectPreviewBody, localCraneConnectPreviewArrow, start, end, dir);
 	}
 
+	private void UpdateRemoteCraneConnectPreviewVisuals()
+	{
+		List<ulong> staleClientIds = new List<ulong>();
+		foreach (KeyValuePair<ulong, CraneConnectPreviewVisual> pair in remoteCraneConnectPreviewVisuals)
+		{
+			if (!remoteAvatarPositions.ContainsKey(pair.Key) || !remoteCraneConnectStates.ContainsKey(pair.Key))
+			{
+				staleClientIds.Add(pair.Key);
+			}
+		}
+
+		for (int i = 0; i < staleClientIds.Count; i++)
+		{
+			DestroyRemoteCraneConnectPreviewVisual(staleClientIds[i]);
+		}
+
+		foreach (KeyValuePair<ulong, RemoteCraneConnectState> pair in remoteCraneConnectStates)
+		{
+			UpdateRemoteCraneConnectPreviewVisual(pair.Key, pair.Value);
+		}
+	}
+
+	private void UpdateRemoteCraneConnectPreviewVisual(ulong clientId, RemoteCraneConnectState state)
+	{
+		if (state == null
+			|| string.IsNullOrEmpty(state.startNodeId)
+			|| !remoteAvatarPositions.TryGetValue(clientId, out Vector3 cranePosition)
+			|| !nodesById.TryGetValue(state.startNodeId, out NodeRuntime startNode)
+			|| startNode.transform == null
+			|| !startNode.transform.gameObject.activeInHierarchy)
+		{
+			HideRemoteCraneConnectPreviewVisual(clientId);
+			return;
+		}
+
+		Vector3 nodeCenter = startNode.transform.position;
+		Vector3 nodeToCrane = cranePosition - nodeCenter;
+		if (nodeToCrane.sqrMagnitude < 0.0001f)
+		{
+			HideRemoteCraneConnectPreviewVisual(clientId);
+			return;
+		}
+
+		Vector3 directionToCrane = nodeToCrane.normalized;
+		Vector3 nodeEdge = nodeCenter + directionToCrane * GetNodeOffsetAlongDirection(startNode, directionToCrane);
+		Vector3 start = state.reversed ? cranePosition : nodeEdge;
+		Vector3 end = state.reversed ? nodeEdge : cranePosition;
+		Vector3 dir = end - start;
+		if (dir.sqrMagnitude < 0.0001f)
+		{
+			HideRemoteCraneConnectPreviewVisual(clientId);
+			return;
+		}
+
+		dir.Normalize();
+		CraneConnectPreviewVisual visual = EnsureRemoteCraneConnectPreviewVisual(clientId);
+		visual.root.SetActive(true);
+		SetLineWithArrow(visual.body, visual.arrow, start, end, dir);
+	}
+
 	private void HideCraneConnectPreviewVisual()
 	{
 		if (localCraneConnectPreview != null)
@@ -3004,6 +3078,40 @@ public partial class GameManager
 			localCraneConnectPreview = null;
 			localCraneConnectPreviewBody = null;
 			localCraneConnectPreviewArrow = null;
+		}
+	}
+
+	private void HideRemoteCraneConnectPreviewVisual(ulong clientId)
+	{
+		if (remoteCraneConnectPreviewVisuals.TryGetValue(clientId, out CraneConnectPreviewVisual visual)
+			&& visual != null
+			&& visual.root != null)
+		{
+			visual.root.SetActive(false);
+		}
+	}
+
+	private void DestroyRemoteCraneConnectPreviewVisual(ulong clientId)
+	{
+		if (!remoteCraneConnectPreviewVisuals.TryGetValue(clientId, out CraneConnectPreviewVisual visual))
+		{
+			return;
+		}
+
+		if (visual != null && visual.root != null)
+		{
+			Destroy(visual.root);
+		}
+
+		remoteCraneConnectPreviewVisuals.Remove(clientId);
+	}
+
+	private void DestroyRemoteCraneConnectPreviewVisuals()
+	{
+		List<ulong> clientIds = new List<ulong>(remoteCraneConnectPreviewVisuals.Keys);
+		for (int i = 0; i < clientIds.Count; i++)
+		{
+			DestroyRemoteCraneConnectPreviewVisual(clientIds[i]);
 		}
 	}
 
@@ -3047,6 +3155,11 @@ public partial class GameManager
 			Vector3 position = node.transform.position;
 			node.transform.position = new Vector3(position.x, position.y, z);
 		}
+
+		if (compositeBlocksById.TryGetValue(blockId, out CompositeBlockRuntime block))
+		{
+			UpdateCompositeBlockVisual(block);
+		}
 	}
 
 	private void SetPlaceSorting(NodeRuntime node, bool lifted)
@@ -3058,18 +3171,18 @@ public partial class GameManager
 
 		if (node.renderer != null)
 		{
-			node.renderer.sortingOrder = lifted ? 58 : 30;
+			node.renderer.sortingOrder = lifted ? 61 : 30;
 		}
 
 		if (node.visual3DRenderer != null)
 		{
-			node.visual3DRenderer.sortingOrder = lifted ? 58 : 31;
+			node.visual3DRenderer.sortingOrder = lifted ? 61 : 31;
 		}
 
 		Transform cuttingVisual = node.transform.Find(CuttingActivityVisualName);
 		if (cuttingVisual != null)
 		{
-			SetMeshRenderersSortingOrder(cuttingVisual, lifted ? 58 : 31);
+			SetMeshRenderersSortingOrder(cuttingVisual, lifted ? 61 : 31);
 		}
 
 		if (node.label != null)
@@ -3077,7 +3190,16 @@ public partial class GameManager
 			MeshRenderer labelRenderer = node.label.GetComponent<MeshRenderer>();
 			if (labelRenderer != null)
 			{
-				labelRenderer.sortingOrder = lifted ? 59 : 50;
+				labelRenderer.sortingOrder = lifted ? 64 : 50;
+			}
+		}
+
+		if (node.capacityLabel != null)
+		{
+			MeshRenderer capacityLabelRenderer = node.capacityLabel.GetComponent<MeshRenderer>();
+			if (capacityLabelRenderer != null)
+			{
+				capacityLabelRenderer.sortingOrder = lifted ? 64 : 52;
 			}
 		}
 
@@ -3088,10 +3210,17 @@ public partial class GameManager
 				SpriteRenderer tokenRenderer = node.tokenRoot.GetChild(i).GetComponent<SpriteRenderer>();
 				if (tokenRenderer != null)
 				{
-					tokenRenderer.sortingOrder = lifted ? 59 : 40;
+					tokenRenderer.sortingOrder = lifted ? 64 : 40;
 				}
 			}
 		}
+
+		if (lifted)
+		{
+			EnsureRenderersMinimumSortingOrder(node.transform, 61);
+		}
+
+		SetRenderersAboveTutorialBubbles(node.transform, lifted);
 	}
 
 	private void SetTransitionSorting(NodeRuntime node, bool lifted)
@@ -3103,12 +3232,12 @@ public partial class GameManager
 
 		if (node.renderer != null)
 		{
-			node.renderer.sortingOrder = lifted ? 58 : 30;
+			node.renderer.sortingOrder = lifted ? 61 : 30;
 		}
 
 		if (node.visual3DRenderer != null)
 		{
-			node.visual3DRenderer.sortingOrder = lifted ? 58 : 31;
+			node.visual3DRenderer.sortingOrder = lifted ? 61 : 31;
 		}
 
 		if (node.label != null)
@@ -3116,9 +3245,16 @@ public partial class GameManager
 			MeshRenderer labelRenderer = node.label.GetComponent<MeshRenderer>();
 			if (labelRenderer != null)
 			{
-				labelRenderer.sortingOrder = lifted ? 59 : 50;
+				labelRenderer.sortingOrder = lifted ? 64 : 50;
 			}
 		}
+
+		if (lifted)
+		{
+			EnsureRenderersMinimumSortingOrder(node.transform, 61);
+		}
+
+		SetRenderersAboveTutorialBubbles(node.transform, lifted);
 	}
 
 	private void SetCompositeBlockSorting(string blockId, bool lifted)
@@ -3158,22 +3294,22 @@ public partial class GameManager
 
 				if (arc.body != null)
 				{
-					arc.body.sortingOrder = lifted ? 54 : 24;
+						arc.body.sortingOrder = lifted ? 62 : 24;
 				}
 
 				if (arc.arrow != null)
 				{
-					arc.arrow.sortingOrder = lifted ? 55 : 25;
+						arc.arrow.sortingOrder = lifted ? 63 : 25;
 				}
 
 				if (arc.resetArrow != null)
 				{
-					arc.resetArrow.sortingOrder = lifted ? 55 : 25;
+						arc.resetArrow.sortingOrder = lifted ? 63 : 25;
 				}
 
 				if (arc.inhibitorCircle != null)
 				{
-					arc.inhibitorCircle.sortingOrder = lifted ? 55 : 25;
+						arc.inhibitorCircle.sortingOrder = lifted ? 63 : 25;
 				}
 
 				SetArcWeightLabelSorting(arc, lifted);
@@ -3195,22 +3331,22 @@ public partial class GameManager
 
 			if (arc.body != null)
 			{
-				arc.body.sortingOrder = lifted ? 54 : 24;
+					arc.body.sortingOrder = lifted ? 62 : 24;
 			}
 
 			if (arc.arrow != null)
 			{
-				arc.arrow.sortingOrder = lifted ? 55 : 25;
+					arc.arrow.sortingOrder = lifted ? 63 : 25;
 			}
 
 			if (arc.resetArrow != null)
 			{
-				arc.resetArrow.sortingOrder = lifted ? 55 : 25;
+					arc.resetArrow.sortingOrder = lifted ? 63 : 25;
 			}
 
 			if (arc.inhibitorCircle != null)
 			{
-				arc.inhibitorCircle.sortingOrder = lifted ? 55 : 25;
+					arc.inhibitorCircle.sortingOrder = lifted ? 63 : 25;
 			}
 
 			SetArcWeightLabelSorting(arc, lifted);
@@ -3220,12 +3356,12 @@ public partial class GameManager
 		{
 			if (block.fill != null)
 			{
-				block.fill.sortingOrder = lifted ? 53 : 11;
+					block.fill.sortingOrder = lifted ? 61 : 11;
 			}
 
 			if (block.border != null)
 			{
-				block.border.sortingOrder = lifted ? 56 : 14;
+					block.border.sortingOrder = lifted ? 63 : 14;
 			}
 		}
 	}
@@ -3240,7 +3376,7 @@ public partial class GameManager
 		MeshRenderer labelRenderer = arc.weightLabel.GetComponent<MeshRenderer>();
 		if (labelRenderer != null)
 		{
-			labelRenderer.sortingOrder = lifted ? 56 : 52;
+			labelRenderer.sortingOrder = lifted ? 64 : 52;
 		}
 	}
 
@@ -3260,18 +3396,23 @@ public partial class GameManager
 		sharedPoolVisualRoot.SetParent(petriNetRoot, false);
 
 		float width = GetSharedPoolWidth();
-		CreateSharedBoundaryLine(10000f);
+		if (!singlePlayerMode)
+		{
+			CreateSharedBoundaryLine(10000f);
+		}
+
 		CreatePoolZoneVisual("PoolAvailable", sharedPoolY, width, new Color(0.82f, 0.92f, 1f, 0.35f));
 		CreateIngredientAreaVisual(true);
 		CreateIngredientAreaVisual(false);
 
 		for (int i = 0; i < GetPoolBlockCount(); i++)
 		{
+			string blockId = GetCompositeBlockIdByIndex(i);
 			Vector2 slot = GetSharedPoolBlockSlotPositionByIndex(i);
 			GameObject slotObject = new GameObject("BlockSlot_" + (i + 1));
 			slotObject.transform.SetParent(sharedPoolVisualRoot, false);
 			slotObject.transform.position = new Vector3(slot.x, slot.y, OverlayZ);
-			slotObject.transform.localScale = new Vector3(GetCompositeBlockTemplateWidth(), GetCompositeBlockTemplateHeight(), 1f);
+			slotObject.transform.localScale = new Vector3(GetCompositeBlockLayoutWidth(blockId, GetPoolBlockDefinition(i)) + CompositeBlockPaddingX * 2f, GetCompositeBlockTemplateHeight(), 1f);
 
 			SpriteRenderer slotRenderer = slotObject.AddComponent<SpriteRenderer>();
 			slotRenderer.sprite = GetSquareSprite();
@@ -3376,7 +3517,7 @@ public partial class GameManager
 		float labelY = topSide ? bounds.yMin - 0.12f : bounds.yMax + 0.12f;
 		labelObject.transform.position = new Vector3(bounds.xMin, labelY, ArcZ);
 		TextMesh label = labelObject.AddComponent<TextMesh>();
-		label.text = "Zutaten";
+			label.text = GameText("Zutaten", "Ingredients");
 		label.characterSize = 0.046f;
 		label.fontSize = 64;
 		label.anchor = topSide ? TextAnchor.UpperLeft : TextAnchor.LowerLeft;
@@ -3399,7 +3540,8 @@ public partial class GameManager
 
 		Vector2 first = GetIngredientTransitionPosition(topSide, 0);
 		Vector2 last = GetIngredientTransitionPosition(topSide, count - 1);
-		float horizontalPadding = 0.58f;
+		float widestTransitionHalfWidth = GetWidestIngredientTransitionWidth(topSide) * 0.5f;
+		float horizontalPadding = widestTransitionHalfWidth + IngredientAreaTransitionEdgePadding;
 		float verticalPadding = 0.58f;
 		float minX = Mathf.Min(first.x, last.x) - horizontalPadding;
 		float maxX = Mathf.Max(first.x, last.x) + horizontalPadding;
@@ -3422,7 +3564,31 @@ public partial class GameManager
 	private Vector2 GetIngredientPlacePosition(bool topSide, int index)
 	{
 		Vector2 transitionPosition = GetIngredientTransitionPosition(topSide, index);
-		return transitionPosition + new Vector2(1.55f, 0f);
+		float transitionWidth = GetIngredientTransitionWidth(topSide);
+		float offset = transitionWidth * 0.5f + IngredientPlaceGap + NodeVisualFootprint * 0.5f;
+		return transitionPosition + new Vector2(offset, 0f);
+	}
+
+	private float GetIngredientTransitionWidth(bool topSide)
+	{
+		return GetWidestIngredientTransitionWidth(topSide);
+	}
+
+	private float GetNaturalIngredientTransitionWidth(bool topSide, int index)
+	{
+		return GetTransitionVisualWidthForDisplayName(GetIngredientDisplayName(topSide, index));
+	}
+
+	private float GetWidestIngredientTransitionWidth(bool topSide)
+	{
+		int count = GetIngredientCount(topSide);
+		float widest = NodeVisualFootprint;
+		for (int i = 0; i < count; i++)
+		{
+			widest = Mathf.Max(widest, GetNaturalIngredientTransitionWidth(topSide, i));
+		}
+
+		return widest;
 	}
 
 	private int GetIngredientCount(bool topSide)
@@ -3454,7 +3620,7 @@ public partial class GameManager
 			}
 		}
 
-		return "Zutat " + (index + 1);
+		return GameText("Zutat ", "Ingredient ") + (index + 1);
 	}
 
 	private bool IsPlaceholderIngredientNameList(IList<string> names)
@@ -3521,7 +3687,12 @@ public partial class GameManager
 			return 0f;
 		}
 
-		float width = blockCount * GetCompositeBlockTemplateWidth();
+		float width = 0f;
+		for (int i = 0; i < blockCount; i++)
+		{
+			width += GetCompositeBlockLayoutWidth(GetCompositeBlockIdByIndex(i), GetPoolBlockDefinition(i)) + CompositeBlockPaddingX * 2f;
+		}
+
 		if (hasTrash)
 		{
 			width += GetSharedPoolTrashSlotWidth();
@@ -3535,8 +3706,14 @@ public partial class GameManager
 	{
 		int count = GetPoolBlockCount();
 		int safeIndex = Mathf.Clamp(index, 0, Mathf.Max(0, count - 1));
-		float x = -GetSharedPoolContentWidth() * 0.5f + GetCompositeBlockTemplateWidth() * 0.5f;
-		x += safeIndex * (GetCompositeBlockTemplateWidth() + sharedPoolItemGap);
+		float currentWidth = GetCompositeBlockLayoutWidth(GetCompositeBlockIdByIndex(safeIndex), GetPoolBlockDefinition(safeIndex)) + CompositeBlockPaddingX * 2f;
+		float x = -GetSharedPoolContentWidth() * 0.5f;
+		for (int i = 0; i < safeIndex; i++)
+		{
+			x += GetCompositeBlockLayoutWidth(GetCompositeBlockIdByIndex(i), GetPoolBlockDefinition(i)) + CompositeBlockPaddingX * 2f + sharedPoolItemGap;
+		}
+
+		x += currentWidth * 0.5f;
 		return new Vector2(x, sharedPoolY);
 	}
 
@@ -3546,17 +3723,16 @@ public partial class GameManager
 		int blockCount = GetPoolBlockCount();
 		if (blockCount > 0)
 		{
-			x += blockCount * GetCompositeBlockTemplateWidth();
+			for (int i = 0; i < blockCount; i++)
+			{
+				x += GetCompositeBlockLayoutWidth(GetCompositeBlockIdByIndex(i), GetPoolBlockDefinition(i)) + CompositeBlockPaddingX * 2f;
+			}
+
 			x += blockCount * sharedPoolItemGap;
 		}
 
 		x += GetSharedPoolTrashSlotWidth() * 0.5f;
 		return new Vector2(x, sharedPoolY);
-	}
-
-	private float GetCompositeBlockTemplateWidth()
-	{
-		return 5.7f;
 	}
 
 	private float GetCompositeBlockTemplateHeight()
@@ -3566,7 +3742,7 @@ public partial class GameManager
 
 	private float GetSharedPoolTrashSlotWidth()
 	{
-		return 1.1f;
+		return GetTransitionVisualWidthForDisplayName(GetSharedPoolTrashTransitionDisplayName()) + 0.1f;
 	}
 
 	private bool HasSharedPoolTrashTransition()
@@ -3727,8 +3903,14 @@ public partial class GameManager
 	private Vector2 GetPlayerCompositeBlockPosition(bool topSide, int index)
 	{
 		int safeIndex = Mathf.Clamp(index, 0, Mathf.Max(0, GetPlayerBlockCount(topSide) - 1));
-		float x = GetSharedPoolHalfWidth() + 0.95f + GetCompositeBlockTemplateWidth() * 0.5f;
-		x += safeIndex * (GetCompositeBlockTemplateWidth() + sharedPoolItemGap);
+		float currentWidth = GetCompositeBlockLayoutWidth(GetPlayerCompositeBlockIdByIndex(topSide, safeIndex), GetPlayerBlockDefinition(topSide, safeIndex)) + CompositeBlockPaddingX * 2f;
+		float x = GetSharedPoolHalfWidth() + 0.95f;
+		for (int i = 0; i < safeIndex; i++)
+		{
+			x += GetCompositeBlockLayoutWidth(GetPlayerCompositeBlockIdByIndex(topSide, i), GetPlayerBlockDefinition(topSide, i)) + CompositeBlockPaddingX * 2f + sharedPoolItemGap;
+		}
+
+		x += currentWidth * 0.5f;
 		float y = topSide ? sharedPoolY + playerZoneYSpacing : sharedPoolY - playerZoneYSpacing;
 		return new Vector2(x, y);
 	}
@@ -3772,6 +3954,24 @@ public partial class GameManager
 	{
 		return GetPlayerCompositeBlockIndex(blockId, true) >= 0
 			|| GetPlayerCompositeBlockIndex(blockId, false) >= 0;
+	}
+
+	private bool TryGetPlayerBoundCompositeBlockTopSide(string blockId, out bool topSide)
+	{
+		if (GetPlayerCompositeBlockIndex(blockId, true) >= 0)
+		{
+			topSide = true;
+			return true;
+		}
+
+		if (GetPlayerCompositeBlockIndex(blockId, false) >= 0)
+		{
+			topSide = false;
+			return true;
+		}
+
+		topSide = false;
+		return false;
 	}
 
 	private bool IsCreatedCompositeBlockId(string blockId)
@@ -3833,6 +4033,70 @@ public partial class GameManager
 		}
 
 		return null;
+	}
+
+	private bool IsCreatedStoragePlaceId(string nodeId)
+	{
+		return !string.IsNullOrEmpty(nodeId)
+			&& nodeId.StartsWith("P_CreatedBlock_")
+			&& nodeId.EndsWith("_Output");
+	}
+
+	private int GetPlaceTokenCapacity(NodeRuntime place)
+	{
+		if (place == null || place.type != NodeType.Place)
+		{
+			return 0;
+		}
+
+		if (IsInhibitorCapacityLevel())
+		{
+			return 1;
+		}
+
+		if (IsCreatedStoragePlaceId(place.id))
+		{
+			return IsLastLevelSelected() ? 0 : 1;
+		}
+
+		return place.processingDuration > 0f ? 1 : 0;
+	}
+
+	private bool IsInhibitorCapacityLevel()
+	{
+		return levelInhibitorArcs != null && levelInhibitorArcs.Count > 0;
+	}
+
+	private bool CanAddTokensToPlace(NodeRuntime place, int amount)
+	{
+		if (place == null || place.type != NodeType.Place)
+		{
+			return false;
+		}
+
+		int capacity = GetPlaceTokenCapacity(place);
+		return capacity <= 0 || place.tokens + Mathf.Max(1, amount) <= capacity;
+	}
+
+	private void UpdatePlaceCapacityLabel(NodeRuntime place)
+	{
+		if (place == null || place.capacityLabel == null)
+		{
+			return;
+		}
+
+		int capacity = GetPlaceTokenCapacity(place);
+		bool showCapacity = capacity > 0 && (IsInhibitorCapacityLevel() || IsCreatedStoragePlaceId(place.id));
+		if (!showCapacity)
+		{
+			place.capacityLabel.gameObject.SetActive(false);
+			return;
+		}
+
+		place.capacityLabel.gameObject.SetActive(true);
+		place.capacityLabel.text = capacity.ToString();
+		place.capacityLabel.characterSize = ArcWeightLabelCharacterSize;
+		place.capacityLabel.color = Color.black;
 	}
 
 	private PoolBlockDefinition GetCompositeBlockDefinition(string blockId)
@@ -3917,6 +4181,120 @@ public partial class GameManager
 		return definition != null && definition.singleTransition;
 	}
 
+	private float GetCompositeBlockLayoutWidth(string blockId, PoolBlockDefinition definition)
+	{
+		float[] widths = GetCompositeBlockNodeLayoutWidths(blockId, definition);
+		if (widths.Length <= 0)
+		{
+			return 0f;
+		}
+
+		float total = 0f;
+		for (int i = 0; i < widths.Length; i++)
+		{
+			total += widths[i];
+		}
+
+		total += Mathf.Max(0, widths.Length - 1) * CompositeBlockNodeGap;
+		return total;
+	}
+
+	private float[] GetCompositeBlockNodeXOffsets(string blockId, PoolBlockDefinition definition)
+	{
+		float[] widths = GetCompositeBlockNodeLayoutWidths(blockId, definition);
+		float[] offsets = new float[widths.Length];
+		if (widths.Length <= 0)
+		{
+			return offsets;
+		}
+
+		float totalWidth = GetCompositeBlockLayoutWidth(blockId, definition);
+		float cursor = -totalWidth * 0.5f;
+		for (int i = 0; i < widths.Length; i++)
+		{
+			offsets[i] = cursor + widths[i] * 0.5f;
+			cursor += widths[i] + CompositeBlockNodeGap;
+		}
+
+		return offsets;
+	}
+
+	private float[] GetCompositeBlockNodeLayoutWidths(string blockId, PoolBlockDefinition definition)
+	{
+		string[] nodeIds = GetCompositeBlockNodeIds(blockId);
+		if (nodeIds == null)
+		{
+			return new float[0];
+		}
+
+		float[] widths = new float[nodeIds.Length];
+		for (int i = 0; i < nodeIds.Length; i++)
+		{
+			widths[i] = GetCompositeBlockNodeLayoutWidth(nodeIds[i], nodeIds, definition);
+		}
+
+		return widths;
+	}
+
+	private float GetCompositeBlockNodeLayoutWidth(string nodeId, string[] nodeIds, PoolBlockDefinition definition)
+	{
+		if (string.IsNullOrEmpty(nodeId) || nodeId.StartsWith("P_"))
+		{
+			return NodeVisualFootprint;
+		}
+
+		string displayName = GetCompositeBlockTransitionLayoutName(nodeId, nodeIds, definition);
+		return GetTransitionVisualWidthForDisplayName(displayName);
+	}
+
+	private string GetCompositeBlockTransitionLayoutName(string nodeId, string[] nodeIds, PoolBlockDefinition definition)
+	{
+		if (!string.IsNullOrEmpty(GetCreatedCompositeBlockIdForNodeId(nodeId)) && nodeId.StartsWith("T_"))
+		{
+			return "Lager";
+		}
+
+		if (nodeIds != null && nodeIds.Length > 0 && nodeId == nodeIds[0] && definition != null)
+		{
+			return GetPoolBlockFirstTransitionName(definition);
+		}
+
+		if (nodeIds != null && nodeIds.Length > 2 && nodeId == nodeIds[2] && definition != null)
+		{
+			return GetPoolBlockSecondTransitionName(definition);
+		}
+
+		if (nodesById.TryGetValue(nodeId, out NodeRuntime node))
+		{
+			return GetNodeDisplayName(node);
+		}
+
+		return HumanizeId(nodeId);
+	}
+
+	private void UpdateCompositeBlockTransitionDimensions(string blockId)
+	{
+		string[] nodeIds = GetCompositeBlockNodeIds(blockId);
+		if (nodeIds == null)
+		{
+			return;
+		}
+
+		for (int i = 0; i < nodeIds.Length; i++)
+		{
+			if (!nodesById.TryGetValue(nodeIds[i], out NodeRuntime node) || node.type != NodeType.Transition || node.label == null)
+			{
+				continue;
+			}
+
+				string transitionLabel = FormatTransitionLabel(GetLocalizedNodeDisplayName(node));
+			node.label.text = transitionLabel;
+			node.label.characterSize = GetTransitionLabelCharacterSize(transitionLabel);
+			node.label.lineSpacing = transitionLabel.Contains("\n") ? 0.78f : 1f;
+			UpdateTransitionVisualDimensions(node, transitionLabel);
+		}
+	}
+
 	private string GetCompositeBlockIdByIndex(int index)
 	{
 		return "B_PoolBlock_" + (index + 1);
@@ -3944,7 +4322,7 @@ public partial class GameManager
 		if (IsCreatedCompositeBlockId(blockId))
 		{
 			string[] createdNodeIds = GetCompositeBlockNodeIds(blockId);
-			return createdNodeIds != null && nodeId == createdNodeIds[0] ? "Lager" : null;
+			return createdNodeIds != null && createdNodeIds.Length > 0 && nodeId == createdNodeIds[0] ? "Lager" : null;
 		}
 
 		PoolBlockDefinition definition = GetCompositeBlockDefinition(blockId);
@@ -4265,6 +4643,23 @@ public partial class GameManager
 		BoxCollider2D collider = blockObject.AddComponent<BoxCollider2D>();
 		collider.isTrigger = true;
 
+		GameObject baseShadowCasterObject = GameObject.CreatePrimitive(PrimitiveType.Cube);
+		baseShadowCasterObject.name = "BaseShadowCaster";
+		baseShadowCasterObject.transform.SetParent(blockObject.transform, false);
+		Collider baseShadowCollider = baseShadowCasterObject.GetComponent<Collider>();
+		if (baseShadowCollider != null)
+		{
+			Destroy(baseShadowCollider);
+		}
+
+		MeshRenderer baseShadowRenderer = baseShadowCasterObject.GetComponent<MeshRenderer>();
+		if (baseShadowRenderer != null)
+		{
+			baseShadowRenderer.sharedMaterial = CreatePrimitiveVisualMaterial(Color.white);
+			baseShadowRenderer.shadowCastingMode = ShadowCastingMode.ShadowsOnly;
+			baseShadowRenderer.receiveShadows = false;
+		}
+
 		CompositeBlockRuntime block = new CompositeBlockRuntime
 		{
 			id = blockId,
@@ -4272,6 +4667,7 @@ public partial class GameManager
 			fill = fill,
 			border = border,
 			collider = collider,
+			baseShadowCaster = baseShadowCasterObject.transform,
 		};
 
 		compositeBlockByCollider[collider] = blockId;
@@ -4305,27 +4701,128 @@ public partial class GameManager
 			return;
 		}
 
+		RelayoutCompositeBlockNodes(block.id);
 		if (!TryGetCompositeBlockBounds(block.id, out Rect bounds))
 		{
 			return;
 		}
 
-		Vector3 center = new Vector3(bounds.center.x, bounds.center.y, OverlayZ);
+		float fillZ = GetCompositeBlockLayerZ(block.id, OverlayZ);
+		float borderZ = GetCompositeBlockLayerZ(block.id, ArcZ);
+		Vector3 center = new Vector3(bounds.center.x, bounds.center.y, fillZ);
 		block.gameObject.transform.position = center;
 		block.collider.offset = Vector2.zero;
 		block.collider.size = new Vector2(bounds.width, bounds.height);
-		block.fill.transform.position = new Vector3(bounds.center.x, bounds.center.y, OverlayZ);
+		block.fill.transform.position = new Vector3(bounds.center.x, bounds.center.y, fillZ);
 		block.fill.transform.localScale = new Vector3(bounds.width, bounds.height, 1f);
+		if (block.baseShadowCaster != null)
+		{
+			block.baseShadowCaster.position = new Vector3(bounds.center.x, bounds.center.y, fillZ);
+			block.baseShadowCaster.localScale = new Vector3(
+				bounds.width,
+				bounds.height,
+				CompositeBlockBaseShadowCasterDepth);
+		}
 
-		Vector3 topLeft = new Vector3(bounds.xMin, bounds.yMax, ArcZ);
-		Vector3 topRight = new Vector3(bounds.xMax, bounds.yMax, ArcZ);
-		Vector3 bottomRight = new Vector3(bounds.xMax, bounds.yMin, ArcZ);
-		Vector3 bottomLeft = new Vector3(bounds.xMin, bounds.yMin, ArcZ);
+		Vector3 topLeft = new Vector3(bounds.xMin, bounds.yMax, borderZ);
+		Vector3 topRight = new Vector3(bounds.xMax, bounds.yMax, borderZ);
+		Vector3 bottomRight = new Vector3(bounds.xMax, bounds.yMin, borderZ);
+		Vector3 bottomLeft = new Vector3(bounds.xMin, bounds.yMin, borderZ);
 		block.border.SetPosition(0, topLeft);
 		block.border.SetPosition(1, topRight);
 		block.border.SetPosition(2, bottomRight);
 		block.border.SetPosition(3, bottomLeft);
 		block.border.SetPosition(4, topLeft);
+	}
+
+	private float GetCompositeBlockLayerZ(string blockId, float groundLayerZ)
+	{
+		return GetCompositeBlockNodeZ(blockId) + groundLayerZ - GroundZ;
+	}
+
+	private float GetCompositeBlockNodeZ(string blockId)
+	{
+		string[] nodeIds = GetCompositeBlockNodeIds(blockId);
+		if (nodeIds == null)
+		{
+			return GroundZ;
+		}
+
+		for (int i = 0; i < nodeIds.Length; i++)
+		{
+			if (nodesById.TryGetValue(nodeIds[i], out NodeRuntime node) && node.transform != null)
+			{
+				return node.transform.position.z;
+			}
+		}
+
+		return GroundZ;
+	}
+
+	private void RelayoutCompositeBlockNodes(string blockId)
+	{
+		string[] nodeIds = GetCompositeBlockNodeIds(blockId);
+		if (nodeIds == null || !TryGetCompositeBlockLayoutCenter(blockId, out Vector2 center))
+		{
+			return;
+		}
+
+		PoolBlockDefinition definition = GetCompositeBlockDefinition(blockId);
+		float[] nodeOffsets = GetCompositeBlockNodeXOffsets(blockId, definition);
+		if (nodeOffsets.Length < nodeIds.Length)
+		{
+			return;
+		}
+
+		for (int i = 0; i < nodeIds.Length; i++)
+		{
+			if (!nodesById.TryGetValue(nodeIds[i], out NodeRuntime node) || node.transform == null)
+			{
+				continue;
+			}
+
+			Vector3 position = node.transform.position;
+			node.transform.position = new Vector3(center.x + nodeOffsets[i], center.y, position.z);
+		}
+	}
+
+	private bool TryGetCompositeBlockLayoutCenter(string blockId, out Vector2 center)
+	{
+		center = Vector2.zero;
+		string[] nodeIds = GetCompositeBlockNodeIds(blockId);
+		if (nodeIds == null)
+		{
+			return false;
+		}
+
+		PoolBlockDefinition definition = GetCompositeBlockDefinition(blockId);
+		float[] nodeOffsets = GetCompositeBlockNodeXOffsets(blockId, definition);
+		if (nodeOffsets.Length < nodeIds.Length)
+		{
+			return false;
+		}
+
+		Vector2 sum = Vector2.zero;
+		int count = 0;
+		for (int i = 0; i < nodeIds.Length; i++)
+		{
+			if (!nodesById.TryGetValue(nodeIds[i], out NodeRuntime node) || node.transform == null)
+			{
+				return false;
+			}
+
+			Vector3 position = node.transform.position;
+			sum += new Vector2(position.x - nodeOffsets[i], position.y);
+			count++;
+		}
+
+		if (count <= 0)
+		{
+			return false;
+		}
+
+		center = sum / count;
+		return true;
 	}
 
 	private bool TryGetCompositeBlockBounds(string blockId, out Rect bounds)
@@ -4344,33 +4841,42 @@ public partial class GameManager
 		float yMax = 0f;
 		for (int i = 0; i < nodeIds.Length; i++)
 		{
-			if (!nodesById.TryGetValue(nodeIds[i], out NodeRuntime node) || node.renderer == null)
+			if (!nodesById.TryGetValue(nodeIds[i], out NodeRuntime node) || node.transform == null)
 			{
 				return false;
 			}
 
-			Bounds rendererBounds = node.renderer.bounds;
+			Rect nodeBounds = GetNodePlacementRect(node, node.transform.position);
 			if (!initialized)
 			{
-				xMin = rendererBounds.min.x;
-				xMax = rendererBounds.max.x;
-				yMin = rendererBounds.min.y;
-				yMax = rendererBounds.max.y;
+				xMin = nodeBounds.xMin;
+				xMax = nodeBounds.xMax;
+				yMin = nodeBounds.yMin;
+				yMax = nodeBounds.yMax;
 				initialized = true;
 			}
 			else
 			{
-				xMin = Mathf.Min(xMin, rendererBounds.min.x);
-				xMax = Mathf.Max(xMax, rendererBounds.max.x);
-				yMin = Mathf.Min(yMin, rendererBounds.min.y);
-				yMax = Mathf.Max(yMax, rendererBounds.max.y);
+				xMin = Mathf.Min(xMin, nodeBounds.xMin);
+				xMax = Mathf.Max(xMax, nodeBounds.xMax);
+				yMin = Mathf.Min(yMin, nodeBounds.yMin);
+				yMax = Mathf.Max(yMax, nodeBounds.yMax);
 			}
 		}
 
-		float paddingX = 0.06f;
-		float paddingY = 0.06f;
-		bounds = Rect.MinMaxRect(xMin - paddingX, yMin - paddingY, xMax + paddingX, yMax + paddingY);
+		bounds = Rect.MinMaxRect(xMin - CompositeBlockPaddingX, yMin - CompositeBlockPaddingY, xMax + CompositeBlockPaddingX, yMax + CompositeBlockPaddingY);
 		return true;
+	}
+
+	private Rect GetNodePlacementRect(NodeRuntime node, Vector3 position)
+	{
+		if (node != null && node.type == NodeType.Place)
+		{
+			GetPlacePlacementCircle(node, position, out Vector2 center, out float radius);
+			return Rect.MinMaxRect(center.x - radius, center.y - radius, center.x + radius, center.y + radius);
+		}
+
+		return GetTransitionPlacementBounds(node, position);
 	}
 
 	private Vector2 GetCompositeBlockCenter(string blockId)
@@ -4437,6 +4943,11 @@ public partial class GameManager
 		}
 
 		float boundaryMargin = bounds.height * 0.5f;
+		if (!singlePlayerMode && TryGetPlayerBoundCompositeBlockTopSide(blockId, out bool topSide))
+		{
+			return ClampPositionToSharedSide(desiredCenter, topSide, boundaryMargin);
+		}
+
 		return ClampPositionToActorArea(desiredCenter, actorClientId, boundaryMargin);
 	}
 
@@ -4903,11 +5414,16 @@ public partial class GameManager
 
 	private bool IsInsideSharedPoolHorizontal(float x)
 	{
-		float halfWidth = GetSharedPoolHalfWidth();
+		return IsInsideSharedPoolHorizontal(x, 0f);
+	}
+
+	private bool IsInsideSharedPoolHorizontal(float x, float insideMargin)
+	{
+		float halfWidth = Mathf.Max(0f, GetSharedPoolHalfWidth() - insideMargin);
 		return x >= -halfWidth && x <= halfWidth;
 	}
 
-	private Vector2 ClampPositionToActorArea(Vector2 desired, ulong actorClientId, float outsideBoundaryMargin)
+	private Vector2 ClampPositionToSharedSide(Vector2 desired, bool topSide, float outsideBoundaryMargin)
 	{
 		if (!enableSharedTransitionPool)
 		{
@@ -4919,7 +5435,6 @@ public partial class GameManager
 			return desired;
 		}
 
-		bool topSide = IsActorTopSide(actorClientId);
 		bool insidePoolHorizontal = IsInsideSharedPoolHorizontal(desired.x);
 		if (topSide)
 		{
@@ -4932,6 +5447,39 @@ public partial class GameManager
 			desired.y = Mathf.Min(desired.y, maxY);
 		}
 
+		return desired;
+	}
+
+	private Vector2 ClampPositionToActorArea(Vector2 desired, ulong actorClientId, float outsideBoundaryMargin)
+	{
+		if (!enableSharedTransitionPool || singlePlayerMode)
+		{
+			return desired;
+		}
+
+		return ClampPositionToSharedSide(desired, IsActorTopSide(actorClientId), outsideBoundaryMargin);
+	}
+
+	private Vector2 ClampMovableNodePositionToActorArea(NodeRuntime node, Vector2 desired, ulong actorClientId)
+	{
+		if (IsDeliveryTransition(node))
+		{
+			return ClampDeliveryTransitionPositionToOwnSide(node, desired);
+		}
+
+		return ClampPositionToActorArea(desired, actorClientId, 0f);
+	}
+
+	private Vector2 ClampDeliveryTransitionPositionToOwnSide(NodeRuntime transition, Vector2 desired)
+	{
+		if (!enableSharedTransitionPool || singlePlayerMode || !IsDeliveryTransition(transition))
+		{
+			return desired;
+		}
+
+		Rect bounds = GetTransitionPlacementBounds(transition, new Vector3(desired.x, desired.y, GroundZ));
+		float halfHeight = Mathf.Max(NodeVisualFootprint * 0.5f, bounds.height * 0.5f);
+		desired.y = Mathf.Min(desired.y, sharedPoolY - halfHeight);
 		return desired;
 	}
 
@@ -4949,6 +5497,12 @@ public partial class GameManager
 
 		if (!string.IsNullOrEmpty(heldTransitionId))
 		{
+			if (nodesById.TryGetValue(heldTransitionId, out NodeRuntime transition))
+			{
+				Rect bounds = GetTransitionPlacementBounds(transition, transition.transform.position);
+				return bounds.width * 0.5f;
+			}
+
 			return NodeVisualFootprint * 0.5f;
 		}
 
@@ -4970,6 +5524,12 @@ public partial class GameManager
 
 		if (!string.IsNullOrEmpty(heldTransitionId))
 		{
+			if (nodesById.TryGetValue(heldTransitionId, out NodeRuntime transition))
+			{
+				Rect bounds = GetTransitionPlacementBounds(transition, transition.transform.position);
+				return bounds.height * 0.5f;
+			}
+
 			return NodeVisualFootprint * 0.5f;
 		}
 
@@ -4979,7 +5539,7 @@ public partial class GameManager
 
 	private Vector3 ClampAvatarPositionToAllowedArea(Vector3 desired, ulong actorClientId)
 	{
-		if (enableSharedTransitionPool)
+		if (enableSharedTransitionPool && !singlePlayerMode)
 		{
 			Vector2 current = new Vector2(avatarPosition.x, avatarPosition.y);
 			Vector2 target = new Vector2(desired.x, desired.y);
@@ -5019,6 +5579,13 @@ public partial class GameManager
 		}
 
 		Vector2 clamped = ClampPositionToActorArea(new Vector2(desired.x, desired.y), actorClientId, GetAvatarBoundaryShadowHalfHeight());
+		if (!string.IsNullOrEmpty(heldTransitionId)
+			&& nodesById.TryGetValue(heldTransitionId, out NodeRuntime heldTransition)
+			&& IsDeliveryTransition(heldTransition))
+		{
+			clamped = ClampDeliveryTransitionPositionToOwnSide(heldTransition, clamped);
+		}
+
 		return new Vector3(clamped.x, clamped.y, desired.z);
 	}
 
@@ -5066,7 +5633,7 @@ public partial class GameManager
 			return false;
 		}
 
-		if (!IsTransitionFullyInPoolZone(poolPosition))
+		if (!IsTransitionFullyInPoolZone(node, poolPosition))
 		{
 			return false;
 		}
@@ -5110,12 +5677,20 @@ public partial class GameManager
 		return Rect.MinMaxRect(-halfWidth, sharedPoolY - halfHeight, halfWidth, sharedPoolY + halfHeight);
 	}
 
+	private bool IsTransitionFullyInPoolZone(NodeRuntime transition, Vector2 transitionPosition)
+	{
+		Rect transitionBounds = GetTransitionPlacementBounds(transition, new Vector3(transitionPosition.x, transitionPosition.y, 0f));
+		return IsTransitionBoundsFullyInPoolZone(transitionBounds);
+	}
+
 	private bool IsTransitionFullyInPoolZone(Vector2 transitionPosition)
 	{
-		// Check if the entire transition (with its collision radius) is inside the pool zone
-		// We need to check all four corners/edges of the transition's bounding box
+		Rect transitionBounds = GetTransitionPlacementBounds(null, new Vector3(transitionPosition.x, transitionPosition.y, 0f));
+		return IsTransitionBoundsFullyInPoolZone(transitionBounds);
+	}
 
-		// Get pool zone boundaries
+	private bool IsTransitionBoundsFullyInPoolZone(Rect transitionBounds)
+	{
 		float halfWidth = GetSharedPoolHalfWidth();
 		float halfHeight = sharedPoolHalfHeight;
 
@@ -5124,14 +5699,10 @@ public partial class GameManager
 		float poolBottom = sharedPoolY - halfHeight;
 		float poolTop = sharedPoolY + halfHeight;
 
-		// Transition bounds (considering it's roughly square with transitionCollisionRadius)
-		float transLeft = transitionPosition.x - transitionCollisionRadius;
-		float transRight = transitionPosition.x + transitionCollisionRadius;
-		float transBottom = transitionPosition.y - transitionCollisionRadius;
-		float transTop = transitionPosition.y + transitionCollisionRadius;
-
-		// Check if all edges are inside the pool
-		return transLeft >= poolLeft && transRight <= poolRight && transBottom >= poolBottom && transTop <= poolTop;
+		return transitionBounds.xMin >= poolLeft
+			&& transitionBounds.xMax <= poolRight
+			&& transitionBounds.yMin >= poolBottom
+			&& transitionBounds.yMax <= poolTop;
 	}
 
 	private void UpdateVisibilityForLocalPlayer()
@@ -5195,52 +5766,58 @@ public partial class GameManager
 
 	private float GetTransitionLabelCharacterSize(string label)
 	{
-		if (string.IsNullOrEmpty(label))
-		{
-			return 0.06f;
-		}
-
-		int longestLineLength = Mathf.Max(1, GetLongestTransitionLabelLineLength(label));
-		int lineCount = Mathf.Max(1, CountTransitionLabelLines(label));
-		float maxSize = lineCount > 1 ? 0.046f : 0.058f;
-		float sizeByWidth = 0.52f / (longestLineLength * 0.78f);
-		float sizeByHeight = 0.48f / (lineCount * 1.35f);
-		return Mathf.Clamp(Mathf.Min(maxSize, sizeByWidth, sizeByHeight), 0.018f, maxSize);
+		return TransitionLabelCharacterSize;
 	}
 
-	private void FitTransitionLabelInsideNode(NodeRuntime node)
+	private float GetTransitionVisualWidthForDisplayName(string displayName)
 	{
-		if (node == null || node.label == null || node.renderer == null)
+		return GetTransitionVisualWidthForFormattedLabel(FormatTransitionLabel(LocalizeVisibleText(displayName)));
+	}
+
+	private float GetTransitionVisualWidthForFormattedLabel(string formattedLabel)
+	{
+		if (string.IsNullOrEmpty(formattedLabel))
+		{
+			return NodeVisualFootprint;
+		}
+
+		int longestLineLength = Mathf.Max(1, GetLongestTransitionLabelLineLength(formattedLabel));
+		float estimatedTextWidth = longestLineLength * TransitionLabelEstimatedCharacterWidth;
+		float minimumWidth = formattedLabel.Contains("\n") ? TransitionMultilineMinimumVisualWidth : NodeVisualFootprint;
+		return Mathf.Max(minimumWidth, estimatedTextWidth + TransitionLabelHorizontalPadding);
+	}
+
+	private void UpdateTransitionVisualDimensions(NodeRuntime node, string formattedLabel)
+	{
+		if (node == null)
 		{
 			return;
 		}
 
-		MeshRenderer labelRenderer = node.label.GetComponent<MeshRenderer>();
-		if (labelRenderer == null)
+		float width = GetTransitionVisualWidthForFormattedLabel(formattedLabel);
+		if (IsIngredientTransitionId(node.id))
 		{
-			return;
+			bool topSide = node.id.StartsWith("T_Top_Zutat_");
+			width = GetWidestIngredientTransitionWidth(topSide);
 		}
 
-		Vector3 transitionSize = node.renderer.bounds.size;
-		float allowedWidth = transitionSize.x * 0.72f;
-		float allowedHeight = transitionSize.y * 0.62f;
-		for (int i = 0; i < 8; i++)
+		Vector2 size = new Vector2(width, NodeVisualFootprint);
+
+		if (node.renderer != null)
 		{
-			Vector3 labelSize = labelRenderer.bounds.size;
-			if (labelSize.x <= 0.0001f || labelSize.y <= 0.0001f)
-			{
-				return;
-			}
+			node.renderer.drawMode = SpriteDrawMode.Sliced;
+			node.renderer.size = size;
+		}
 
-			float widthScale = allowedWidth / labelSize.x;
-			float heightScale = allowedHeight / labelSize.y;
-			float scale = Mathf.Min(widthScale, heightScale);
-			if (scale >= 0.995f)
-			{
-				return;
-			}
+		if (node.collider is BoxCollider2D boxCollider)
+		{
+			boxCollider.size = size;
+			boxCollider.offset = Vector2.zero;
+		}
 
-			node.label.characterSize = Mathf.Max(0.014f, node.label.characterSize * scale * 0.96f);
+		if (node.visual3D != null)
+		{
+			node.visual3D.transform.localScale = new Vector3(width, NodeVisualFootprint, NodeVisualHeight);
 		}
 	}
 
@@ -5260,18 +5837,90 @@ public partial class GameManager
 
 	private string FormatTransitionLabel(string label)
 	{
-		label = NormalizeTransitionLabelWhitespace(InsertTransitionLabelBreakSpaces(label));
-		if (string.IsNullOrEmpty(label) || label.Length <= 7)
+		label = NormalizeTransitionLabelWhitespace(InsertKnownCompoundTransitionBreaks(InsertTransitionLabelBreakSpaces(label)));
+		string[] words = label.Split(' ');
+		if (words.Length < 2)
 		{
 			return label;
 		}
 
-		if (!label.Contains(" ") && label.Length <= 10)
+		return WrapTransitionLabelToTwoLines(words);
+	}
+
+	private string WrapTransitionLabelToTwoLines(string[] words)
+	{
+		int bestSplitIndex = 1;
+		int bestScore = int.MaxValue;
+		for (int i = 1; i < words.Length; i++)
 		{
-			return label;
+			string left = JoinTransitionLabelWords(words, 0, i);
+			string right = JoinTransitionLabelWords(words, i, words.Length - i);
+			int longest = Mathf.Max(left.Length, right.Length);
+			int score = Mathf.Abs(left.Length - right.Length) + longest;
+			if (score < bestScore)
+			{
+				bestScore = score;
+				bestSplitIndex = i;
+			}
 		}
 
-		return WrapTransitionLabelToTwoLines(label);
+		return JoinTransitionLabelWords(words, 0, bestSplitIndex) + "\n" + JoinTransitionLabelWords(words, bestSplitIndex, words.Length - bestSplitIndex);
+	}
+
+	private string JoinTransitionLabelWords(string[] words, int startIndex, int count)
+	{
+		StringBuilder result = new StringBuilder();
+		for (int i = 0; i < count; i++)
+		{
+			if (i > 0)
+			{
+				result.Append(' ');
+			}
+
+			result.Append(words[startIndex + i]);
+		}
+
+		return result.ToString();
+	}
+
+	private string InsertKnownCompoundTransitionBreaks(string label)
+	{
+		if (string.IsNullOrEmpty(label))
+		{
+			return "";
+		}
+
+		return ReplaceKnownCompoundTransitionBreak(label, "Suppengemüse", "Suppen-", "gemüse");
+	}
+
+	private string ReplaceKnownCompoundTransitionBreak(string label, string compound, string firstPart, string secondPart)
+	{
+		int index = 0;
+		while (index < label.Length)
+		{
+			int matchIndex = label.IndexOf(compound, index, StringComparison.OrdinalIgnoreCase);
+			if (matchIndex < 0)
+			{
+				return label;
+			}
+
+			string match = label.Substring(matchIndex, compound.Length);
+			string replacement = BuildKnownCompoundTransitionBreakReplacement(match, firstPart, secondPart);
+			label = label.Substring(0, matchIndex) + replacement + label.Substring(matchIndex + compound.Length);
+			index = matchIndex + replacement.Length;
+		}
+
+		return label;
+	}
+
+	private string BuildKnownCompoundTransitionBreakReplacement(string match, string firstPart, string secondPart)
+	{
+		if (!string.IsNullOrEmpty(match) && char.IsLower(match[0]))
+		{
+			return firstPart.ToLowerInvariant() + " " + secondPart.ToLowerInvariant();
+		}
+
+		return firstPart + " " + secondPart;
 	}
 
 	private string InsertTransitionLabelBreakSpaces(string label)
@@ -5316,49 +5965,6 @@ public partial class GameManager
 		return trimmed;
 	}
 
-	private string WrapTransitionLabelToTwoLines(string label)
-	{
-		string[] words = label.Split(' ');
-		if (words.Length <= 1)
-		{
-			int splitIndex = Mathf.Clamp(Mathf.CeilToInt(label.Length * 0.5f), 1, label.Length - 1);
-			return label.Substring(0, splitIndex) + "\n" + label.Substring(splitIndex);
-		}
-
-		int bestSplitIndex = 1;
-		int bestScore = int.MaxValue;
-		for (int i = 1; i < words.Length; i++)
-		{
-			string left = JoinTransitionLabelWords(words, 0, i);
-			string right = JoinTransitionLabelWords(words, i, words.Length - i);
-			int longest = Mathf.Max(left.Length, right.Length);
-			int score = Mathf.Abs(left.Length - right.Length) + Mathf.Max(0, longest - 7) * 4;
-			if (score < bestScore)
-			{
-				bestScore = score;
-				bestSplitIndex = i;
-			}
-		}
-
-		return JoinTransitionLabelWords(words, 0, bestSplitIndex) + "\n" + JoinTransitionLabelWords(words, bestSplitIndex, words.Length - bestSplitIndex);
-	}
-
-	private string JoinTransitionLabelWords(string[] words, int startIndex, int count)
-	{
-		StringBuilder result = new StringBuilder();
-		for (int i = 0; i < count; i++)
-		{
-			if (i > 0)
-			{
-				result.Append(' ');
-			}
-
-			result.Append(words[startIndex + i]);
-		}
-
-		return result.ToString();
-	}
-
 	private int GetLongestTransitionLabelLineLength(string label)
 	{
 		int longest = 0;
@@ -5376,25 +5982,6 @@ public partial class GameManager
 		}
 
 		return Mathf.Max(longest, current);
-	}
-
-	private int CountTransitionLabelLines(string label)
-	{
-		if (string.IsNullOrEmpty(label))
-		{
-			return 1;
-		}
-
-		int count = 1;
-		for (int i = 0; i < label.Length; i++)
-		{
-			if (label[i] == '\n')
-			{
-				count++;
-			}
-		}
-
-		return count;
 	}
 
 	private void EnsureTypedTokenList(NodeRuntime placeNode)
@@ -5444,6 +6031,11 @@ public partial class GameManager
 		}
 
 		EnsureTypedTokenList(placeNode);
+		if (!CanAddTokensToPlace(placeNode, 1))
+		{
+			return;
+		}
+
 		placeNode.typedTokens.Add(CloneToken(token));
 		placeNode.tokens = placeNode.typedTokens.Count;
 	}
@@ -5745,7 +6337,7 @@ public partial class GameManager
 		EnsureTypedTokenList(placeNode);
 		if (placeNode.typedTokens.Count <= 0)
 		{
-			return "leer";
+			return "";
 		}
 
 		int visibleCount = Mathf.Min(placeNode.typedTokens.Count, 3);
@@ -5757,7 +6349,7 @@ public partial class GameManager
 				label.Append('\n');
 			}
 
-			label.Append(GetTokenDescription(placeNode.typedTokens[i]));
+			label.Append(GetLocalizedTokenDescription(placeNode.typedTokens[i]));
 		}
 
 		int hiddenCount = placeNode.typedTokens.Count - visibleCount;
@@ -6071,7 +6663,7 @@ public partial class GameManager
 
 		arc.weightLabel.gameObject.SetActive(true);
 		arc.weightLabel.text = arc.weight.ToString();
-		arc.weightLabel.characterSize = 0.095f;
+		arc.weightLabel.characterSize = ArcWeightLabelCharacterSize;
 		PositionArcWeightLabel(arc.weightLabel, labelPosition, constrainToBlock, blockBoundsForLabel);
 	}
 
@@ -6184,9 +6776,10 @@ public partial class GameManager
 
 	private void SetLineWithInhibitorCircle(LineRenderer body, LineRenderer arrow, LineRenderer inhibitorCircle, Vector3 start, Vector3 end, Vector3 dir)
 	{
-		const float circleRadius = 0.16f;
 		Vector3 zOffset = new Vector3(0f, 0f, ArcZ);
-		Vector3 lineEnd = end - dir * circleRadius;
+		float transitionClearance = arcWidth * 0.5f;
+		Vector3 circleCenter = end - dir * (InhibitorCircleRadius + transitionClearance);
+		Vector3 lineEnd = circleCenter - dir * InhibitorCircleRadius;
 		if (body != null)
 		{
 			body.SetPosition(0, start + zOffset);
@@ -6208,8 +6801,9 @@ public partial class GameManager
 		for (int i = 0; i < inhibitorCircle.positionCount; i++)
 		{
 			float angle = (Mathf.PI * 2f * i) / inhibitorCircle.positionCount;
-			Vector3 offset = Mathf.Cos(angle) * tangent * circleRadius + Mathf.Sin(angle) * dir * circleRadius;
-			inhibitorCircle.SetPosition(i, end + offset + zOffset);
+			Vector3 offset = Mathf.Cos(angle) * tangent * InhibitorCircleRadius
+				+ Mathf.Sin(angle) * dir * InhibitorCircleRadius;
+			inhibitorCircle.SetPosition(i, circleCenter + offset + zOffset);
 		}
 	}
 
@@ -6217,10 +6811,12 @@ public partial class GameManager
 	{
 		if (node.type == NodeType.Place)
 		{
-			return node.renderer.bounds.extents.x * 0.96f;
+			GetPlacePlacementCircle(node, node.transform.position, out _, out float placeRadius);
+			return placeRadius * 0.96f;
 		}
 
-		Vector3 ext = node.renderer.bounds.extents;
+		Rect bounds = GetTransitionPlacementBounds(node, node.transform.position);
+		Vector2 ext = new Vector2(bounds.width * 0.5f, bounds.height * 0.5f);
 		float dx = Mathf.Abs(direction.x);
 		float dy = Mathf.Abs(direction.y);
 		float xDistance = dx > 0.0001f ? ext.x / dx : float.PositiveInfinity;

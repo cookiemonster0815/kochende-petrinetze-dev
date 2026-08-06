@@ -135,6 +135,8 @@ public partial class GameManager
 		cmd.avatarHeldOffsetX = state.heldOffsetX;
 		cmd.avatarHeldOffsetY = state.heldOffsetY;
 		cmd.avatarSceneMode = state.sceneMode;
+		cmd.avatarConnectStartNodeId = state.connectStartNodeId;
+		cmd.avatarConnectReversed = state.connectReversed;
 	}
 
 	private bool ApplyCommand(CommandData cmd, ulong actorClientId)
@@ -192,6 +194,9 @@ public partial class GameManager
 				return false;
 			case "ReturnToLevelSelection":
 				ReturnToLevelSelectionFromHost();
+				return false;
+			case "NextLevel":
+				StartNextLevelFromHost();
 				return false;
 			case "SelectLevelSelection":
 				if (!showLevelSelection || gameplayInitialized)
@@ -287,7 +292,7 @@ public partial class GameManager
 					return false;
 				}
 
-				if (place.processingDuration > 0f && cmd.amount > 0 && place.tokens > 0)
+				if (cmd.amount > 0 && !CanAddTokensToPlace(place, cmd.amount))
 				{
 					return false;
 				}
@@ -296,7 +301,8 @@ public partial class GameManager
 				int previousTokens = place.tokens;
 				if (cmd.amount > 0)
 				{
-					int tokensToAdd = place.processingDuration > 0f ? Mathf.Min(1, cmd.amount) : cmd.amount;
+					int capacity = GetPlaceTokenCapacity(place);
+					int tokensToAdd = capacity > 0 ? Mathf.Min(cmd.amount, capacity - place.tokens) : cmd.amount;
 					for (int i = 0; i < tokensToAdd; i++)
 					{
 						AddTokenToPlace(place, CreateUntypedToken());
@@ -348,7 +354,7 @@ public partial class GameManager
 					return true;
 				}
 
-				desired = ClampPositionToActorArea(desired, actorClientId, 0f);
+				desired = ClampMovableNodePositionToActorArea(node, desired, actorClientId);
 				Vector3 desiredPosition = new Vector3(desired.x, desired.y, 0f);
 				if (IsNodeMovePositionBlocked(node, desiredPosition))
 				{
@@ -574,8 +580,12 @@ public partial class GameManager
 			return false;
 		}
 
+		if (IsSharedPoolTrashTransitionId(transition.id))
+		{
+			return true;
+		}
+
 		bool hasInputPlace = false;
-		bool hasResetInputPlaceWithTokens = false;
 		bool hasOutputPlace = false;
 		foreach (KeyValuePair<string, ArcRuntime> pair in arcsById)
 		{
@@ -605,7 +615,7 @@ public partial class GameManager
 			{
 				EnsureTypedTokenList(outputPlace);
 				hasOutputPlace = true;
-				if (outputPlace.processingDuration > 0f && outputPlace.tokens + Mathf.Max(1, arc.weight) > 1)
+				if (!CanAddTokensToPlace(outputPlace, Mathf.Max(1, arc.weight)))
 				{
 					return false;
 				}
@@ -625,11 +635,6 @@ public partial class GameManager
 			hasInputPlace = true;
 			if (arc.kind == ArcKind.Reset)
 			{
-				if (place.tokens > 0)
-				{
-					hasResetInputPlaceWithTokens = true;
-				}
-
 				if (place.tokens > 0 && IsTimedPlaceProcessing(place))
 				{
 					return false;
@@ -647,11 +652,6 @@ public partial class GameManager
 			{
 				return false;
 			}
-		}
-
-		if (IsSharedPoolTrashTransitionId(transition.id))
-		{
-			return hasResetInputPlaceWithTokens;
 		}
 
 		if (!IsIngredientTransition(transition) && !hasInputPlace)
@@ -745,7 +745,7 @@ public partial class GameManager
 			return false;
 		}
 
-		if (IsDeliveryTransition(node) || IsCompositeBlockNode(node))
+		if (IsCompositeBlockNode(node))
 		{
 			return false;
 		}

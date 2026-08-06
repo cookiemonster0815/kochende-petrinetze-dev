@@ -79,28 +79,6 @@ public partial class GameManager : NetworkBehaviour
 	private void TryAutoAssignActivityPrefabsInEditor()
 	{
 #if UNITY_EDITOR
-		string currentCuttingToolPath = cuttingTransitionPrefab != null
-			? UnityEditor.AssetDatabase.GetAssetPath(cuttingTransitionPrefab)
-			: "";
-		if (cuttingTransitionPrefab == null || currentCuttingToolPath.Contains("utensil-knife"))
-		{
-			cuttingTransitionPrefab = UnityEditor.AssetDatabase.LoadAssetAtPath<GameObject>("Assets/Sprites/FoodKenney/Models/FBX format/cooking-knife-chopping.fbx");
-			if (cuttingTransitionPrefab == null)
-			{
-				cuttingTransitionPrefab = UnityEditor.AssetDatabase.LoadAssetAtPath<GameObject>("Assets/Sprites/FoodKenney/Models/FBX format/utensil-knife.fbx");
-			}
-		}
-
-		if (cuttingToolColorMap == null)
-		{
-			cuttingToolColorMap = UnityEditor.AssetDatabase.LoadAssetAtPath<Texture2D>("Assets/Sprites/FoodKenney/Models/FBX format/Textures/colormap.png");
-		}
-
-		if (cuttingToolAnimatorController == null)
-		{
-			cuttingToolAnimatorController = UnityEditor.AssetDatabase.LoadAssetAtPath<RuntimeAnimatorController>("Assets/Animations/cooking-knife-chopping.controller");
-		}
-
 		string currentDronePath = avatarDronePrefab != null
 			? UnityEditor.AssetDatabase.GetAssetPath(avatarDronePrefab)
 			: "";
@@ -179,26 +157,6 @@ public partial class GameManager : NetworkBehaviour
 
 	private void UpgradeActivityPrefabDefaults()
 	{
-		Vector3 oldSmallScale = new Vector3(0.75f, 0.75f, 0.75f);
-		Vector3 olderSmallScale = new Vector3(0.55f, 0.55f, 0.55f);
-		if (IsApproximatelyAnyVector(cuttingTransitionPrefabLocalScale, oldSmallScale, olderSmallScale))
-		{
-			cuttingTransitionPrefabLocalScale = new Vector3(1.5f, 1.5f, 1.5f);
-		}
-
-		Vector3 oldEmbeddedPosition = new Vector3(0f, 0f, -0.2f);
-		Vector3 oldLiftedPosition = new Vector3(0f, 0.32f, -0.48f);
-		if (IsApproximatelyAnyVector(cuttingTransitionPrefabLocalPosition, oldEmbeddedPosition, oldLiftedPosition))
-		{
-			cuttingTransitionPrefabLocalPosition = new Vector3(0f, 0.5f, -0.62f);
-		}
-
-		Vector3 oldEdgeOnEuler = new Vector3(18f, -35f, 25f);
-		if (IsApproximatelyVector(cuttingTransitionPrefabLocalEuler, oldEdgeOnEuler))
-		{
-			cuttingTransitionPrefabLocalEuler = new Vector3(90f, 0f, -35f);
-		}
-
 		Vector3 oldSmallDroneScale = new Vector3(0.42f, 0.42f, 0.42f);
 		Vector3 oldMediumDroneScale = new Vector3(1.35f, 1.35f, 1.35f);
 		Vector3 oldLargeDroneScale = new Vector3(2.1f, 2.1f, 2.1f);
@@ -354,6 +312,7 @@ public partial class GameManager : NetworkBehaviour
 		}
 
 		HandleGameplayMenuHotkey();
+		HandleLevelOrderToggleHotkey();
 		if (IsGameplayMenuOpen())
 		{
 			UpdateAvatarVisuals();
@@ -397,6 +356,7 @@ public partial class GameManager : NetworkBehaviour
 		if (showLevelSelection && !gameplayInitialized && IsGameplayConnectionReady())
 		{
 			UpdateLevelSelectionCameraFollow();
+			UpdateLevelSelectionTutorial();
 			return;
 		}
 
@@ -407,6 +367,7 @@ public partial class GameManager : NetworkBehaviour
 
 		UpdateCameraFollowAvatar();
 		UpdateLevelOrderDisplay();
+		UpdateLevelTutorial();
 	}
 
 	public override void OnDestroy()
@@ -420,6 +381,11 @@ public partial class GameManager : NetworkBehaviour
 		if (forceLobbyStartScreen)
 		{
 			return false;
+		}
+
+		if (singlePlayerMode)
+		{
+			return true;
 		}
 
 		if (!enableNetworkAuthoritativeSync)
@@ -476,7 +442,9 @@ public partial class GameManager : NetworkBehaviour
 
 	public void ResetToLobbyStartScreen()
 	{
+		EndLevelSelectionTutorialMovementVisit();
 		forceLobbyStartScreen = true;
+		singlePlayerMode = false;
 		UnregisterNetworkHandlers();
 		suppressNetworkSend = false;
 		gameplayInitialized = false;
@@ -504,6 +472,7 @@ public partial class GameManager : NetworkBehaviour
 		pointerDownCompositeBlockId = null;
 		pointerDragActive = false;
 		isMiddlePanning = false;
+		manualCameraPanActive = false;
 		ResetCameraFollowVelocity();
 		StopLevelOrderTimeline();
 		ClearGraph();
@@ -522,6 +491,14 @@ public partial class GameManager : NetworkBehaviour
 
 	public void EnterNetworkGameSession()
 	{
+		singlePlayerMode = false;
+		forceLobbyStartScreen = false;
+	}
+
+	public void EnterSinglePlayerGameSession()
+	{
+		UnregisterNetworkHandlers();
+		singlePlayerMode = true;
 		forceLobbyStartScreen = false;
 	}
 }

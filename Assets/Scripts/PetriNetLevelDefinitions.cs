@@ -28,27 +28,14 @@ public class PetriNetLevelBlockDefinition
 	{
 	}
 
-	public PetriNetLevelBlockDefinition(string firstTransitionName, string secondTransitionName, float processingSeconds, string resultState)
-		: this(PetriNetLevelBlockOwner.geteilt, firstTransitionName, secondTransitionName, processingSeconds, resultState, 1)
-	{
-	}
-
-	public PetriNetLevelBlockDefinition(string firstTransitionName, string secondTransitionName, float processingSeconds, string resultState, int outputTokenCount)
-		: this(PetriNetLevelBlockOwner.geteilt, firstTransitionName, secondTransitionName, processingSeconds, resultState, outputTokenCount, false)
-	{
-	}
-
-	public PetriNetLevelBlockDefinition(PetriNetLevelBlockOwner owner, string firstTransitionName, string secondTransitionName, float processingSeconds, string resultState)
-		: this(owner, firstTransitionName, secondTransitionName, processingSeconds, resultState, 1)
-	{
-	}
-
-	public PetriNetLevelBlockDefinition(PetriNetLevelBlockOwner owner, string firstTransitionName, string secondTransitionName, float processingSeconds, string resultState, int outputTokenCount)
-		: this(owner, firstTransitionName, secondTransitionName, processingSeconds, resultState, outputTokenCount, false)
-	{
-	}
-
-	public PetriNetLevelBlockDefinition(PetriNetLevelBlockOwner owner, string firstTransitionName, string secondTransitionName, float processingSeconds, string resultState, int outputTokenCount, bool singleTransition)
+	public PetriNetLevelBlockDefinition(
+		PetriNetLevelBlockOwner owner,
+		string firstTransitionName,
+		string secondTransitionName,
+		float processingSeconds,
+		string resultState,
+		int outputTokenCount = 1,
+		bool singleTransition = false)
 	{
 		this.owner = owner;
 		this.firstTransitionName = firstTransitionName;
@@ -86,30 +73,25 @@ public class PetriNetLevelOrderDefinition
 {
 	public string dishText = "Gericht";
 	public string requiredTokenText = "";
+	public string recipeText = "";
 	public int amount = 1;
 	public float appearsAtSeconds;
-	public float expiresAtSeconds = 60f;
 
 	public PetriNetLevelOrderDefinition()
 	{
 	}
 
-	public PetriNetLevelOrderDefinition(string dishText, float appearsAtSeconds, float expiresAtSeconds)
-		: this(dishText, dishText, appearsAtSeconds, expiresAtSeconds, 1)
-	{
-	}
-
-	public PetriNetLevelOrderDefinition(string dishText, string requiredTokenText, float appearsAtSeconds, float expiresAtSeconds)
-		: this(dishText, requiredTokenText, appearsAtSeconds, expiresAtSeconds, 1)
-	{
-	}
-
-	public PetriNetLevelOrderDefinition(string dishText, string requiredTokenText, float appearsAtSeconds, float expiresAtSeconds, int amount)
+	public PetriNetLevelOrderDefinition(
+		string dishText,
+		string requiredTokenText,
+		string recipeText,
+		float appearsAtSeconds,
+		int amount = 1)
 	{
 		this.dishText = dishText;
 		this.requiredTokenText = requiredTokenText;
+		this.recipeText = recipeText;
 		this.appearsAtSeconds = appearsAtSeconds;
-		this.expiresAtSeconds = expiresAtSeconds;
 		this.amount = amount;
 	}
 }
@@ -176,125 +158,265 @@ public class PetriNetLevelDefinition
 
 public static class PetriNetLevelCatalog
 {
+	private static PetriNetLevelBlockDefinition Cooking(PetriNetLevelBlockOwner owner = PetriNetLevelBlockOwner.geteilt)
+	{
+		return new PetriNetLevelBlockDefinition(owner, "Kochen Start", "Kochen Ende", 5f, "gekocht");
+	}
+
+	private static PetriNetLevelBlockDefinition Cutting(PetriNetLevelBlockOwner owner = PetriNetLevelBlockOwner.geteilt)
+	{
+		return new PetriNetLevelBlockDefinition(owner, "Schneiden Start", "Schneiden Ende", 8f, "geschnitten");
+	}
+
+	private static PetriNetLevelBlockDefinition Decorating(
+		float processingSeconds,
+		PetriNetLevelBlockOwner owner = PetriNetLevelBlockOwner.geteilt)
+	{
+		return new PetriNetLevelBlockDefinition(owner, "Dekorieren Start", "Dekorieren Ende", processingSeconds, "dekoriert");
+	}
+
+	private static PetriNetLevelBlockDefinition Distributing()
+	{
+		return new PetriNetLevelBlockDefinition(
+			PetriNetLevelBlockOwner.geteilt,
+			"Verteilen",
+			"",
+			0f,
+			"aufgeteilt",
+			5,
+			true);
+	}
+
+	private static PetriNetLevelInhibitorArcDefinition InhibitorArc(string sourceBlock, string targetTransition)
+	{
+		return new PetriNetLevelInhibitorArcDefinition(
+			sourceBlock,
+			PetriNetLevelBlockPlace.zwischenstelle,
+			targetTransition);
+	}
+
+	private static List<string> Ingredients(params string[] names)
+	{
+		return new List<string>(names);
+	}
+
+	private static List<string> NoExtras()
+	{
+		return new List<string>();
+	}
+
+	private static List<string> StandardTopIngredients()
+	{
+		return Ingredients("Kartoffeln", "Tomaten", "Schnittlauch");
+	}
+
+	private static List<string> StandardBottomIngredients()
+	{
+		return Ingredients("Suppengemüse", "Zwiebeln", "Petersilie");
+	}
+
+	private static PetriNetLevelOrderDefinition PotatoSoup(float appearsAtSeconds)
+	{
+		return new PetriNetLevelOrderDefinition(
+			"Kartoffelsuppe",
+			"(Kartoffeln geschnitten, Suppengemüse) gekocht",
+			"Schneide Kartoffeln und koche sie mit Suppengemüse",
+			appearsAtSeconds);
+	}
+
+	private static PetriNetLevelOrderDefinition TomatoSoup(float appearsAtSeconds)
+	{
+		return DecoratedSoup(
+			"Tomatensuppe",
+			"Tomaten",
+			"Schnittlauch",
+			appearsAtSeconds);
+	}
+
+	private static PetriNetLevelOrderDefinition OnionSoup(float appearsAtSeconds)
+	{
+		return DecoratedSoup(
+			"Zwiebelsuppe",
+			"Zwiebeln",
+			"Petersilie",
+			appearsAtSeconds);
+	}
+
+	private static PetriNetLevelOrderDefinition DecoratedSoup(
+		string dishName,
+		string ingredient,
+		string garnish,
+		float appearsAtSeconds)
+	{
+		return new PetriNetLevelOrderDefinition(
+			dishName,
+			"((" + ingredient + " geschnitten, Suppengemüse) gekocht, " + garnish + ") dekoriert",
+			"Schneide " + ingredient + ", koche sie mit Suppengemüse und dekoriere sie mit " + garnish,
+			appearsAtSeconds);
+	}
+
+	private static PetriNetLevelOrderDefinition TomatoMiniSoup(float appearsAtSeconds, string garnish = null)
+	{
+		return MiniSoup("Tomatensüppchen", "Tomaten", appearsAtSeconds, garnish);
+	}
+
+	private static PetriNetLevelOrderDefinition OnionMiniSoup(float appearsAtSeconds, string garnish = null)
+	{
+		return MiniSoup("Zwiebelsüppchen", "Zwiebeln", appearsAtSeconds, garnish);
+	}
+
+	private static PetriNetLevelOrderDefinition PotatoMiniSoup(float appearsAtSeconds, string garnish = null)
+	{
+		return MiniSoup("Kartoffelsüppchen", "Kartoffeln", appearsAtSeconds, garnish);
+	}
+
+	private static PetriNetLevelOrderDefinition MiniSoup(
+		string dishName,
+		string ingredient,
+		float appearsAtSeconds,
+		string garnish)
+	{
+		string baseToken = "((" + ingredient + " geschnitten, Suppengemüse) gekocht) aufgeteilt";
+		string requiredToken = string.IsNullOrEmpty(garnish)
+			? baseToken
+			: "(" + baseToken + ", " + garnish + ") dekoriert";
+		string displayName = string.IsNullOrEmpty(garnish)
+			? dishName
+			: dishName + " mit " + garnish;
+		string recipe = string.IsNullOrEmpty(garnish)
+			? "Schneide " + ingredient + ", koche sie mit Suppengemüse und teile sie auf."
+			: "Schneide " + ingredient + ", koche sie mit Suppengemüse, teile sie auf und dekoriere sie mit " + garnish + ".";
+		return new PetriNetLevelOrderDefinition(displayName, requiredToken, recipe, appearsAtSeconds);
+	}
+
 	public static readonly List<PetriNetLevelDefinition> Levels = new List<PetriNetLevelDefinition>
 	{
 		new PetriNetLevelDefinition(
 			"l1.1",
-			"Level 1: Kartoffelsuppe",
+			"Level 1: Tutorial",
 			new List<PetriNetLevelBlockDefinition>
 			{
-				new PetriNetLevelBlockDefinition(PetriNetLevelBlockOwner.geteilt, "Kochen Start", "Kochen Ende", 5f, "gekocht"),
-				new PetriNetLevelBlockDefinition(PetriNetLevelBlockOwner.geteilt, "Schneiden Start", "Schneiden Ende", 8f, "geschnitten"),
+				Cooking(),
+				Cutting(),
 			},
-			new List<string> { "Kartoffeln" },
-			new List<string> { "Suppengemüse" },
+			Ingredients("Kartoffeln"),
+			Ingredients("Suppengemüse"),
 			new List<PetriNetLevelOrderDefinition>
 			{
-				new PetriNetLevelOrderDefinition("Kartoffelsuppe", "(Kartoffeln geschnitten, Suppengemüse) gekocht", 0f, 60f),
-				new PetriNetLevelOrderDefinition("Kartoffelsuppe", "(Kartoffeln geschnitten, Suppengemüse) gekocht", 30f, 90f),
+				PotatoSoup(0f),
+				PotatoSoup(0f),
+				PotatoSoup(0f),
 			},
-			new List<string>()),
+			NoExtras()),
 
 		new PetriNetLevelDefinition(
 			"l1.2",
 			"Level 2: Suppenschlacht",
 			new List<PetriNetLevelBlockDefinition>
 			{
-				new PetriNetLevelBlockDefinition(PetriNetLevelBlockOwner.geteilt, "Kochen Start", "Kochen Ende", 5f, "gekocht"),
-				new PetriNetLevelBlockDefinition(PetriNetLevelBlockOwner.geteilt, "Schneiden Start", "Schneiden Ende", 8f, "geschnitten"),
-				new PetriNetLevelBlockDefinition(PetriNetLevelBlockOwner.geteilt, "Dekorieren Start", "Dekorieren Ende", 12f, "dekoriert"),
+				Cooking(),
+				Cutting(),
+				Decorating(10f),
 			},
-			new List<string> { "Kartoffeln", "Tomaten", "Schnittlauch" },
-			new List<string> { "Suppengemüse", "Zwiebeln", "Petersilie" },
+			StandardTopIngredients(),
+			StandardBottomIngredients(),
 			new List<PetriNetLevelOrderDefinition>
 			{
-				new PetriNetLevelOrderDefinition("Tomatensuppe", "((Tomaten geschnitten, Suppengemüse) gekocht, Schnittlauch) dekoriert", 0f, 60f),
-				new PetriNetLevelOrderDefinition("Zwiebelsuppe", "((Zwiebeln geschnitten, Suppengemüse) gekocht, Petersilie) dekoriert", 0f, 90f),
-				new PetriNetLevelOrderDefinition("Kartoffelsuppe", "(Kartoffeln geschnitten, Suppengemüse) gekocht", 30f, 90f),
-				new PetriNetLevelOrderDefinition("Tomatensuppe", "((Tomaten geschnitten, Suppengemüse) gekocht, Schnittlauch) dekoriert", 60f, 120f),
-				new PetriNetLevelOrderDefinition("Zwiebelsuppe", "((Zwiebeln geschnitten, Suppengemüse) gekocht, Petersilie) dekoriert", 90f, 150f),
-				new PetriNetLevelOrderDefinition("Kartoffelsuppe", "(Kartoffeln geschnitten, Suppengemüse) gekocht", 90f, 150f),
+				TomatoSoup(0f),
+				OnionSoup(15f),
+				PotatoSoup(45f),
+				TomatoSoup(60f),
+				OnionSoup(90f),
+				PotatoSoup(105f),
 			},
-			new List<string>()),
+			NoExtras()),
 
 		new PetriNetLevelDefinition(
 			"l1.3",
 			"Level 3: Falschherum",
 			new List<PetriNetLevelBlockDefinition>
 			{
-				new PetriNetLevelBlockDefinition(PetriNetLevelBlockOwner.spieler1, "Kochen Start", "Kochen Ende", 5f, "gekocht"),
-				new PetriNetLevelBlockDefinition(PetriNetLevelBlockOwner.spieler2, "Schneiden Start", "Schneiden Ende", 8f, "geschnitten"),
-				new PetriNetLevelBlockDefinition(PetriNetLevelBlockOwner.geteilt, "Dekorieren Start", "Dekorieren Ende", 12f, "dekoriert"),
+				Cooking(PetriNetLevelBlockOwner.spieler1),
+				Cutting(PetriNetLevelBlockOwner.spieler2),
+				Decorating(10f),
 			},
-			new List<string> { "Kartoffeln", "Tomaten", "Schnittlauch" },
-			new List<string> { "Suppengemüse", "Zwiebeln", "Petersilie" },
+			StandardTopIngredients(),
+			StandardBottomIngredients(),
 			new List<PetriNetLevelOrderDefinition>
 			{
-				new PetriNetLevelOrderDefinition("Tomatensuppe", "((Tomaten geschnitten, Suppengemüse) gekocht, Schnittlauch) dekoriert", 0f, 60f),
-				new PetriNetLevelOrderDefinition("Zwiebelsuppe", "((Zwiebeln geschnitten, Suppengemüse) gekocht, Petersilie) dekoriert", 0f, 90f),
-				new PetriNetLevelOrderDefinition("Kartoffelsuppe", "(Kartoffeln geschnitten, Suppengemüse) gekocht", 30f, 90f),
-				new PetriNetLevelOrderDefinition("Tomatensuppe", "((Tomaten geschnitten, Suppengemüse) gekocht, Schnittlauch) dekoriert", 60f, 120f),
-				new PetriNetLevelOrderDefinition("Zwiebelsuppe", "((Zwiebeln geschnitten, Suppengemüse) gekocht, Petersilie) dekoriert", 90f, 150f),
-				new PetriNetLevelOrderDefinition("Kartoffelsuppe", "(Kartoffeln geschnitten, Suppengemüse) gekocht", 90f, 150f),
+				TomatoSoup(0f),
+				TomatoSoup(15f),
+				OnionSoup(30f),
+				PotatoSoup(45f),
+				OnionSoup(75f),
+				TomatoSoup(105f),
+				OnionSoup(120f),
+				PotatoSoup(135f),
 			},
-			new List<string>()),
+			NoExtras()),
 
 		new PetriNetLevelDefinition(
 			id: "l1.4",
 			displayName: "Level 4: Inhibitor-Küche",
 			blocks: new List<PetriNetLevelBlockDefinition>
 			{
-				new PetriNetLevelBlockDefinition(PetriNetLevelBlockOwner.spieler1, "Kochen Start", "Kochen Ende", 5f, "gekocht"),
-				new PetriNetLevelBlockDefinition(PetriNetLevelBlockOwner.spieler2, "Schneiden Start", "Schneiden Ende", 8f, "geschnitten"),
-				new PetriNetLevelBlockDefinition(PetriNetLevelBlockOwner.geteilt, "Dekorieren Start", "Dekorieren Ende", 12f, "dekoriert"),
+				Cooking(PetriNetLevelBlockOwner.spieler1),
+				Cutting(PetriNetLevelBlockOwner.spieler2),
+				Decorating(10f),
 			},
 			inhibitorArcs: new List<PetriNetLevelInhibitorArcDefinition>
 			{
 				// Schneiden-Zwischenstelle --o Kochen Start:
 				// Kochen Start ist gesperrt, solange in Schneiden etwas liegt.
-				new PetriNetLevelInhibitorArcDefinition(
-					sourceBlockFirstTransitionName: "Schneiden Start",
-					sourcePlace: PetriNetLevelBlockPlace.zwischenstelle,
-					targetTransitionName: "Kochen Start"),
+				InhibitorArc("Schneiden Start", "Kochen Start"),
 
 				// Kochen-Zwischenstelle --o Schneiden Start:
 				// Schneiden Start ist gesperrt, solange in Kochen etwas liegt.
-				new PetriNetLevelInhibitorArcDefinition(
-					sourceBlockFirstTransitionName: "Kochen Start",
-					sourcePlace: PetriNetLevelBlockPlace.zwischenstelle,
-					targetTransitionName: "Schneiden Start"),
+				InhibitorArc("Kochen Start", "Schneiden Start"),
 			},
-			topIngredients: new List<string> { "Kartoffeln", "Tomaten", "Schnittlauch" },
-			bottomIngredients: new List<string> { "Suppengemüse", "Zwiebeln", "Petersilie" },
+			topIngredients: StandardTopIngredients(),
+			bottomIngredients: StandardBottomIngredients(),
 			orders: new List<PetriNetLevelOrderDefinition>
 			{
-				new PetriNetLevelOrderDefinition("Tomatensuppe", "((Tomaten geschnitten, Suppengemüse) gekocht, Schnittlauch) dekoriert", 0f, 60f),
-				new PetriNetLevelOrderDefinition("Zwiebelsuppe", "((Zwiebeln geschnitten, Suppengemüse) gekocht, Petersilie) dekoriert", 0f, 90f),
-				new PetriNetLevelOrderDefinition("Kartoffelsuppe", "(Kartoffeln geschnitten, Suppengemüse) gekocht", 30f, 90f),
-				new PetriNetLevelOrderDefinition("Tomatensuppe", "((Tomaten geschnitten, Suppengemüse) gekocht, Schnittlauch) dekoriert", 60f, 120f),
-				new PetriNetLevelOrderDefinition("Zwiebelsuppe", "((Zwiebeln geschnitten, Suppengemüse) gekocht, Petersilie) dekoriert", 90f, 150f),
-				new PetriNetLevelOrderDefinition("Kartoffelsuppe", "(Kartoffeln geschnitten, Suppengemüse) gekocht", 90f, 150f),
+				OnionSoup(0f),
+				PotatoSoup(15f),
+				OnionSoup(45f),
+				TomatoSoup(60f),
+				OnionSoup(90f),
+				TomatoSoup(105f),
+				PotatoSoup(120f),
 			},
-			extras: new List<string>()),
+			extras: NoExtras()),
 
 		new PetriNetLevelDefinition(
 			id: "l1.5",
 			displayName: "Level 5: Süppchen",
 			blocks: new List<PetriNetLevelBlockDefinition>
 			{
-				new PetriNetLevelBlockDefinition(PetriNetLevelBlockOwner.geteilt, "Kochen Start", "Kochen Ende", 5f, "gekocht"),
-				new PetriNetLevelBlockDefinition(PetriNetLevelBlockOwner.geteilt, "Schneiden Start", "Schneiden Ende", 8f, "geschnitten"),
-				new PetriNetLevelBlockDefinition(PetriNetLevelBlockOwner.geteilt, "Verteilen", "", 0f, "aufgeteilt", 5, true),
-				new PetriNetLevelBlockDefinition(PetriNetLevelBlockOwner.geteilt, "Dekorieren Start", "Dekorieren Ende", 6f, "dekoriert"),
+				Cooking(),
+				Cutting(),
+				Distributing(),
+				Decorating(4f),
 			},
-			topIngredients: new List<string> { "Kartoffeln", "Tomaten", "Schnittlauch" },
-			bottomIngredients: new List<string> { "Suppengemüse", "Petersilie" },
+			topIngredients: StandardTopIngredients(),
+			bottomIngredients: StandardBottomIngredients(),
 			orders: new List<PetriNetLevelOrderDefinition>
 			{
-				new PetriNetLevelOrderDefinition("Tomatensüppchen mit Schnittlauch", "(((Tomaten geschnitten, Suppengemüse) gekocht) aufgeteilt, Schnittlauch) dekoriert", 0f, 120f, 3),
-				new PetriNetLevelOrderDefinition("Kartoffelsüppchen mit Petersilie", "(((Kartoffeln geschnitten, Suppengemüse) gekocht) aufgeteilt, Petersilie) dekoriert", 20f, 150f, 2),
-				new PetriNetLevelOrderDefinition("Tomatensüppchen", "((Tomaten geschnitten, Suppengemüse) gekocht) aufgeteilt", 40f, 180f, 3),
+				TomatoMiniSoup(0f, "Schnittlauch"),
+				OnionMiniSoup(20f, "Schnittlauch"),
+				PotatoMiniSoup(45f, "Petersilie"),
+				TomatoMiniSoup(55f, "Schnittlauch"),
+				TomatoMiniSoup(70f, "Petersilie"),
+				PotatoMiniSoup(90f, "Petersilie"),
+				TomatoMiniSoup(110f),
+				OnionMiniSoup(130f),
+				OnionMiniSoup(150f, "Petersilie"),
+				OnionMiniSoup(175f, "Petersilie"),
+				PotatoMiniSoup(200f, "Schnittlauch"),
+				PotatoMiniSoup(220f, "Petersilie"),
+				PotatoMiniSoup(250f, "Schnittlauch"),
+				PotatoMiniSoup(270f, "Petersilie"),
 			},
-			extras: new List<string>()),
+			extras: NoExtras()),
 	};
 }

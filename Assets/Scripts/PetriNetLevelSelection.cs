@@ -7,12 +7,14 @@ using UnityEngine.InputSystem;
 public partial class GameManager
 {
 	private const ulong NoGameplayMenuOwnerClientId = ulong.MaxValue;
+	private const string SinglePlayerHiddenLevelId = "l1.3";
 
 	private int selectedLevelIndex;
 	private bool levelSelectionConfirmed;
 	private bool gameplayMenuOpen;
 	private ulong gameplayMenuOwnerClientId = NoGameplayMenuOwnerClientId;
 	private bool levelEnded;
+	private float levelResultAnimationStartedAt = -1f;
 	private bool levelSelectionAvatarStateSent;
 	private Vector2 levelResultScrollPosition;
 	private Vector2 levelPauseScrollPosition;
@@ -20,25 +22,39 @@ public partial class GameManager
 	private Transform levelSelectionPlatform;
 	private LineRenderer levelSelectionBoundaryLine;
 	private Collider2D levelConfirmButtonCollider;
+	private Collider2D levelLanguageButtonCollider;
+	private TextMesh levelSelectionTitleText;
 	private TextMesh levelInfoText;
 	private readonly Dictionary<Collider2D, int> levelButtonByCollider = new Dictionary<Collider2D, int>();
-	private Rect levelSelectionMovementBounds = Rect.MinMaxRect(-4.45f, -3.25f, 4.45f, 3.25f);
+	private Rect levelSelectionMovementBounds = Rect.MinMaxRect(-4.5f, -3.5f, 4.5f, 3.5f);
 	private const int LevelSelectionGridColumns = 4;
 	private const float LevelSelectionButtonSize = 0.82f;
 	private const float LevelSelectionButtonGap = 0.24f;
 	private const float LevelSelectionGridStartX = -3.55f;
-	private const float LevelSelectionGridStartY = 2.32f;
-	private const float LevelSelectionPlatformWidth = 9.6f;
-	private const float LevelSelectionPlatformHeight = 7.25f;
+	private const float LevelSelectionGridStartY = 1.45f;
+	private const float LevelSelectionPlatformWidth = 8.6f;
+	private const float LevelSelectionPlatformHeight = 6.6f;
 	private const float LevelSelectionPlatformDepth = 0.04f;
-	private const float LevelSelectionContentPadding = 1.35f;
+	private const float LevelSelectionContentPadding = 0.42f;
 	private const float LevelSelectionAvatarBoundaryPadding = 0.45f;
-	private const float LevelSelectionCameraViewPadding = 1.35f;
-	private const float LevelSelectionMinimumHalfWidth = 4.8f;
-	private const float LevelSelectionMinimumHalfHeight = 3.6f;
+	private const float LevelSelectionButtonHitPadding = 0.06f;
+	private const float LevelSelectionCameraViewPadding = 0.35f;
+	private const float LevelSelectionMinimumCameraSize = 4.8f;
 	private const float LevelSelectionNumberTextSize = 0.14f;
 	private const float LevelSelectionConfirmTextSize = 0.055f;
 	private const float LevelSelectionInfoTextSize = 0.052f;
+	private const float LevelSelectionInfoMinimumTextSize = 0.038f;
+	private const float LevelSelectionInfoTextWidthPadding = 0.35f;
+	private const float LevelSelectionInfoTextHeightPadding = 0.45f;
+	private const float LevelSelectionInfoTextBoundsPaddingX = 0.7f;
+	private const float LevelSelectionInfoTextBoundsPaddingY = 0.42f;
+	private const float LevelSelectionTitleY = 2.62f;
+	private const float LevelSelectionTitleTextSize = 0.13f;
+	private const float LevelSelectionTitleFrameGap = 0.7f;
+	private const float LevelSelectionInfoX = 0.15f;
+	private const float LevelSelectionInfoY = 1.55f;
+	private const float LevelSelectionEstimatedCharacterWidth = 1.08f;
+	private const float LevelSelectionEstimatedLineHeight = 1.9f;
 	private const string LevelSelectionButtonVisualName = "ButtonBlock3D";
 
 	private void OnGUI()
@@ -48,29 +64,10 @@ public partial class GameManager
 			return;
 		}
 
-		if (!gameplayInitialized && IsGameplayConnectionReady())
-		{
-			DrawLevelSelectionHeaderOverlay();
-		}
-
 		if (IsGameplayMenuOpen())
 		{
 			DrawGameplayMenu();
 		}
-	}
-
-	private void DrawLevelSelectionHeaderOverlay()
-	{
-		float uiScale = Mathf.Clamp(Screen.height / 900f, 0.9f, 1.55f);
-		GUIStyle titleStyle = new GUIStyle(GUI.skin.label)
-		{
-			alignment = TextAnchor.UpperCenter,
-			fontSize = Mathf.RoundToInt(34f * uiScale),
-			fontStyle = FontStyle.Bold,
-			wordWrap = false
-		};
-		titleStyle.normal.textColor = Color.black;
-		GUI.Label(new Rect(0f, 12f * uiScale, Screen.width, 52f * uiScale), "Levelübersicht", titleStyle);
 	}
 
 	private void EnsureLevelSelectionScreen()
@@ -86,9 +83,14 @@ public partial class GameManager
 			ConfigureLevelSelectionCamera();
 		}
 
-		EnsureLevelSelectionAvatarStartPosition();
 		EnsureLevelSelectionVisuals();
 		UpdateLevelSelectionVisuals();
+		bool refreshVisualsAfterStartPosition = !avatarStartPositionApplied;
+		EnsureLevelSelectionAvatarStartPosition();
+		if (refreshVisualsAfterStartPosition)
+		{
+			UpdateLevelSelectionVisuals();
+		}
 		UpdateAvatarVisuals();
 		UpdateLevelSelectionHoverVisual();
 	}
@@ -114,12 +116,13 @@ public partial class GameManager
 	{
 		if (avatarStartPositionApplied)
 		{
+			avatarPosition = ClampLevelSelectionAvatarPosition(avatarPosition);
 			EnsureLevelSelectionRemoteAvatarStartPositions(false);
 			return;
 		}
 
 		ResetLocalAvatarToLevelSelectionStartPosition();
-		EnsureLevelSelectionRemoteAvatarStartPositions(false);
+		EnsureLevelSelectionRemoteAvatarStartPositions(true);
 	}
 
 	private void ResetLocalAvatarToLevelSelectionStartPosition()
@@ -152,9 +155,16 @@ public partial class GameManager
 
 	private Vector3 GetDefaultLevelSelectionAvatarStartPosition(ulong actorClientId)
 	{
-		return IsActorTopSide(actorClientId)
-			? new Vector3(-3.8f, 2.85f, 0f)
-			: new Vector3(-3.8f, -2.85f, 0f);
+		Rect movementBounds = levelSelectionMovementBounds.width > 0.001f && levelSelectionMovementBounds.height > 0.001f
+			? levelSelectionMovementBounds
+			: Rect.MinMaxRect(-4.5f, -3.5f, 4.5f, 3.5f);
+		float x = movementBounds.xMin + Mathf.Max(1.05f, avatarCollisionRadius + 0.75f);
+		float topY = movementBounds.yMax - Mathf.Max(0.75f, avatarCollisionRadius + 0.45f);
+		float bottomY = movementBounds.yMin + Mathf.Max(0.75f, avatarCollisionRadius + 0.45f);
+		Vector3 startPosition = IsActorTopSide(actorClientId)
+			? new Vector3(x, topY, 0f)
+			: new Vector3(x, bottomY, 0f);
+		return ClampLevelSelectionAvatarPosition(startPosition);
 	}
 
 	private void EnsureLevelSelectionRemoteAvatarStartPositions(bool overwriteExisting)
@@ -191,6 +201,7 @@ public partial class GameManager
 		remoteAvatarRotations[clientId] = 0f;
 		remoteAvatarInventories[clientId] = new RemoteHeldObjectState { kind = HeldObjectKind.None, id = "", offset = Vector2.zero };
 		remoteAvatarCraneHeights[clientId] = avatarCraneRestHeight;
+		remoteCraneConnectStates.Remove(clientId);
 	}
 
 	private void EnsureLevelSelectionVisuals()
@@ -204,6 +215,8 @@ public partial class GameManager
 		levelSelectionRoot.SetParent(petriNetRoot, false);
 		levelButtonByCollider.Clear();
 		levelConfirmButtonCollider = null;
+		levelLanguageButtonCollider = null;
+		levelSelectionTitleText = null;
 
 		GameObject background = GameObject.CreatePrimitive(PrimitiveType.Cube);
 		background.name = "LevelSelectionPlatform";
@@ -229,6 +242,18 @@ public partial class GameManager
 		levelSelectionBoundaryLine = boundaryObject.AddComponent<LineRenderer>();
 		ConfigureGroundLineRenderer(levelSelectionBoundaryLine, 4, 0.075f, 80, new Color(0.08f, 0.12f, 0.16f, 0.9f), 6, 8, true);
 
+		GameObject titleObject = new GameObject("LevelSelectionTitle");
+		titleObject.transform.SetParent(levelSelectionRoot, false);
+		titleObject.transform.position = new Vector3(0f, LevelSelectionTitleY, NodeLabelLayerZ);
+		levelSelectionTitleText = titleObject.AddComponent<TextMesh>();
+		levelSelectionTitleText.text = GameText("Levelübersicht", "Level Overview");
+		levelSelectionTitleText.characterSize = LevelSelectionTitleTextSize;
+		levelSelectionTitleText.fontSize = 96;
+		levelSelectionTitleText.anchor = TextAnchor.MiddleCenter;
+		levelSelectionTitleText.alignment = TextAlignment.Center;
+		levelSelectionTitleText.color = Color.black;
+		SetTextSortingOrder(levelSelectionTitleText, 74);
+
 		List<PetriNetLevelDefinition> levels = GetLevelDefinitions();
 		for (int i = 0; i < levels.Count; i++)
 		{
@@ -251,14 +276,23 @@ public partial class GameManager
 			"ConfirmLevelButton",
 			GetLevelSelectionConfirmButtonPosition(levels.Count),
 			new Vector2(2.1f, 0.66f),
-			"Bestätigen",
+			GameText("Bestätigen", "Confirm"),
 			new Color(0.78f, 0.92f, 1f),
+			30,
+			LevelSelectionConfirmTextSize);
+
+		levelLanguageButtonCollider = CreateLevelSelectionButton(
+			"LanguageLevelButton",
+			GetLevelSelectionLanguageButtonPosition(levels.Count),
+			new Vector2(1.72f, 0.58f),
+			GetLanguageToggleButtonText(),
+			new Color(0.9f, 0.88f, 1f),
 			30,
 			LevelSelectionConfirmTextSize);
 
 		GameObject infoObject = new GameObject("LevelInfo");
 		infoObject.transform.SetParent(levelSelectionRoot, false);
-		infoObject.transform.position = new Vector3(0.2f, 2.35f, NodeLabelLayerZ);
+		infoObject.transform.position = new Vector3(LevelSelectionInfoX, LevelSelectionInfoY, NodeLabelLayerZ);
 		levelInfoText = infoObject.AddComponent<TextMesh>();
 		levelInfoText.characterSize = LevelSelectionInfoTextSize;
 		levelInfoText.fontSize = 64;
@@ -286,6 +320,12 @@ public partial class GameManager
 		float x = LevelSelectionGridStartX + gridWidth * 0.5f - LevelSelectionButtonSize * 0.5f;
 		float y = LevelSelectionGridStartY - rows * (LevelSelectionButtonSize + LevelSelectionButtonGap) - 0.26f;
 		return new Vector2(x, y);
+	}
+
+	private Vector2 GetLevelSelectionLanguageButtonPosition(int levelCount)
+	{
+		Vector2 confirmPosition = GetLevelSelectionConfirmButtonPosition(levelCount);
+		return new Vector2(confirmPosition.x, confirmPosition.y - 1.28f);
 	}
 
 	private Collider2D CreateLevelSelectionButton(string name, Vector2 position, Vector2 size, string label, Color color, int sortingOrder, float labelCharacterSize)
@@ -388,7 +428,13 @@ public partial class GameManager
 
 		List<PetriNetLevelDefinition> levels = GetLevelDefinitions();
 		selectedLevelIndex = levels.Count > 0 ? Mathf.Clamp(selectedLevelIndex, 0, levels.Count - 1) : 0;
-		TryGetLevelButtonAtPoint(new Vector2(avatarPosition.x, avatarPosition.y), out int hoveredLevelIndex);
+		Vector2 avatarPointer = GetLevelSelectionAvatarPointerPosition();
+		TryGetLevelSelectionControlWithinCraneRange(
+			avatarPointer,
+			out _,
+			out int hoveredLevelIndex,
+			out bool confirmHovered,
+			out bool languageHovered);
 		foreach (KeyValuePair<Collider2D, int> pair in levelButtonByCollider)
 		{
 			if (pair.Key == null)
@@ -412,7 +458,6 @@ public partial class GameManager
 
 		if (levelConfirmButtonCollider != null)
 		{
-			bool confirmHovered = IsLevelConfirmButtonAtPoint(new Vector2(avatarPosition.x, avatarPosition.y));
 			SetLevelSelectionButtonColor(
 				levelConfirmButtonCollider.transform,
 				confirmHovered ? new Color(0.56f, 0.84f, 1f) : new Color(0.78f, 0.92f, 1f));
@@ -420,18 +465,37 @@ public partial class GameManager
 			TextMesh confirmText = levelConfirmButtonCollider.transform.Find("Label")?.GetComponent<TextMesh>();
 			if (confirmText != null)
 			{
-				confirmText.text = "Bestätigen";
+				confirmText.text = GameText("Bestätigen", "Confirm");
 				Vector3 confirmScale = levelConfirmButtonCollider.transform.localScale;
 				FitLevelSelectionButtonText(confirmText, new Vector2(Mathf.Abs(confirmScale.x), Mathf.Abs(confirmScale.y)));
 			}
 		}
 
-		if (levelInfoText != null && levels.Count > 0)
+		if (levelLanguageButtonCollider != null)
 		{
-			levelInfoText.text = GetLevelInfoText(levels[selectedLevelIndex]);
+			SetLevelSelectionButtonColor(
+				levelLanguageButtonCollider.transform,
+				languageHovered ? new Color(0.78f, 0.72f, 1f) : new Color(0.9f, 0.88f, 1f));
+
+			TextMesh languageText = levelLanguageButtonCollider.transform.Find("Label")?.GetComponent<TextMesh>();
+			if (languageText != null)
+			{
+				languageText.text = GetLanguageToggleButtonText();
+				Vector3 languageScale = levelLanguageButtonCollider.transform.localScale;
+				FitLevelSelectionButtonText(languageText, new Vector2(Mathf.Abs(languageScale.x), Mathf.Abs(languageScale.y)));
+			}
+		}
+
+		if (levelSelectionTitleText != null)
+		{
+			levelSelectionTitleText.text = GameText("Levelübersicht", "Level Overview");
 		}
 
 		UpdateLevelSelectionBoundsAndFloor();
+		if (levelInfoText != null && levels.Count > 0)
+		{
+			UpdateLevelSelectionInfoText(levels[selectedLevelIndex]);
+		}
 	}
 
 	private Color GetLevelSelectionFloorColor()
@@ -452,10 +516,7 @@ public partial class GameManager
 			contentRect.yMin - LevelSelectionContentPadding,
 			contentRect.xMax + LevelSelectionContentPadding,
 			contentRect.yMax + LevelSelectionContentPadding);
-		float halfWidth = Mathf.Max(LevelSelectionMinimumHalfWidth, paddedRect.width * 0.5f);
-		float halfHeight = Mathf.Max(LevelSelectionMinimumHalfHeight, paddedRect.height * 0.5f);
-		Vector2 center = paddedRect.center;
-		levelSelectionMovementBounds = Rect.MinMaxRect(center.x - halfWidth, center.y - halfHeight, center.x + halfWidth, center.y + halfHeight);
+		levelSelectionMovementBounds = paddedRect;
 
 		if (levelSelectionPlatform != null)
 		{
@@ -468,13 +529,16 @@ public partial class GameManager
 			}
 		}
 
+		PositionLevelSelectionTitleAboveFrame();
 		SetLevelSelectionBoundaryLine(levelSelectionMovementBounds);
 	}
 
 	private Rect CalculateLevelSelectionContentRect()
 	{
-		Rect contentRect = Rect.MinMaxRect(-LevelSelectionPlatformWidth * 0.5f, -LevelSelectionPlatformHeight * 0.5f, LevelSelectionPlatformWidth * 0.5f, LevelSelectionPlatformHeight * 0.5f);
 		List<PetriNetLevelDefinition> levels = GetLevelDefinitions();
+		Rect contentRect = GetLevelSelectionItemRect(
+			GetLevelSelectionConfirmButtonPosition(levels.Count),
+			new Vector2(2.1f, 0.66f));
 		for (int i = 0; i < levels.Count; i++)
 		{
 			contentRect = EncapsulateLevelSelectionRect(contentRect, GetLevelSelectionItemRect(GetLevelSelectionButtonPosition(i), new Vector2(LevelSelectionButtonSize, LevelSelectionButtonSize)));
@@ -482,53 +546,209 @@ public partial class GameManager
 
 		contentRect = EncapsulateLevelSelectionRect(
 			contentRect,
-			GetLevelSelectionItemRect(GetLevelSelectionConfirmButtonPosition(levels.Count), new Vector2(2.1f, 0.66f)));
-
-		if (TryGetLevelSelectionTextRect(levelInfoText, out Rect infoRect))
-		{
-			contentRect = EncapsulateLevelSelectionRect(contentRect, infoRect);
-		}
+			GetLevelSelectionItemRect(GetLevelSelectionLanguageButtonPosition(levels.Count), new Vector2(1.72f, 0.58f)));
+		contentRect = EncapsulateLevelSelectionRect(contentRect, GetLargestLevelSelectionInfoTextRect(levels));
 
 		return contentRect;
+	}
+
+	private void PositionLevelSelectionTitleAboveFrame()
+	{
+		if (levelSelectionTitleText == null)
+		{
+			return;
+		}
+
+		float titleHeight = GetLevelSelectionTitleSize().y;
+		float titleY = levelSelectionMovementBounds.yMax + LevelSelectionTitleFrameGap + titleHeight * 0.5f;
+		levelSelectionTitleText.transform.position = new Vector3(
+			levelSelectionMovementBounds.center.x,
+			titleY,
+			NodeLabelLayerZ);
+	}
+
+	private Rect GetLevelSelectionTitleRect()
+	{
+		Vector2 size = GetLevelSelectionTitleSize();
+		Vector3 position = levelSelectionTitleText != null
+			? levelSelectionTitleText.transform.position
+			: new Vector3(0f, LevelSelectionTitleY, NodeLabelLayerZ);
+		return Rect.MinMaxRect(
+			position.x - size.x * 0.5f,
+			position.y - size.y * 0.5f,
+			position.x + size.x * 0.5f,
+			position.y + size.y * 0.5f);
+	}
+
+	private Vector2 GetLevelSelectionTitleSize()
+	{
+		Vector2 germanSize = MeasureLevelSelectionTitleTextSize("Levelübersicht");
+		Vector2 englishSize = MeasureLevelSelectionTitleTextSize("Level Overview");
+		return new Vector2(
+			Mathf.Max(germanSize.x, englishSize.x),
+			Mathf.Max(germanSize.y, englishSize.y));
+	}
+
+	private Vector2 MeasureLevelSelectionTitleTextSize(string text)
+	{
+		Vector2 estimatedSize = new Vector2(
+			EstimateLevelSelectionTextWidth(text, LevelSelectionTitleTextSize),
+			EstimateLevelSelectionTextHeight(text, LevelSelectionTitleTextSize));
+		if (levelSelectionTitleText == null || string.IsNullOrEmpty(text))
+		{
+			return estimatedSize;
+		}
+
+		MeshRenderer renderer = levelSelectionTitleText.GetComponent<MeshRenderer>();
+		if (renderer == null)
+		{
+			return estimatedSize;
+		}
+
+		string previousText = levelSelectionTitleText.text;
+		float previousCharacterSize = levelSelectionTitleText.characterSize;
+		TextAnchor previousAnchor = levelSelectionTitleText.anchor;
+		TextAlignment previousAlignment = levelSelectionTitleText.alignment;
+		try
+		{
+			levelSelectionTitleText.characterSize = LevelSelectionTitleTextSize;
+			levelSelectionTitleText.anchor = TextAnchor.MiddleCenter;
+			levelSelectionTitleText.alignment = TextAlignment.Center;
+			levelSelectionTitleText.text = text;
+			Bounds bounds = renderer.bounds;
+			if (bounds.size.x > 0.001f && bounds.size.y > 0.001f)
+			{
+				estimatedSize.x = Mathf.Max(estimatedSize.x, bounds.size.x);
+				estimatedSize.y = Mathf.Max(estimatedSize.y, bounds.size.y);
+			}
+		}
+		finally
+		{
+			levelSelectionTitleText.text = previousText;
+			levelSelectionTitleText.characterSize = previousCharacterSize;
+			levelSelectionTitleText.anchor = previousAnchor;
+			levelSelectionTitleText.alignment = previousAlignment;
+		}
+
+		return estimatedSize;
+	}
+
+	private Rect GetLargestLevelSelectionInfoTextRect(List<PetriNetLevelDefinition> levels)
+	{
+		float maxWidth = 0f;
+		float maxHeight = 0f;
+		if (levels != null)
+		{
+			for (int i = 0; i < levels.Count; i++)
+			{
+				EncapsulateLevelSelectionInfoTextSize(levels[i], i, PetriNetGameLanguage.German, ref maxWidth, ref maxHeight);
+				EncapsulateLevelSelectionInfoTextSize(levels[i], i, PetriNetGameLanguage.English, ref maxWidth, ref maxHeight);
+			}
+		}
+
+		if (maxWidth <= 0.001f || maxHeight <= 0.001f)
+		{
+			string fallback = GameText(PetriNetGameLanguage.German, "Wähle ein Level aus.", "Choose a level.");
+			Vector2 fallbackSize = MeasureLevelSelectionInfoTextSize(fallback, LevelSelectionInfoTextSize);
+			maxWidth = fallbackSize.x;
+			maxHeight = fallbackSize.y;
+		}
+
+		return Rect.MinMaxRect(
+			LevelSelectionInfoX - LevelSelectionInfoTextBoundsPaddingX,
+			LevelSelectionInfoY - maxHeight - LevelSelectionInfoTextBoundsPaddingY,
+			LevelSelectionInfoX + maxWidth + LevelSelectionInfoTextBoundsPaddingX,
+			LevelSelectionInfoY + LevelSelectionInfoTextBoundsPaddingY);
+	}
+
+	private void EncapsulateLevelSelectionInfoTextSize(
+		PetriNetLevelDefinition level,
+		int levelIndex,
+		PetriNetGameLanguage language,
+		ref float maxWidth,
+		ref float maxHeight)
+	{
+		string text = GetLevelInfoText(level, levelIndex, language);
+		Vector2 textSize = MeasureLevelSelectionInfoTextSize(text, LevelSelectionInfoTextSize);
+		maxWidth = Mathf.Max(maxWidth, textSize.x);
+		maxHeight = Mathf.Max(maxHeight, textSize.y);
+	}
+
+	private Vector2 MeasureLevelSelectionInfoTextSize(string text, float characterSize)
+	{
+		Vector2 estimatedSize = new Vector2(
+			EstimateLevelSelectionTextWidth(text, characterSize),
+			EstimateLevelSelectionTextHeight(text, characterSize));
+		if (levelInfoText == null || string.IsNullOrEmpty(text))
+		{
+			return estimatedSize;
+		}
+
+		MeshRenderer renderer = levelInfoText.GetComponent<MeshRenderer>();
+		if (renderer == null)
+		{
+			return estimatedSize;
+		}
+
+		string previousText = levelInfoText.text;
+		float previousCharacterSize = levelInfoText.characterSize;
+		TextAnchor previousAnchor = levelInfoText.anchor;
+		TextAlignment previousAlignment = levelInfoText.alignment;
+		try
+		{
+			levelInfoText.characterSize = characterSize;
+			levelInfoText.anchor = TextAnchor.UpperLeft;
+			levelInfoText.alignment = TextAlignment.Left;
+			levelInfoText.text = text;
+			Bounds bounds = renderer.bounds;
+			if (bounds.size.x > 0.001f && bounds.size.y > 0.001f)
+			{
+				estimatedSize.x = Mathf.Max(estimatedSize.x, bounds.size.x);
+				estimatedSize.y = Mathf.Max(estimatedSize.y, bounds.size.y);
+			}
+		}
+		finally
+		{
+			levelInfoText.text = previousText;
+			levelInfoText.characterSize = previousCharacterSize;
+			levelInfoText.anchor = previousAnchor;
+			levelInfoText.alignment = previousAlignment;
+		}
+
+		return estimatedSize;
+	}
+
+	private float EstimateLevelSelectionTextWidth(string text, float characterSize)
+	{
+		if (string.IsNullOrEmpty(text))
+		{
+			return 0f;
+		}
+
+		string[] lines = text.Split('\n');
+		int longestLineLength = 0;
+		for (int i = 0; i < lines.Length; i++)
+		{
+			longestLineLength = Mathf.Max(longestLineLength, lines[i].Length);
+		}
+
+		return longestLineLength * characterSize * LevelSelectionEstimatedCharacterWidth;
+	}
+
+	private float EstimateLevelSelectionTextHeight(string text, float characterSize)
+	{
+		if (string.IsNullOrEmpty(text))
+		{
+			return 0f;
+		}
+
+		return text.Split('\n').Length * characterSize * LevelSelectionEstimatedLineHeight;
 	}
 
 	private Rect GetLevelSelectionItemRect(Vector2 center, Vector2 size)
 	{
 		Vector2 halfSize = size * 0.5f;
 		return Rect.MinMaxRect(center.x - halfSize.x, center.y - halfSize.y, center.x + halfSize.x, center.y + halfSize.y);
-	}
-
-	private bool TryGetLevelSelectionTextRect(TextMesh text, out Rect rect)
-	{
-		rect = new Rect();
-		if (text == null || string.IsNullOrEmpty(text.text))
-		{
-			return false;
-		}
-
-		MeshRenderer renderer = text.GetComponent<MeshRenderer>();
-		if (renderer != null)
-		{
-			Bounds bounds = renderer.bounds;
-			if (bounds.size.x > 0.001f && bounds.size.y > 0.001f)
-			{
-				rect = Rect.MinMaxRect(bounds.min.x, bounds.min.y, bounds.max.x, bounds.max.y);
-				return true;
-			}
-		}
-
-		string[] lines = text.text.Split('\n');
-		int maxLineLength = 0;
-		for (int i = 0; i < lines.Length; i++)
-		{
-			maxLineLength = Mathf.Max(maxLineLength, lines[i].Length);
-		}
-
-		float width = Mathf.Max(0.5f, maxLineLength * text.characterSize * 0.52f);
-		float height = Mathf.Max(0.5f, lines.Length * text.characterSize * 1.35f);
-		Vector3 position = text.transform.position;
-		rect = Rect.MinMaxRect(position.x, position.y - height, position.x + width, position.y);
-		return true;
 	}
 
 	private Rect EncapsulateLevelSelectionRect(Rect current, Rect addition)
@@ -570,30 +790,193 @@ public partial class GameManager
 
 	private string GetLevelInfoText(PetriNetLevelDefinition level)
 	{
+		return GetLevelInfoText(level, selectedLevelIndex, gameLanguage);
+	}
+
+	private string GetLevelInfoText(PetriNetLevelDefinition level, int levelIndex, PetriNetGameLanguage language)
+	{
 		if (level == null)
 		{
 			return "";
 		}
 
-		StringBuilder text = new StringBuilder();
-		text.Append(GetFallbackText(level.displayName, "Level"));
-		text.Append("\n\nInhibitor-Arcs:\n");
-		text.Append(GetLevelInhibitorOverviewText(level.inhibitorArcs));
-		text.Append("\nGeteilte Blöcke:\n");
-		text.Append(GetLevelBlockOverviewText(level.blocks, PetriNetLevelBlockOwner.geteilt));
-		text.Append("\n\nSpieler1-Blöcke:\n");
-		text.Append(GetLevelBlockOverviewText(level.blocks, PetriNetLevelBlockOwner.spieler1));
-		text.Append("\n\nSpieler2-Blöcke:\n");
-		text.Append(GetLevelBlockOverviewText(level.blocks, PetriNetLevelBlockOwner.spieler2));
-		text.Append("\nOben:\n");
-		text.Append(JoinLevelList(level.topIngredients));
-		text.Append("\n\nUnten:\n");
-		text.Append(JoinLevelList(level.bottomIngredients));
-		text.Append("\n\nGerichte:\n");
-		text.Append(GetLevelOrderOverviewText(level));
-		text.Append("\n\nExtras:\n");
-		text.Append(JoinLevelList(level.extras));
-		return text.ToString();
+		string levelName = GetLevelSelectionDisplayNameWithoutNumber(level, levelIndex, language);
+		string selectedText = GameText(language, "Ausgewählt: Level ", "Selected: Level ")
+			+ (levelIndex + 1).ToString();
+		if (!string.IsNullOrEmpty(levelName))
+		{
+			selectedText += ": " + levelName;
+		}
+
+		return GameText(
+			language,
+			"Wähle ein Level aus und bestätige es mit Leertaste.",
+			"Choose a level and confirm it with Space.")
+			+ "\n"
+			+ selectedText;
+	}
+
+	private string GetLevelSelectionDisplayNameWithoutNumber(
+		PetriNetLevelDefinition level,
+		int levelIndex,
+		PetriNetGameLanguage language)
+	{
+		string displayName = GetLocalizedLevelDisplayName(level, language).Trim();
+		string numberedPrefix = "Level " + (levelIndex + 1).ToString() + ":";
+		if (displayName.StartsWith(numberedPrefix))
+		{
+			return displayName.Substring(numberedPrefix.Length).Trim();
+		}
+
+		int colonIndex = displayName.IndexOf(':');
+		if (colonIndex >= 0 && colonIndex + 1 < displayName.Length)
+		{
+			return displayName.Substring(colonIndex + 1).Trim();
+		}
+
+		return displayName;
+	}
+
+	private void UpdateLevelSelectionInfoText(PetriNetLevelDefinition level)
+	{
+		if (levelInfoText == null)
+		{
+			return;
+		}
+
+		float maxWidth = GetLevelSelectionInfoTextMaxWidth();
+		float maxHeight = GetLevelSelectionInfoTextMaxHeight();
+		float characterSize = LevelSelectionInfoTextSize;
+		string rawText = GetLevelInfoText(level);
+		levelInfoText.characterSize = characterSize;
+		levelInfoText.text = WrapLevelSelectionInfoText(rawText, maxWidth, characterSize);
+
+		while (characterSize > LevelSelectionInfoMinimumTextSize
+			&& !DoesLevelSelectionInfoTextFit(levelInfoText, maxWidth, maxHeight))
+		{
+			characterSize -= 0.003f;
+			levelInfoText.characterSize = characterSize;
+			levelInfoText.text = WrapLevelSelectionInfoText(rawText, maxWidth, characterSize);
+		}
+	}
+
+	private float GetLevelSelectionInfoTextMaxWidth()
+	{
+		float textLeft = levelInfoText != null ? levelInfoText.transform.position.x : 0f;
+		float rightEdge = levelSelectionMovementBounds.width > 0.001f
+			? levelSelectionMovementBounds.xMax
+			: LevelSelectionPlatformWidth * 0.5f;
+		return Mathf.Max(1f, rightEdge - textLeft - LevelSelectionInfoTextWidthPadding);
+	}
+
+	private float GetLevelSelectionInfoTextMaxHeight()
+	{
+		float textTop = levelInfoText != null ? levelInfoText.transform.position.y : LevelSelectionGridStartY;
+		float bottomEdge = levelSelectionMovementBounds.height > 0.001f
+			? levelSelectionMovementBounds.yMin
+			: -LevelSelectionPlatformHeight * 0.5f;
+		return Mathf.Max(0.5f, textTop - bottomEdge - LevelSelectionInfoTextHeightPadding);
+	}
+
+	private bool DoesLevelSelectionInfoTextFit(TextMesh text, float maxWidth, float maxHeight)
+	{
+		if (text == null)
+		{
+			return true;
+		}
+
+		string[] lines = text.text.Split('\n');
+		int longestLineLength = 0;
+		for (int i = 0; i < lines.Length; i++)
+		{
+			longestLineLength = Mathf.Max(longestLineLength, lines[i].Length);
+		}
+
+		float estimatedWidth = longestLineLength * text.characterSize * LevelSelectionEstimatedCharacterWidth;
+		float estimatedHeight = lines.Length * text.characterSize * LevelSelectionEstimatedLineHeight;
+		return estimatedWidth <= maxWidth && estimatedHeight <= maxHeight;
+	}
+
+	private string WrapLevelSelectionInfoText(string text, float maxWidth, float characterSize)
+	{
+		if (string.IsNullOrEmpty(text))
+		{
+			return "";
+		}
+
+		int maxCharactersPerLine = Mathf.Max(8, Mathf.FloorToInt(maxWidth / Mathf.Max(0.001f, characterSize * LevelSelectionEstimatedCharacterWidth)));
+		string[] sourceLines = text.Split('\n');
+		StringBuilder result = new StringBuilder();
+		for (int i = 0; i < sourceLines.Length; i++)
+		{
+			AppendWrappedLevelSelectionInfoLine(sourceLines[i], maxCharactersPerLine, result);
+			if (i + 1 < sourceLines.Length)
+			{
+				result.Append('\n');
+			}
+		}
+
+		return result.ToString();
+	}
+
+	private void AppendWrappedLevelSelectionInfoLine(string line, int maxCharactersPerLine, StringBuilder result)
+	{
+		if (string.IsNullOrEmpty(line))
+		{
+			return;
+		}
+
+		string[] words = line.Split(' ');
+		int currentLineLength = 0;
+		for (int i = 0; i < words.Length; i++)
+		{
+			string word = words[i];
+			if (string.IsNullOrEmpty(word))
+			{
+				continue;
+			}
+
+			if (word.Length > maxCharactersPerLine)
+			{
+				if (currentLineLength > 0)
+				{
+					result.Append('\n');
+					currentLineLength = 0;
+				}
+
+				int wordOffset = 0;
+				while (wordOffset < word.Length)
+				{
+					int chunkLength = Mathf.Min(maxCharactersPerLine, word.Length - wordOffset);
+					result.Append(word.Substring(wordOffset, chunkLength));
+					wordOffset += chunkLength;
+					currentLineLength = chunkLength;
+					if (wordOffset < word.Length)
+					{
+						result.Append('\n');
+						currentLineLength = 0;
+					}
+				}
+
+				continue;
+			}
+
+			int separatorLength = currentLineLength > 0 ? 1 : 0;
+			if (currentLineLength > 0 && currentLineLength + separatorLength + word.Length > maxCharactersPerLine)
+			{
+				result.Append('\n');
+				currentLineLength = 0;
+				separatorLength = 0;
+			}
+
+			if (currentLineLength > 0)
+			{
+				result.Append(' ');
+			}
+
+			result.Append(word);
+			currentLineLength += separatorLength + word.Length;
+		}
 	}
 
 	private void HandleLevelSelectionInput()
@@ -618,6 +1001,7 @@ public partial class GameManager
 		if (keyboard.leftArrowKey.isPressed || keyboard.aKey.isPressed) { moveDirection.x -= 1f; }
 		if (keyboard.rightArrowKey.isPressed || keyboard.dKey.isPressed) { moveDirection.x += 1f; }
 
+		Vector3 previousAvatarPosition = avatarPosition;
 		if (moveDirection.sqrMagnitude > 0.1f)
 		{
 			moveDirection = moveDirection.normalized;
@@ -625,18 +1009,23 @@ public partial class GameManager
 			float currentSpeed = sprinting ? avatarSpeed * avatarSprintMultiplier : avatarSpeed;
 			avatarPosition = ClampLevelSelectionAvatarPosition(avatarPosition + moveDirection * currentSpeed * Time.deltaTime);
 			avatarRotation = Mathf.Atan2(moveDirection.y, moveDirection.x) * Mathf.Rad2Deg;
+			if (IsTutorialMovementInputPressed(keyboard) && Vector3.Distance(previousAvatarPosition, avatarPosition) > 0.01f)
+			{
+				CompleteLevelSelectionTutorialMovementStep();
+			}
 		}
 
 		if (keyboard.spaceKey.wasPressedThisFrame)
 		{
 			StartCraneDipAnimation();
-			ActivateLevelSelectionAtPoint(new Vector2(avatarPosition.x, avatarPosition.y), true);
+			ActivateLevelSelectionAtCrane(GetLevelSelectionAvatarPointerPosition(), true);
 		}
 
 		if (Mouse.current != null && Mouse.current.leftButton.wasPressedThisFrame)
 		{
-			Vector3 mouseWorld = GetMouseWorldPosition();
-			ActivateLevelSelectionAtPoint(new Vector2(mouseWorld.x, mouseWorld.y), true);
+			ActivateLevelSelectionAtPoint(
+				GetLevelSelectionWorldPointFromScreen(Mouse.current.position.ReadValue()),
+				true);
 		}
 
 		UpdateLevelSelectionVisuals();
@@ -647,26 +1036,52 @@ public partial class GameManager
 
 	private Vector3 ClampLevelSelectionAvatarPosition(Vector3 desired)
 	{
-		if (levelSelectionMovementBounds.width <= 0.001f || levelSelectionMovementBounds.height <= 0.001f)
-		{
-			return new Vector3(Mathf.Clamp(desired.x, -4.45f, 4.45f), Mathf.Clamp(desired.y, -3.25f, 3.25f), 0f);
-		}
-
 		float avatarBoundaryPadding = Mathf.Max(LevelSelectionAvatarBoundaryPadding, avatarCollisionRadius);
+		Rect movementBounds = levelSelectionMovementBounds.width > 0.001f && levelSelectionMovementBounds.height > 0.001f
+			? levelSelectionMovementBounds
+			: Rect.MinMaxRect(-4.5f, -3.5f, 4.5f, 3.5f);
+		Vector2 craneProjectionOffset = GetLevelSelectionCraneProjectionOffset();
+		float hookLowerProjectionOffset = GetLevelSelectionHookLowerProjectionOffset();
 		Rect centerBounds = Rect.MinMaxRect(
-			levelSelectionMovementBounds.xMin + avatarBoundaryPadding,
-			levelSelectionMovementBounds.yMin + avatarBoundaryPadding,
-			levelSelectionMovementBounds.xMax - avatarBoundaryPadding,
-			levelSelectionMovementBounds.yMax - avatarBoundaryPadding);
+			movementBounds.xMin + avatarBoundaryPadding - craneProjectionOffset.x,
+			movementBounds.yMin - hookLowerProjectionOffset,
+			movementBounds.xMax - avatarBoundaryPadding - craneProjectionOffset.x,
+			movementBounds.yMax - avatarBoundaryPadding - craneProjectionOffset.y);
 		if (centerBounds.width <= 0.001f || centerBounds.height <= 0.001f)
 		{
-			centerBounds = levelSelectionMovementBounds;
+			centerBounds = movementBounds;
 		}
 
 		return new Vector3(
 			Mathf.Clamp(desired.x, centerBounds.xMin, centerBounds.xMax),
 			Mathf.Clamp(desired.y, centerBounds.yMin, centerBounds.yMax),
 			0f);
+	}
+
+	private Vector2 GetLevelSelectionCraneProjectionOffset()
+	{
+		float heightAboveBoundary = Mathf.Max(0f, avatarCraneRestHeight + ArcZ);
+		return new Vector2(0f, GameplayCameraTiltPercent * heightAboveBoundary);
+	}
+
+	private float GetLevelSelectionHookLowerProjectionOffset()
+	{
+		Transform hook = localAvatarCable != null
+			? localAvatarCable.transform.Find("ChainHook")
+			: null;
+		if (hook != null && hook.gameObject.activeInHierarchy && TryGetRendererBounds(hook, out Bounds hookBounds))
+		{
+			float projectedLowerEdge = hookBounds.min.y
+				+ GameplayCameraTiltPercent * (ArcZ - hookBounds.max.z);
+			return projectedLowerEdge - avatarPosition.y;
+		}
+
+		float restingHookZ = -avatarCraneRestHeight
+			+ GetCraneHookHangDistance()
+			+ GetCraneHookVisualDrop();
+		const float estimatedHookProjectedHalfHeight = 0.18f;
+		return GameplayCameraTiltPercent * (ArcZ - restingHookZ)
+			- estimatedHookProjectedHalfHeight;
 	}
 
 	private void UpdateLevelSelectionCameraFollow()
@@ -676,136 +1091,31 @@ public partial class GameManager
 			return;
 		}
 
-		float requiredSize = GetSharedScreenCameraSize();
-		if (mainCamera.orthographicSize < requiredSize)
-		{
-			mainCamera.orthographicSize = requiredSize;
-		}
-
+		Rect viewBounds = GetLevelSelectionCameraViewBounds();
+		mainCamera.orthographicSize = GetLevelSelectionStaticCameraSize(viewBounds);
 		isMiddlePanning = false;
-		Vector2 cameraCenter = GetCameraGroundCenter();
-		Vector2 clampedCameraCenter = ClampLevelSelectionCameraCenter(cameraCenter);
-		if ((clampedCameraCenter - cameraCenter).sqrMagnitude > 0.0001f)
-		{
-			cameraVelocityX = 0f;
-			cameraVelocityY = 0f;
-			SetCameraGroundCenter(mainCamera, clampedCameraCenter);
-			cameraCenter = clampedCameraCenter;
-		}
-
-		float screenHeight = mainCamera.orthographicSize * 2f;
-		float screenWidth = screenHeight * mainCamera.aspect;
-		float restMarginX = screenWidth * cameraRestAreaMargin;
-		float restMarginY = screenHeight * cameraRestAreaMargin;
-		Vector2 target = cameraCenter;
-		bool shouldMoveX = false;
-		bool shouldMoveY = false;
-
-		if (avatarPosition.x > cameraCenter.x + restMarginX)
-		{
-			target.x = avatarPosition.x - restMarginX;
-			shouldMoveX = true;
-		}
-		else if (avatarPosition.x < cameraCenter.x - restMarginX)
-		{
-			target.x = avatarPosition.x + restMarginX;
-			shouldMoveX = true;
-		}
-
-		if (avatarPosition.y > cameraCenter.y + restMarginY)
-		{
-			target.y = avatarPosition.y - restMarginY;
-			shouldMoveY = true;
-		}
-		else if (avatarPosition.y < cameraCenter.y - restMarginY)
-		{
-			target.y = avatarPosition.y + restMarginY;
-			shouldMoveY = true;
-		}
-
-		target = ClampLevelSelectionCameraCenter(target);
-		Vector2 newCenter = cameraCenter;
-		if (shouldMoveX && Mathf.Abs(target.x - cameraCenter.x) > 0.001f)
-		{
-			newCenter.x = SmoothCameraAxis(cameraCenter.x, target.x, ref cameraVelocityX, 0.16f);
-		}
-		else
-		{
-			cameraVelocityX = 0f;
-		}
-
-		if (shouldMoveY && Mathf.Abs(target.y - cameraCenter.y) > 0.001f)
-		{
-			newCenter.y = SmoothCameraAxis(cameraCenter.y, target.y, ref cameraVelocityY, 0.16f);
-		}
-		else
-		{
-			cameraVelocityY = 0f;
-		}
-
-		Vector2 boundedCenter = ClampLevelSelectionCameraCenter(newCenter);
-		if (Mathf.Abs(boundedCenter.x - newCenter.x) > 0.0001f)
-		{
-			cameraVelocityX = 0f;
-		}
-
-		if (Mathf.Abs(boundedCenter.y - newCenter.y) > 0.0001f)
-		{
-			cameraVelocityY = 0f;
-		}
-
-		SetCameraGroundCenter(mainCamera, boundedCenter);
+		manualCameraPanActive = false;
+		ResetCameraFollowVelocity();
+		SetCameraGroundCenter(mainCamera, viewBounds.center);
 	}
 
-	private Vector2 ClampLevelSelectionCameraCenter(Vector2 desiredCenter)
+	private float GetLevelSelectionStaticCameraSize(Rect viewBounds)
 	{
-		if (levelSelectionMovementBounds.width <= 0.001f || levelSelectionMovementBounds.height <= 0.001f || mainCamera == null)
-		{
-			return desiredCenter;
-		}
-
-		Rect centerBounds = GetLevelSelectionCameraCenterBounds();
-		return new Vector2(
-			Mathf.Clamp(desiredCenter.x, centerBounds.xMin, centerBounds.xMax),
-			Mathf.Clamp(desiredCenter.y, centerBounds.yMin, centerBounds.yMax));
-	}
-
-	private Rect GetLevelSelectionCameraCenterBounds()
-	{
-		Vector2 cameraCenter = GetCameraGroundCenter();
-		Rect viewBounds = GetCameraGroundViewBounds();
-		Rect cameraViewBounds = GetLevelSelectionCameraViewBounds();
-		float leftOffset = cameraCenter.x - viewBounds.xMin;
-		float rightOffset = viewBounds.xMax - cameraCenter.x;
-		float bottomOffset = cameraCenter.y - viewBounds.yMin;
-		float topOffset = viewBounds.yMax - cameraCenter.y;
-		float minX = cameraViewBounds.xMin + leftOffset;
-		float maxX = cameraViewBounds.xMax - rightOffset;
-		float minY = cameraViewBounds.yMin + bottomOffset;
-		float maxY = cameraViewBounds.yMax - topOffset;
-
-		if (minX > maxX)
-		{
-			minX = cameraViewBounds.center.x;
-			maxX = minX;
-		}
-
-		if (minY > maxY)
-		{
-			minY = cameraViewBounds.center.y;
-			maxY = minY;
-		}
-
-		return Rect.MinMaxRect(minX, minY, maxX, maxY);
+		float aspect = mainCamera != null ? Mathf.Max(0.01f, mainCamera.aspect) : 1f;
+		float widthSize = viewBounds.width / (2f * aspect);
+		float forwardZ = new Vector3(0f, GameplayCameraTiltPercent, 1f).normalized.z;
+		float heightSize = viewBounds.height * forwardZ * 0.5f;
+		return Mathf.Max(minZoom, LevelSelectionMinimumCameraSize, widthSize, heightSize);
 	}
 
 	private Rect GetLevelSelectionCameraViewBounds()
 	{
+		Rect viewBounds = EncapsulateLevelSelectionRect(levelSelectionMovementBounds, GetLevelSelectionTitleRect());
 		return Rect.MinMaxRect(
-			levelSelectionMovementBounds.xMin - LevelSelectionCameraViewPadding,
-			levelSelectionMovementBounds.yMin - LevelSelectionCameraViewPadding,
-			levelSelectionMovementBounds.xMax + LevelSelectionCameraViewPadding,
-			levelSelectionMovementBounds.yMax + LevelSelectionCameraViewPadding);
+			viewBounds.xMin - LevelSelectionCameraViewPadding,
+			viewBounds.yMin - LevelSelectionCameraViewPadding,
+			viewBounds.xMax + LevelSelectionCameraViewPadding,
+			viewBounds.yMax + LevelSelectionCameraViewPadding);
 	}
 
 	private Rect GetCameraGroundViewBounds()
@@ -832,6 +1142,42 @@ public partial class GameManager
 		if (IsLevelConfirmButtonAtPoint(worldPoint))
 		{
 			RequestConfirmLevelSelection();
+			return;
+		}
+
+		if (IsLevelLanguageButtonAtPoint(worldPoint))
+		{
+			ToggleGameLanguage();
+		}
+	}
+
+	private void ActivateLevelSelectionAtCrane(Vector2 cranePoint, bool broadcastSelection)
+	{
+		if (!TryGetLevelSelectionControlWithinCraneRange(
+			cranePoint,
+			out _,
+			out int levelIndex,
+			out bool confirmHovered,
+			out bool languageHovered))
+		{
+			return;
+		}
+
+		if (levelIndex >= 0)
+		{
+			SelectLevelIndex(levelIndex, broadcastSelection);
+			return;
+		}
+
+		if (confirmHovered)
+		{
+			RequestConfirmLevelSelection();
+			return;
+		}
+
+		if (languageHovered)
+		{
+			ToggleGameLanguage();
 		}
 	}
 
@@ -843,15 +1189,15 @@ public partial class GameManager
 			return;
 		}
 
-		if (TryGetLevelButtonColliderAtPoint(new Vector2(avatarPosition.x, avatarPosition.y), out Collider2D levelCollider, out _))
+		Vector2 avatarPointer = GetLevelSelectionAvatarPointerPosition();
+		if (TryGetLevelSelectionControlWithinCraneRange(
+			avatarPointer,
+			out Collider2D hoveredCollider,
+			out _,
+			out _,
+			out _))
 		{
-			ShowLevelSelectionButtonHoverVisual(levelCollider);
-			return;
-		}
-
-		if (IsLevelConfirmButtonAtPoint(new Vector2(avatarPosition.x, avatarPosition.y)))
-		{
-			ShowLevelSelectionButtonHoverVisual(levelConfirmButtonCollider);
+			ShowLevelSelectionButtonHoverVisual(hoveredCollider);
 			return;
 		}
 
@@ -905,12 +1251,12 @@ public partial class GameManager
 	{
 		levelCollider = null;
 		levelIndex = -1;
-		Collider2D[] hits = Physics2D.OverlapPointAll(worldPoint);
-		for (int i = 0; i < hits.Length; i++)
+		foreach (KeyValuePair<Collider2D, int> pair in levelButtonByCollider)
 		{
-			if (hits[i] != null && levelButtonByCollider.TryGetValue(hits[i], out levelIndex))
+			if (IsLevelSelectionButtonAtPoint(pair.Key, worldPoint))
 			{
-				levelCollider = hits[i];
+				levelCollider = pair.Key;
+				levelIndex = pair.Value;
 				return true;
 			}
 		}
@@ -920,21 +1266,221 @@ public partial class GameManager
 
 	private bool IsLevelConfirmButtonAtPoint(Vector2 worldPoint)
 	{
-		if (levelConfirmButtonCollider == null)
+		return IsLevelSelectionButtonAtPoint(levelConfirmButtonCollider, worldPoint);
+	}
+
+	private bool IsLevelLanguageButtonAtPoint(Vector2 worldPoint)
+	{
+		return IsLevelSelectionButtonAtPoint(levelLanguageButtonCollider, worldPoint);
+	}
+
+	private bool IsLevelConfirmButtonWithinCraneRange(Vector2 cranePoint)
+	{
+		return IsLevelSelectionButtonWithinCraneRange(levelConfirmButtonCollider, cranePoint);
+	}
+
+	private bool IsLevelLanguageButtonWithinCraneRange(Vector2 cranePoint)
+	{
+		return IsLevelSelectionButtonWithinCraneRange(levelLanguageButtonCollider, cranePoint);
+	}
+
+	private bool TryGetLevelSelectionControlWithinCraneRange(
+		Vector2 cranePoint,
+		out Collider2D hoveredCollider,
+		out int hoveredLevelIndex,
+		out bool confirmHovered,
+		out bool languageHovered)
+	{
+		hoveredCollider = null;
+		hoveredLevelIndex = -1;
+		confirmHovered = false;
+		languageHovered = false;
+		float closestDistance = float.PositiveInfinity;
+
+		TryUseLevelSelectionControlHover(
+			levelConfirmButtonCollider,
+			cranePoint,
+			-1,
+			true,
+			false,
+			ref closestDistance,
+			ref hoveredCollider,
+			ref hoveredLevelIndex,
+			ref confirmHovered,
+			ref languageHovered);
+		TryUseLevelSelectionControlHover(
+			levelLanguageButtonCollider,
+			cranePoint,
+			-1,
+			false,
+			true,
+			ref closestDistance,
+			ref hoveredCollider,
+			ref hoveredLevelIndex,
+			ref confirmHovered,
+			ref languageHovered);
+
+		foreach (KeyValuePair<Collider2D, int> pair in levelButtonByCollider)
+		{
+			TryUseLevelSelectionControlHover(
+				pair.Key,
+				cranePoint,
+				pair.Value,
+				false,
+				false,
+				ref closestDistance,
+				ref hoveredCollider,
+				ref hoveredLevelIndex,
+				ref confirmHovered,
+				ref languageHovered);
+		}
+
+		return hoveredCollider != null;
+	}
+
+	private void TryUseLevelSelectionControlHover(
+		Collider2D collider,
+		Vector2 cranePoint,
+		int levelIndex,
+		bool isConfirmButton,
+		bool isLanguageButton,
+		ref float closestDistance,
+		ref Collider2D hoveredCollider,
+		ref int hoveredLevelIndex,
+		ref bool confirmHovered,
+		ref bool languageHovered)
+	{
+		if (!TryGetLevelSelectionButtonCraneDistance(collider, cranePoint, out float distance))
+		{
+			return;
+		}
+
+		if (distance >= closestDistance)
+		{
+			return;
+		}
+
+		closestDistance = distance;
+		hoveredCollider = collider;
+		hoveredLevelIndex = levelIndex;
+		confirmHovered = isConfirmButton;
+		languageHovered = isLanguageButton;
+	}
+
+	private bool TryGetLevelSelectionButtonCraneDistance(Collider2D buttonCollider, Vector2 cranePoint, out float distance)
+	{
+		distance = float.PositiveInfinity;
+		if (!IsLevelSelectionButtonWithinCraneRange(buttonCollider, cranePoint))
 		{
 			return false;
 		}
 
-		Collider2D[] hits = Physics2D.OverlapPointAll(worldPoint);
-		for (int i = 0; i < hits.Length; i++)
+		Bounds bounds = buttonCollider.bounds;
+		float dx = Mathf.Max(bounds.min.x - cranePoint.x, 0f, cranePoint.x - bounds.max.x);
+		float dy = Mathf.Max(bounds.min.y - cranePoint.y, 0f, cranePoint.y - bounds.max.y);
+		distance = dx * dx + dy * dy;
+		return true;
+	}
+
+	private bool TryGetLevelButtonColliderWithinCraneRange(
+		Vector2 cranePoint,
+		out Collider2D levelCollider,
+		out int levelIndex)
+	{
+		if (TryGetLevelButtonColliderAtPoint(cranePoint, out levelCollider, out levelIndex))
 		{
-			if (hits[i] == levelConfirmButtonCollider)
-			{
-				return true;
-			}
+			return true;
 		}
 
-		return false;
+		levelCollider = null;
+		levelIndex = -1;
+		float closestDistance = float.PositiveInfinity;
+		foreach (KeyValuePair<Collider2D, int> pair in levelButtonByCollider)
+		{
+			if (!IsLevelSelectionButtonWithinCraneRange(pair.Key, cranePoint))
+			{
+				continue;
+			}
+
+			Bounds bounds = pair.Key.bounds;
+			float dx = Mathf.Max(bounds.min.x - cranePoint.x, 0f, cranePoint.x - bounds.max.x);
+			float dy = Mathf.Max(bounds.min.y - cranePoint.y, 0f, cranePoint.y - bounds.max.y);
+			float distance = dx * dx + dy * dy;
+			if (distance >= closestDistance)
+			{
+				continue;
+			}
+
+			closestDistance = distance;
+			levelCollider = pair.Key;
+			levelIndex = pair.Value;
+		}
+
+		return levelCollider != null;
+	}
+
+	private bool IsLevelSelectionButtonWithinCraneRange(Collider2D buttonCollider, Vector2 cranePoint)
+	{
+		if (buttonCollider == null)
+		{
+			return false;
+		}
+
+		Bounds bounds = buttonCollider.bounds;
+		Rect buttonBounds = Rect.MinMaxRect(bounds.min.x, bounds.min.y, bounds.max.x, bounds.max.y);
+		return ExpandRect(buttonBounds, avatarCollisionRadius + 0.08f).Contains(cranePoint);
+	}
+
+	private bool IsLevelSelectionButtonAtPoint(Collider2D buttonCollider, Vector2 worldPoint)
+	{
+		if (buttonCollider == null)
+		{
+			return false;
+		}
+
+		if (buttonCollider is BoxCollider2D boxCollider)
+		{
+			Vector3 localPoint = boxCollider.transform.InverseTransformPoint(worldPoint);
+			Vector3 scale = boxCollider.transform.lossyScale;
+			Vector2 localPadding = new Vector2(
+				LevelSelectionButtonHitPadding / Mathf.Max(0.0001f, Mathf.Abs(scale.x)),
+				LevelSelectionButtonHitPadding / Mathf.Max(0.0001f, Mathf.Abs(scale.y)));
+			Vector2 halfSize = boxCollider.size * 0.5f + localPadding;
+			Vector2 offset = boxCollider.offset;
+			return Mathf.Abs(localPoint.x - offset.x) <= halfSize.x
+				&& Mathf.Abs(localPoint.y - offset.y) <= halfSize.y;
+		}
+
+		return buttonCollider.OverlapPoint(worldPoint);
+	}
+
+	private Vector2 GetLevelSelectionAvatarPointerPosition()
+	{
+		if (mainCamera == null)
+		{
+			return new Vector2(avatarPosition.x, avatarPosition.y);
+		}
+
+		Vector3 screenPoint = mainCamera.WorldToScreenPoint(GetCraneVisualPosition());
+		return GetLevelSelectionWorldPointFromScreen(new Vector2(screenPoint.x, screenPoint.y));
+	}
+
+	private Vector2 GetLevelSelectionWorldPointFromScreen(Vector2 screenPoint)
+	{
+		if (mainCamera == null)
+		{
+			return Vector2.zero;
+		}
+
+		Ray ray = mainCamera.ScreenPointToRay(new Vector3(screenPoint.x, screenPoint.y, 0f));
+		Plane buttonTopPlane = new Plane(Vector3.forward, new Vector3(0f, 0f, NodeVisualTopZ));
+		if (buttonTopPlane.Raycast(ray, out float distance))
+		{
+			Vector3 worldPoint = ray.GetPoint(distance);
+			return new Vector2(worldPoint.x, worldPoint.y);
+		}
+
+		return new Vector2(avatarPosition.x, avatarPosition.y);
 	}
 
 	private void SendLevelSelectionAvatarUpdateIfNeeded()
@@ -981,14 +1527,22 @@ public partial class GameManager
 		levelButtonByCollider.Clear();
 		levelSelectionPlatform = null;
 		levelSelectionBoundaryLine = null;
-		levelSelectionMovementBounds = Rect.MinMaxRect(-4.45f, -3.25f, 4.45f, 3.25f);
+		levelSelectionMovementBounds = Rect.MinMaxRect(-4.5f, -3.5f, 4.5f, 3.5f);
 		levelConfirmButtonCollider = null;
+		levelLanguageButtonCollider = null;
+		levelSelectionTitleText = null;
 		levelInfoText = null;
 	}
 
 	private void DrawGameplayMenu()
 	{
 		float uiScale = GetGameplayMenuUiScale();
+		if (levelEnded)
+		{
+			DrawLevelResultScreen();
+			return;
+		}
+
 		float maxPanelWidth = Mathf.Max(320f, Screen.width - 36f * uiScale);
 		float maxPanelHeight = Mathf.Max(320f, Screen.height - 36f * uiScale);
 		float panelWidth = Mathf.Min((levelEnded ? 680f : 780f) * uiScale, maxPanelWidth);
@@ -1000,8 +1554,11 @@ public partial class GameManager
 			fontSize = Mathf.RoundToInt(40f * uiScale),
 			fontStyle = FontStyle.Bold
 		};
-		GUI.Box(panel, levelEnded ? "Level beendet" : "Menü", menuBoxStyle);
-		float x = panel.x + 24f * uiScale;
+			GUI.Box(panel, levelEnded ? GameText("Level beendet", "Level ended") : GameText("Menü", "Menu"), menuBoxStyle);
+			DrawLanguageToggleGuiButton(
+				new Rect(panel.xMax - 162f * uiScale, panel.y + 14f * uiScale, 138f * uiScale, 42f * uiScale),
+				uiScale);
+			float x = panel.x + 24f * uiScale;
 		float y = panel.y + 62f * uiScale;
 		float contentWidth = panel.width - 48f * uiScale;
 		bool canControlMenu = CanControlGameplayMenu();
@@ -1019,7 +1576,7 @@ public partial class GameManager
 				fontSize = Mathf.RoundToInt(38f * uiScale),
 				fontStyle = FontStyle.Bold
 			};
-			GUI.Label(new Rect(x, y, contentWidth, 50f * uiScale), "Auswertung", resultTitleStyle);
+				GUI.Label(new Rect(x, y, contentWidth, 50f * uiScale), GameText("Auswertung", "Results"), resultTitleStyle);
 			y += 62f * uiScale;
 
 			Rect scrollRect = new Rect(x, y, contentWidth, panel.height - 160f * uiScale);
@@ -1037,18 +1594,18 @@ public partial class GameManager
 
 			y = panel.y + panel.height - 68f * uiScale;
 			GUI.enabled = previousGuiEnabled && canControlMenu;
-			if (GUI.Button(new Rect(x, y, contentWidth, 56f * uiScale), "Zur Levelübersicht", menuButtonStyle))
-			{
-				RequestReturnToLevelSelection();
-			}
+				if (GUI.Button(new Rect(x, y, contentWidth, 56f * uiScale), GameText("Zur Levelübersicht", "Return to level overview"), menuButtonStyle))
+				{
+					RequestReturnToLevelSelection();
+				}
 
 			GUI.enabled = previousGuiEnabled;
 			return;
 		}
 
-		string pauseLabel = canControlMenu
-			? "Spiel pausiert."
-			: GetGameplayPauseOwnerLabel() + " hat pausiert.";
+			string pauseLabel = canControlMenu
+				? GameText("Spiel pausiert.", "Game paused.")
+				: GetGameplayPauseOwnerLabel() + GameText(" hat pausiert.", " paused.");
 		GUIStyle pauseLabelStyle = new GUIStyle(GUI.skin.label)
 		{
 			wordWrap = true,
@@ -1057,34 +1614,216 @@ public partial class GameManager
 		};
 		float buttonHeight = 68f * uiScale;
 		float buttonGap = 18f * uiScale;
-		float buttonAreaHeight = buttonHeight * 3f + buttonGap * 2f;
+		float buttonAreaHeight = buttonHeight * 2f + buttonGap;
 		Rect scrollViewRect = new Rect(x, y, contentWidth, Mathf.Max(120f * uiScale, panel.y + panel.height - y - buttonAreaHeight - 30f * uiScale));
-		Rect scrollContentRect = new Rect(0f, 0f, scrollViewRect.width - 18f * uiScale, 650f * uiScale);
+		float scrollContentWidth = scrollViewRect.width - 18f * uiScale;
+		float pauseLabelHeight = Mathf.Max(76f * uiScale, pauseLabelStyle.CalcHeight(new GUIContent(pauseLabel), scrollContentWidth));
+		float controlsY = pauseLabelHeight + 20f * uiScale;
+		float controlsHeight = GetPauseControlsInfoHeight(scrollContentWidth, uiScale);
+		Rect scrollContentRect = new Rect(0f, 0f, scrollContentWidth, Mathf.Max(scrollViewRect.height, controlsY + controlsHeight + 16f * uiScale));
 		levelPauseScrollPosition = GUI.BeginScrollView(scrollViewRect, levelPauseScrollPosition, scrollContentRect);
-		GUI.Label(new Rect(0f, 0f, scrollContentRect.width, 76f * uiScale), pauseLabel, pauseLabelStyle);
-		DrawPauseControlsInfo(new Rect(0f, 96f * uiScale, scrollContentRect.width, 520f * uiScale), uiScale);
+		GUI.Label(new Rect(0f, 0f, scrollContentRect.width, pauseLabelHeight), pauseLabel, pauseLabelStyle);
+		DrawPauseControlsInfo(new Rect(0f, controlsY, scrollContentRect.width, controlsHeight), uiScale);
 		GUI.EndScrollView();
 
 		GUI.enabled = previousGuiEnabled && canControlMenu;
 		y = panel.y + panel.height - buttonAreaHeight - 20f * uiScale;
-		if (GUI.Button(new Rect(x, y, contentWidth, buttonHeight), "Weiter", menuButtonStyle))
+		if (GUI.Button(new Rect(x, y, contentWidth, buttonHeight), GameText("Weiter", "Continue"), menuButtonStyle))
 		{
 			RequestResumeGameplay();
 		}
 
 		y += buttonHeight + buttonGap;
-		if (GUI.Button(new Rect(x, y, contentWidth, buttonHeight), "Level beenden", menuButtonStyle))
-		{
-			RequestEndLevel();
-		}
-
-		y += buttonHeight + buttonGap;
-		if (GUI.Button(new Rect(x, y, contentWidth, buttonHeight), "Zur Levelübersicht", menuButtonStyle))
+		if (GUI.Button(new Rect(x, y, contentWidth, buttonHeight), GameText("Zur Levelübersicht", "Return to level overview"), menuButtonStyle))
 		{
 			RequestReturnToLevelSelection();
 		}
 
 		GUI.enabled = previousGuiEnabled;
+	}
+
+	private void DrawLevelResultScreen()
+	{
+		if (levelResultAnimationStartedAt < 0f)
+		{
+			levelResultAnimationStartedAt = Time.unscaledTime;
+		}
+
+		float elapsed = Mathf.Max(0f, Time.unscaledTime - levelResultAnimationStartedAt);
+		float uiScale = Mathf.Clamp(
+			Mathf.Min(Screen.width / 1600f, Screen.height / 900f),
+			0.72f,
+			1.6f);
+		Rect fullScreen = new Rect(0f, 0f, Screen.width, Screen.height);
+		Color previousColor = GUI.color;
+		Color previousBackgroundColor = GUI.backgroundColor;
+		bool previousEnabled = GUI.enabled;
+
+		GUI.color = new Color(0.075f, 0.105f, 0.15f, 1f);
+		GUI.DrawTexture(fullScreen, Texture2D.whiteTexture);
+		GUI.color = Color.white;
+
+		float panelWidth = Mathf.Min(920f * uiScale, Screen.width - 48f * uiScale);
+		float panelHeight = Mathf.Min(690f * uiScale, Screen.height - 48f * uiScale);
+		Rect panel = new Rect(
+			(Screen.width - panelWidth) * 0.5f,
+			(Screen.height - panelHeight) * 0.5f,
+			panelWidth,
+			panelHeight);
+		GUI.color = new Color(0.95f, 0.97f, 1f, 1f);
+			GUI.DrawTexture(panel, Texture2D.whiteTexture);
+			GUI.color = Color.white;
+			DrawLanguageToggleGuiButton(
+				new Rect(panel.xMax - 162f * uiScale, panel.y + 18f * uiScale, 138f * uiScale, 44f * uiScale),
+				uiScale);
+
+			float titleProgress = Mathf.SmoothStep(0f, 1f, Mathf.Clamp01(elapsed / 0.55f));
+		GUIStyle titleStyle = new GUIStyle(GUI.skin.label)
+		{
+			alignment = TextAnchor.MiddleCenter,
+			fontSize = Mathf.RoundToInt(58f * uiScale),
+			fontStyle = FontStyle.Bold
+		};
+		SetStaticGuiTextColor(titleStyle, new Color(0.08f, 0.12f, 0.18f));
+		float titleY = Mathf.Lerp(panel.y - 36f * uiScale, panel.y + 42f * uiScale, titleProgress);
+			GUI.Label(new Rect(panel.x, titleY, panel.width, 76f * uiScale), GameText("Level abgeschlossen!", "Level complete!"), titleStyle);
+
+		int earnedStars = GetLevelResultStarCount();
+		float starRowY = panel.y + 145f * uiScale;
+		float starSpacing = 190f * uiScale;
+		float starCenterX = panel.center.x;
+		for (int i = 0; i < 3; i++)
+		{
+			float starProgress = GetLevelResultPopProgress(elapsed - 0.38f - i * 0.22f);
+			float pulse = i < earnedStars && starProgress >= 1f
+				? 1f + Mathf.Sin((elapsed - i * 0.2f) * 3.5f) * 0.025f
+				: 1f;
+			float starSize = 132f * uiScale * starProgress * pulse;
+			GUIStyle starStyle = new GUIStyle(GUI.skin.label)
+			{
+				alignment = TextAnchor.MiddleCenter,
+				fontSize = Mathf.Max(1, Mathf.RoundToInt(starSize)),
+				fontStyle = FontStyle.Bold
+			};
+			SetStaticGuiTextColor(
+				starStyle,
+				i < earnedStars
+					? new Color(1f, 0.66f, 0.04f)
+					: new Color(0.55f, 0.59f, 0.66f));
+			float centerX = starCenterX + (i - 1) * starSpacing;
+			GUI.Label(
+				new Rect(centerX - 90f * uiScale, starRowY, 180f * uiScale, 170f * uiScale),
+				i < earnedStars ? "★" : "☆",
+				starStyle);
+		}
+
+		int totalScore = GetLevelOrderScore();
+		int maximumScore = GetLevelOrderCount() * 3;
+		float scoreProgress = Mathf.SmoothStep(0f, 1f, Mathf.Clamp01((elapsed - 0.75f) / 0.9f));
+		int displayedScore = Mathf.RoundToInt(totalScore * scoreProgress);
+		GUIStyle scoreStyle = new GUIStyle(GUI.skin.label)
+		{
+			alignment = TextAnchor.MiddleCenter,
+			fontSize = Mathf.RoundToInt(42f * uiScale),
+			fontStyle = FontStyle.Bold
+		};
+		SetStaticGuiTextColor(scoreStyle, new Color(0.12f, 0.17f, 0.24f));
+		GUI.Label(
+			new Rect(panel.x, panel.y + 345f * uiScale, panel.width, 60f * uiScale),
+				displayedScore + " / " + maximumScore + " " + GameText("Punkte", "points"),
+				scoreStyle);
+
+		GUIStyle detailStyle = new GUIStyle(GUI.skin.label)
+		{
+			alignment = TextAnchor.MiddleCenter,
+			fontSize = Mathf.RoundToInt(25f * uiScale)
+		};
+		SetStaticGuiTextColor(detailStyle, new Color(0.3f, 0.35f, 0.42f));
+		GUI.Label(
+			new Rect(panel.x, panel.y + 410f * uiScale, panel.width, 42f * uiScale),
+				GetLevelOrderCount() + " " + GameText("Bestellungen abgeschlossen", "orders completed"),
+				detailStyle);
+
+		float buttonProgress = Mathf.SmoothStep(0f, 1f, Mathf.Clamp01((elapsed - 1.15f) / 0.45f));
+		float buttonWidth = Mathf.Min(360f * uiScale, (panel.width - 90f * uiScale) * 0.5f);
+		float buttonHeight = 76f * uiScale;
+		float buttonGap = 28f * uiScale;
+		float buttonY = Mathf.Lerp(
+			panel.y + panel.height,
+			panel.y + panel.height - buttonHeight - 54f * uiScale,
+			buttonProgress);
+		float buttonsStartX = panel.center.x - buttonWidth - buttonGap * 0.5f;
+		GUIStyle buttonStyle = new GUIStyle(GUI.skin.button)
+		{
+			fontSize = Mathf.RoundToInt(28f * uiScale),
+			fontStyle = FontStyle.Bold
+		};
+
+		bool hasNextLevel = HasNextLevel();
+		GUI.enabled = previousEnabled && hasNextLevel && buttonProgress >= 0.99f;
+		GUI.backgroundColor = new Color(0.42f, 0.78f, 1f);
+		if (GUI.Button(
+			new Rect(buttonsStartX, buttonY, buttonWidth, buttonHeight),
+				hasNextLevel ? GameText("Nächstes Level", "Next level") : GameText("Letztes Level", "Last level"),
+				buttonStyle))
+		{
+			RequestNextLevel();
+		}
+
+		GUI.enabled = previousEnabled && buttonProgress >= 0.99f;
+		GUI.backgroundColor = new Color(0.82f, 0.86f, 0.91f);
+		if (GUI.Button(
+			new Rect(buttonsStartX + buttonWidth + buttonGap, buttonY, buttonWidth, buttonHeight),
+				GameText("Zur Levelübersicht", "Return to level overview"),
+				buttonStyle))
+		{
+			RequestReturnToLevelSelection();
+		}
+
+		GUI.enabled = previousEnabled;
+		GUI.backgroundColor = previousBackgroundColor;
+		GUI.color = previousColor;
+	}
+
+	private float GetLevelResultPopProgress(float elapsed)
+	{
+		float progress = Mathf.Clamp01(elapsed / 0.5f);
+		float shifted = progress - 1f;
+		return 1f + 2.70158f * shifted * shifted * shifted + 1.70158f * shifted * shifted;
+	}
+
+	private void SetStaticGuiTextColor(GUIStyle style, Color color)
+	{
+		if (style == null)
+		{
+			return;
+		}
+
+		style.normal.textColor = color;
+		style.hover.textColor = color;
+		style.active.textColor = color;
+		style.focused.textColor = color;
+		style.onNormal.textColor = color;
+		style.onHover.textColor = color;
+		style.onActive.textColor = color;
+		style.onFocused.textColor = color;
+	}
+
+	private void DrawLanguageToggleGuiButton(Rect rect, float uiScale)
+	{
+		bool previousEnabled = GUI.enabled;
+		GUI.enabled = true;
+		GUIStyle languageButtonStyle = new GUIStyle(GUI.skin.button)
+		{
+			fontSize = Mathf.RoundToInt(22f * uiScale),
+			fontStyle = FontStyle.Bold
+		};
+		if (GUI.Button(rect, GetLanguageToggleButtonText(), languageButtonStyle))
+		{
+			ToggleGameLanguage();
+		}
+
+		GUI.enabled = previousEnabled;
 	}
 
 	private float GetGameplayMenuUiScale()
@@ -1106,17 +1845,44 @@ public partial class GameManager
 			fontSize = Mathf.RoundToInt(36f * uiScale)
 		};
 
-		string controlsText =
-			"WASD / Pfeile: bewegen\n"
-			+ "Shift: schneller fliegen\n"
-			+ "Leertaste: Haken senken, aufnehmen/absetzen, Pfeil setzen\n"
-			+ "E: Lager-Block erstellen oder platzieren\n"
-			+ "Q: Verbindung starten oder Richtung umdrehen\n"
-			+ "R: löschen oder gehaltenen Pfeil abbrechen\n"
-			+ "F: Transition auslösen\n"
-			+ "Esc: Pause öffnen oder fortsetzen";
-		GUI.Label(new Rect(rect.x + 20f * uiScale, rect.y + 12f * uiScale, rect.width - 40f * uiScale, 52f * uiScale), "Tasten", titleStyle);
+		string controlsText = GetPauseControlsText();
+		GUI.Label(new Rect(rect.x + 20f * uiScale, rect.y + 12f * uiScale, rect.width - 40f * uiScale, 52f * uiScale), GameText("Tasten", "Controls"), titleStyle);
 		GUI.Label(new Rect(rect.x + 20f * uiScale, rect.y + 76f * uiScale, rect.width - 40f * uiScale, rect.height - 88f * uiScale), controlsText, infoStyle);
+	}
+
+	private float GetPauseControlsInfoHeight(float width, float uiScale)
+	{
+		GUIStyle infoStyle = new GUIStyle(GUI.skin.label)
+		{
+			wordWrap = true,
+			fontSize = Mathf.RoundToInt(36f * uiScale)
+		};
+		float contentWidth = Mathf.Max(1f, width - 40f * uiScale);
+		float textHeight = infoStyle.CalcHeight(new GUIContent(GetPauseControlsText()), contentWidth);
+		return Mathf.Max(520f * uiScale, 76f * uiScale + textHeight + 36f * uiScale);
+	}
+
+	private string GetPauseControlsText()
+	{
+		return GameText(
+			"WASD / Pfeile: bewegen\n"
+				+ "Shift: schneller fliegen\n"
+				+ "Leertaste: Haken senken, aufnehmen/absetzen, Pfeil setzen\n"
+				+ "E: Lager-Block erstellen oder platzieren\n"
+				+ "Q: Verbindung starten oder Richtung umdrehen\n"
+				+ "R: löschen oder gehaltenen Pfeil abbrechen\n"
+				+ "C: Rezeptdetails ein-/ausblenden\n"
+				+ "F: Transition auslösen\n"
+				+ "Esc: Pause öffnen oder fortsetzen",
+			"WASD / arrows: move\n"
+				+ "Shift: fly faster\n"
+				+ "Space: lower hook, pick up/set down, place arrow\n"
+				+ "E: create or place storage block\n"
+				+ "Q: start connection or reverse direction\n"
+				+ "R: delete or cancel held arrow\n"
+				+ "C: show/hide recipe details\n"
+				+ "F: fire transition\n"
+				+ "Esc: open or close pause");
 	}
 
 	private void HandleGameplayMenuHotkey()
@@ -1161,7 +1927,8 @@ public partial class GameManager
 
 	public bool ShouldSuppressLobbyOverlay()
 	{
-		return showLevelSelection && !gameplayInitialized && IsGameplayConnectionReady();
+		return singlePlayerMode
+			|| (showLevelSelection && !gameplayInitialized && IsGameplayConnectionReady());
 	}
 
 	public bool ShouldShowLevelSelectionLobbyOverlay()
@@ -1172,6 +1939,11 @@ public partial class GameManager
 	private void RequestReturnToLevelSelection()
 	{
 		ExecuteOrSendCommand(new CommandData { action = "ReturnToLevelSelection" });
+	}
+
+	private void RequestNextLevel()
+	{
+		ExecuteOrSendCommand(new CommandData { action = "NextLevel" });
 	}
 
 	private void RequestPauseGameplay()
@@ -1197,6 +1969,36 @@ public partial class GameManager
 	private void RequestSelectLevelSelection(int levelIndex)
 	{
 		ExecuteOrSendCommand(new CommandData { action = "SelectLevelSelection", amount = levelIndex });
+	}
+
+	private void RequestExitToDesktop()
+	{
+		LobbyRelayManager lobbyManager = FindAnyObjectByType<LobbyRelayManager>();
+		if (lobbyManager != null)
+		{
+			lobbyManager.RequestExitToDesktop();
+			return;
+		}
+
+		ExitApplicationNow();
+	}
+
+	private bool ShouldShowExitToDesktopButton()
+	{
+#if UNITY_WEBGL
+		return false;
+#else
+		return true;
+#endif
+	}
+
+	private void ExitApplicationNow()
+	{
+#if UNITY_EDITOR
+		UnityEditor.EditorApplication.isPlaying = false;
+#else
+		Application.Quit();
+#endif
 	}
 
 	private bool PauseGameplayFromHost(ulong actorClientId)
@@ -1243,20 +2045,25 @@ public partial class GameManager
 	{
 		if (gameplayMenuOwnerClientId == NoGameplayMenuOwnerClientId)
 		{
-			return "Ein Spieler";
+			return GameText("Ein Spieler", "A player");
 		}
 
 		if (gameplayMenuOwnerClientId == GetLocalActorClientId())
 		{
-			return "Du";
+			return GameText("Du", "You");
 		}
 
-		return IsActorTopSide(gameplayMenuOwnerClientId) ? "Spieler 1" : "Spieler 2";
+		return IsActorTopSide(gameplayMenuOwnerClientId) ? GameText("Spieler 1", "Player 1") : GameText("Spieler 2", "Player 2");
 	}
 
 	private bool IsGameplayCommandBlockedByPause(string action, ulong actorClientId)
 	{
 		if (string.IsNullOrEmpty(action) || !gameplayMenuOpen)
+		{
+			return false;
+		}
+
+		if (levelEnded && (action == "NextLevel" || action == "ReturnToLevelSelection"))
 		{
 			return false;
 		}
@@ -1324,6 +2131,7 @@ public partial class GameManager
 		}
 
 		levelResultScrollPosition = Vector2.zero;
+		levelResultAnimationStartedAt = Time.unscaledTime;
 		CancelGameplayMenuTransientInput();
 	}
 
@@ -1333,6 +2141,7 @@ public partial class GameManager
 		levelEnded = snapshotLevelEnded;
 		if (!levelEnded)
 		{
+			levelResultAnimationStartedAt = -1f;
 			return;
 		}
 
@@ -1340,6 +2149,7 @@ public partial class GameManager
 		if (!wasLevelEnded)
 		{
 			levelResultScrollPosition = Vector2.zero;
+			levelResultAnimationStartedAt = Time.unscaledTime;
 		}
 
 		CancelGameplayMenuTransientInput();
@@ -1347,15 +2157,46 @@ public partial class GameManager
 
 	private void ReturnToLevelSelectionFromHost()
 	{
+		if (!showLevelSelection
+			|| !gameplayInitialized
+			|| (!gameplayMenuOpen && !levelEnded))
+		{
+			return;
+		}
+
 		gameplayMenuOpen = false;
 		gameplayMenuOwnerClientId = NoGameplayMenuOwnerClientId;
 		levelEnded = false;
+		levelResultAnimationStartedAt = -1f;
 		ApplyLevelSelectionState(new LevelSelectionState
 		{
 			showSelection = true,
 			selectedLevelIndex = selectedLevelIndex
 		});
 		BroadcastLevelSelectionStateToClients();
+	}
+
+	private bool HasNextLevel()
+	{
+		List<PetriNetLevelDefinition> levels = GetLevelDefinitions();
+		return levels.Count > 0 && selectedLevelIndex + 1 < levels.Count;
+	}
+
+	private void StartNextLevelFromHost()
+	{
+		if (!levelEnded || !HasNextLevel())
+		{
+			return;
+		}
+
+		int nextLevelIndex = selectedLevelIndex + 1;
+		ApplyLevelSelectionState(new LevelSelectionState
+		{
+			showSelection = true,
+			selectedLevelIndex = nextLevelIndex
+		});
+		BroadcastLevelSelectionStateToClients();
+		ConfirmLevelSelection(nextLevelIndex);
 	}
 
 	private void ApplyLevelSelectionState(LevelSelectionState state)
@@ -1414,6 +2255,7 @@ public partial class GameManager
 		}
 
 		selectedLevelIndex = Mathf.Clamp(snapshotLevelIndex, 0, levels.Count - 1);
+		CompleteLevelSelectionTutorialMovementForSession();
 		ApplyLevelDefinition(levels[selectedLevelIndex]);
 		levelSelectionConfirmed = true;
 		gameplayMenuOpen = false;
@@ -1435,6 +2277,7 @@ public partial class GameManager
 		}
 
 		selectedLevelIndex = Mathf.Clamp(levelIndex, 0, levels.Count - 1);
+		CompleteLevelSelectionTutorialMovementForSession();
 		ApplyLevelDefinition(levels[selectedLevelIndex]);
 		levelSelectionConfirmed = true;
 		gameplayMenuOpen = false;
@@ -1456,11 +2299,30 @@ public partial class GameManager
 		topIngredientNames = CopyStringList(level.topIngredients);
 		bottomIngredientNames = CopyStringList(level.bottomIngredients);
 		SetLevelOrders(level.orders);
+		OnLevelDefinitionApplied(level);
 	}
 
 	private List<PetriNetLevelDefinition> GetLevelDefinitions()
 	{
-		return PetriNetLevelCatalog.Levels ?? new List<PetriNetLevelDefinition>();
+		List<PetriNetLevelDefinition> levels = PetriNetLevelCatalog.Levels ?? new List<PetriNetLevelDefinition>();
+		if (!singlePlayerMode)
+		{
+			return levels;
+		}
+
+		List<PetriNetLevelDefinition> filteredLevels = new List<PetriNetLevelDefinition>();
+		for (int i = 0; i < levels.Count; i++)
+		{
+			PetriNetLevelDefinition level = levels[i];
+			if (level != null && level.id == SinglePlayerHiddenLevelId)
+			{
+				continue;
+			}
+
+			filteredLevels.Add(level);
+		}
+
+		return filteredLevels;
 	}
 
 	private List<string> CopyStringList(List<string> source)
@@ -1542,9 +2404,14 @@ public partial class GameManager
 
 	private string GetLevelBlockOverviewText(List<PetriNetLevelBlockDefinition> blocks, PetriNetLevelBlockOwner owner)
 	{
+		return GetLevelBlockOverviewText(blocks, owner, gameLanguage);
+	}
+
+	private string GetLevelBlockOverviewText(List<PetriNetLevelBlockDefinition> blocks, PetriNetLevelBlockOwner owner, PetriNetGameLanguage language)
+	{
 		if (blocks == null || blocks.Count <= 0)
 		{
-			return "keine\n";
+			return GameText(language, "keine\n", "none\n");
 		}
 
 		StringBuilder text = new StringBuilder();
@@ -1562,33 +2429,38 @@ public partial class GameManager
 			}
 
 			text.Append("- ");
-			text.Append(block.firstTransitionName);
+			text.Append(LocalizeVisibleText(block.firstTransitionName, language));
 			if (!block.singleTransition)
 			{
 				text.Append(" -> ");
-				text.Append(block.secondTransitionName);
+				text.Append(LocalizeVisibleText(block.secondTransitionName, language));
 			}
 			text.Append(" / ");
 			text.Append(block.processingSeconds.ToString("0.#"));
 			text.Append("s / ");
-			text.Append(GetFallbackText(block.resultState, "kein Zustand"));
+			text.Append(LocalizeVisibleText(GetFallbackText(block.resultState, "kein Zustand"), language));
 			if (block.outputTokenCount > 1)
 			{
-				text.Append(" / Ausgabe x");
+				text.Append(GameText(language, " / Ausgabe x", " / output x"));
 				text.Append(block.outputTokenCount);
 			}
 
 			text.Append('\n');
 		}
 
-		return text.Length <= 0 ? "keine\n" : text.ToString();
+		return text.Length <= 0 ? GameText(language, "keine\n", "none\n") : text.ToString();
 	}
 
 	private string GetLevelInhibitorOverviewText(List<PetriNetLevelInhibitorArcDefinition> inhibitors)
 	{
+		return GetLevelInhibitorOverviewText(inhibitors, gameLanguage);
+	}
+
+	private string GetLevelInhibitorOverviewText(List<PetriNetLevelInhibitorArcDefinition> inhibitors, PetriNetGameLanguage language)
+	{
 		if (inhibitors == null || inhibitors.Count <= 0)
 		{
-			return "keine\n";
+			return GameText(language, "keine\n", "none\n");
 		}
 
 		StringBuilder text = new StringBuilder();
@@ -1600,38 +2472,48 @@ public partial class GameManager
 				continue;
 			}
 
-			string sourceBlock = GetFallbackText(inhibitor.sourceBlockFirstTransitionName, "Block");
-			string sourcePlace = GetLevelBlockPlaceOverviewText(inhibitor.sourcePlace);
-			string targetTransition = GetFallbackText(inhibitor.targetTransitionName, "Transition");
+			string sourceBlock = LocalizeVisibleText(GetFallbackText(inhibitor.sourceBlockFirstTransitionName, "Block"), language);
+			string sourcePlace = GetLevelBlockPlaceOverviewText(inhibitor.sourcePlace, language);
+			string targetTransition = LocalizeVisibleText(GetFallbackText(inhibitor.targetTransitionName, "Transition"), language);
 			text.Append("- ");
 			text.Append(sourceBlock);
 			text.Append(" / ");
 			text.Append(sourcePlace);
 			text.Append(" --o ");
 			text.Append(targetTransition);
-			text.Append("\n  sperrt, wenn dort Token liegen\n");
+			text.Append(GameText(language, "\n  sperrt, wenn dort Token liegen\n", "\n  blocks while tokens are there\n"));
 		}
 
-		return text.Length <= 0 ? "keine\n" : text.ToString();
+		return text.Length <= 0 ? GameText(language, "keine\n", "none\n") : text.ToString();
 	}
 
 	private string GetLevelBlockPlaceOverviewText(PetriNetLevelBlockPlace place)
 	{
+		return GetLevelBlockPlaceOverviewText(place, gameLanguage);
+	}
+
+	private string GetLevelBlockPlaceOverviewText(PetriNetLevelBlockPlace place, PetriNetGameLanguage language)
+	{
 		switch (place)
 		{
 			case PetriNetLevelBlockPlace.ausgabe:
-				return "Ausgabe-Stelle";
+				return GameText(language, "Ausgabe-Stelle", "output place");
 			case PetriNetLevelBlockPlace.zwischenstelle:
 			default:
-				return "Zwischenstelle";
+				return GameText(language, "Zwischenstelle", "intermediate place");
 		}
 	}
 
 	private string JoinLevelList(List<string> values)
 	{
+		return JoinLevelList(values, gameLanguage);
+	}
+
+	private string JoinLevelList(List<string> values, PetriNetGameLanguage language)
+	{
 		if (values == null || values.Count <= 0)
 		{
-			return "keine";
+			return GameText(language, "keine", "none");
 		}
 
 		StringBuilder result = new StringBuilder();
@@ -1648,10 +2530,52 @@ public partial class GameManager
 				result.Append(", ");
 			}
 
-			result.Append(value);
+			result.Append(LocalizeVisibleText(value, language));
 		}
 
-		return result.Length <= 0 ? "keine" : result.ToString();
+		return result.Length <= 0 ? GameText(language, "keine", "none") : result.ToString();
+	}
+
+	private string GetLevelOrderOverviewText(PetriNetLevelDefinition level, PetriNetGameLanguage language)
+	{
+		if (level == null || level.orders == null || level.orders.Count <= 0)
+		{
+			return GameText(language, "keine", "none");
+		}
+
+		StringBuilder text = new StringBuilder();
+		for (int i = 0; i < level.orders.Count; i++)
+		{
+			PetriNetLevelOrderDefinition order = level.orders[i];
+			if (order == null)
+			{
+				continue;
+			}
+
+			if (text.Length > 0)
+			{
+				text.Append('\n');
+			}
+
+			text.Append("- ");
+			if (order.amount > 1)
+			{
+				text.Append(order.amount);
+				text.Append("x ");
+			}
+
+			text.Append(LocalizeVisibleText(order.dishText, language));
+			text.Append(GameText(language, "\n  Gefordert: ", "\n  Required: "));
+			text.Append(LocalizeVisibleText(GetOrderRequiredTokenText(order), language));
+			string recipeText = LocalizeVisibleText(GetOrderRecipeText(order), language);
+			if (!string.IsNullOrEmpty(recipeText))
+			{
+				text.Append(GameText(language, "\n  Rezept: ", "\n  Recipe: "));
+				text.Append(recipeText);
+			}
+		}
+
+		return text.Length <= 0 ? GameText(language, "keine", "none") : text.ToString();
 	}
 
 	private string GetFallbackText(string value, string fallback)

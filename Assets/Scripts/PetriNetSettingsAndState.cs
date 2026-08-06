@@ -23,20 +23,7 @@ public partial class GameManager
 	[SerializeField] private float arcWidth = 0.08f;
 	[SerializeField] private float arrowHeadLength = 0.36f;
 	[SerializeField] private float arrowHeadAngle = 30f;
-
-	[Header("Activity Prefabs")]
-	[InspectorName("Cutting Tool Prefab")]
-	[SerializeField] private GameObject cuttingTransitionPrefab;
-	[InspectorName("Cutting Tool Animator Controller")]
-	[SerializeField] private RuntimeAnimatorController cuttingToolAnimatorController;
-	[InspectorName("Cutting Tool Color Map")]
-	[SerializeField] private Texture2D cuttingToolColorMap;
-	[InspectorName("Cutting Tool Local Position")]
-	[SerializeField] private Vector3 cuttingTransitionPrefabLocalPosition = new Vector3(0f, 0.5f, -0.62f);
-	[InspectorName("Cutting Tool Local Euler")]
-	[SerializeField] private Vector3 cuttingTransitionPrefabLocalEuler = new Vector3(90f, 0f, -35f);
-	[InspectorName("Cutting Tool Local Scale")]
-	[SerializeField] private Vector3 cuttingTransitionPrefabLocalScale = new Vector3(1.5f, 1.5f, 1.5f);
+	[SerializeField] private float arcSelectionRadius = 0.4f;
 
 	[Header("Avatar Prefabs")]
 	[SerializeField] private GameObject avatarDronePrefab;
@@ -158,7 +145,9 @@ public partial class GameManager
 	private string draggedNodeId;
 	private Vector3 dragOffset;
 	private bool isMiddlePanning;
+	private bool manualCameraPanActive;
 	private Vector3 panReferenceWorld;
+	private Vector2 panStartScreen;
 	private int placeCounter = 1;
 	private int transitionCounter = 1;
 	private int arcCounter = 1;
@@ -169,6 +158,7 @@ public partial class GameManager
 	private Transform sharedPoolVisualRoot;
 	private bool networkHandlersRegistered;
 	private bool suppressNetworkSend;
+	private bool singlePlayerMode;
 	private bool collaborativeLayoutApplied;
 	private bool gameplayInitialized;
 	private bool forceLobbyStartScreen;
@@ -204,7 +194,6 @@ public partial class GameManager
 	private float avatarSprintMultiplier = 1.5f;
 	private float avatarCollisionRadius = 0.4f; // Matches CircleCollider2D radius on avatar visual
 	private float transitionCollisionRadius = 0.5f; // Half extent of the square transition footprint
-	private float cameraRestAreaMargin = 0.3f; // Rest area margin as % of screen
 	private float avatarCraneRestHeight = 1.75f;
 	private float avatarCraneLoweredHeight = 1.1f;
 	private float avatarCraneDipTargetHeight = 1.1f;
@@ -219,6 +208,7 @@ public partial class GameManager
 	private Dictionary<ulong, float> remoteAvatarRotations = new Dictionary<ulong, float>();
 	private Dictionary<ulong, RemoteHeldObjectState> remoteAvatarInventories = new Dictionary<ulong, RemoteHeldObjectState>();
 	private Dictionary<ulong, float> remoteAvatarCraneHeights = new Dictionary<ulong, float>();
+	private Dictionary<ulong, RemoteCraneConnectState> remoteCraneConnectStates = new Dictionary<ulong, RemoteCraneConnectState>();
 
 	private const ulong UnassignedOwnerClientId = ulong.MaxValue;
 }

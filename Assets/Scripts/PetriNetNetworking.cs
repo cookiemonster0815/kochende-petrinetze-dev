@@ -9,7 +9,7 @@ public partial class GameManager
 {
 	private void HandleNetworkHooks()
 	{
-		if (!enableNetworkAuthoritativeSync || networkHandlersRegistered)
+		if (singlePlayerMode || !enableNetworkAuthoritativeSync || networkHandlersRegistered)
 		{
 			return;
 		}
@@ -137,6 +137,8 @@ public partial class GameManager
 			heldOffsetX = cmd.avatarHeldOffsetX,
 			heldOffsetY = cmd.avatarHeldOffsetY,
 			sceneMode = cmd.avatarSceneMode,
+			connectStartNodeId = cmd.avatarConnectStartNodeId ?? "",
+			connectReversed = cmd.avatarConnectReversed,
 		};
 		if (!ShouldAcceptIncomingAvatarState(state))
 		{
@@ -195,7 +197,14 @@ public partial class GameManager
 				remoteAvatarInventories.TryGetValue(senderClientId, out previousHeldState);
 			}
 
-			bool heldObjectChanged = GetHeldNetworkKey(previousHeldState) != GetHeldNetworkKey(incomingHeldState);
+			RemoteCraneConnectState previousConnectState = null;
+			if (remoteCraneConnectStates != null)
+			{
+				remoteCraneConnectStates.TryGetValue(senderClientId, out previousConnectState);
+			}
+
+			bool heldObjectChanged = GetHeldNetworkKey(previousHeldState) != GetHeldNetworkKey(incomingHeldState)
+				|| GetCraneConnectNetworkKey(previousConnectState) != GetCraneConnectNetworkKey(state);
 			StoreRemoteAvatarState(state);
 			BroadcastAvatarState(state, senderClientId, heldObjectChanged);
 			return;
@@ -312,6 +321,8 @@ public partial class GameManager
 			heldOffsetX = heldOffset.x,
 			heldOffsetY = heldOffset.y,
 			sceneMode = GetCurrentAvatarSceneMode(),
+			connectStartNodeId = craneConnectStartNodeId ?? "",
+			connectReversed = craneConnectReversed,
 		};
 	}
 
@@ -379,12 +390,24 @@ public partial class GameManager
 	{
 		HeldObjectKind kind = GetCurrentHeldObjectKind();
 		string id = GetCurrentHeldObjectId();
-		if (kind == HeldObjectKind.None || string.IsNullOrEmpty(id))
+		string heldKey = "";
+		if (kind != HeldObjectKind.None && !string.IsNullOrEmpty(id))
 		{
-			return "";
+			heldKey = ((int)kind).ToString() + ":" + id;
 		}
 
-		return ((int)kind).ToString() + ":" + id;
+		string connectKey = GetCurrentCraneConnectNetworkKey();
+		if (string.IsNullOrEmpty(heldKey))
+		{
+			return connectKey;
+		}
+
+		if (string.IsNullOrEmpty(connectKey))
+		{
+			return heldKey;
+		}
+
+		return heldKey + "|" + connectKey;
 	}
 
 	private string GetHeldNetworkKey(RemoteHeldObjectState heldState)
@@ -395,6 +418,36 @@ public partial class GameManager
 		}
 
 		return ((int)heldState.kind).ToString() + ":" + heldState.id;
+	}
+
+	private string GetCurrentCraneConnectNetworkKey()
+	{
+		if (string.IsNullOrEmpty(craneConnectStartNodeId))
+		{
+			return "";
+		}
+
+		return "C:" + craneConnectStartNodeId + ":" + (craneConnectReversed ? "1" : "0");
+	}
+
+	private string GetCraneConnectNetworkKey(RemoteCraneConnectState connectState)
+	{
+		if (connectState == null || string.IsNullOrEmpty(connectState.startNodeId))
+		{
+			return "";
+		}
+
+		return "C:" + connectState.startNodeId + ":" + (connectState.reversed ? "1" : "0");
+	}
+
+	private string GetCraneConnectNetworkKey(AvatarState state)
+	{
+		if (state == null || string.IsNullOrEmpty(state.connectStartNodeId))
+		{
+			return "";
+		}
+
+		return "C:" + state.connectStartNodeId + ":" + (state.connectReversed ? "1" : "0");
 	}
 
 	private RemoteHeldObjectState GetRemoteHeldObjectState(AvatarState state)
@@ -542,7 +595,24 @@ public partial class GameManager
 		remoteAvatarRotations[clientId] = state.rotation;
 		remoteAvatarInventories[clientId] = GetRemoteHeldObjectState(state);
 		remoteAvatarCraneHeights[clientId] = state.craneHeight >= 0f ? state.craneHeight : avatarCraneRestHeight;
+		StoreRemoteCraneConnectState(clientId, state.connectStartNodeId, state.connectReversed);
 		NormalizeCompositeBlockSorting();
+	}
+
+	private void StoreRemoteCraneConnectState(ulong clientId, string startNodeId, bool reversed)
+	{
+		string trimmedStartNodeId = startNodeId ?? "";
+		if (string.IsNullOrEmpty(trimmedStartNodeId))
+		{
+			remoteCraneConnectStates.Remove(clientId);
+			return;
+		}
+
+		remoteCraneConnectStates[clientId] = new RemoteCraneConnectState
+		{
+			startNodeId = trimmedStartNodeId,
+			reversed = reversed,
+		};
 	}
 
 	private void BroadcastSnapshotToClients()
@@ -623,6 +693,9 @@ public partial class GameManager
 				RemoteHeldObjectState heldState = remoteAvatarInventories.ContainsKey(clientId)
 					? remoteAvatarInventories[clientId]
 					: new RemoteHeldObjectState { kind = HeldObjectKind.None, id = "", offset = Vector2.zero };
+				RemoteCraneConnectState connectState = remoteCraneConnectStates.ContainsKey(clientId)
+					? remoteCraneConnectStates[clientId]
+					: null;
 
 				snapshot.avatars.Add(new AvatarState
 				{
@@ -637,6 +710,8 @@ public partial class GameManager
 					heldOffsetX = heldState.offset.x,
 					heldOffsetY = heldState.offset.y,
 					sceneMode = AvatarSceneModeGameplay,
+					connectStartNodeId = connectState != null ? (connectState.startNodeId ?? "") : "",
+					connectReversed = connectState != null && connectState.reversed,
 				});
 			}
 		}
@@ -771,12 +846,14 @@ public partial class GameManager
 						remoteAvatarRotations = new Dictionary<ulong, float>();
 						remoteAvatarInventories = new Dictionary<ulong, RemoteHeldObjectState>();
 						remoteAvatarCraneHeights = new Dictionary<ulong, float>();
+						remoteCraneConnectStates = new Dictionary<ulong, RemoteCraneConnectState>();
 					}
 
 					remoteAvatarPositions[clientId] = new Vector3(state.x, state.y, 0f);
 					remoteAvatarRotations[clientId] = state.rotation;
 					remoteAvatarInventories[clientId] = GetRemoteHeldObjectState(state);
 					remoteAvatarCraneHeights[clientId] = state.craneHeight >= 0f ? state.craneHeight : avatarCraneRestHeight;
+					StoreRemoteCraneConnectState(clientId, state.connectStartNodeId, state.connectReversed);
 				}
 			}
 		}
@@ -1078,7 +1155,7 @@ public partial class GameManager
 
 	private bool IsHostOrOffline()
 	{
-		if (!enableNetworkAuthoritativeSync)
+		if (singlePlayerMode || !enableNetworkAuthoritativeSync)
 		{
 			return true;
 		}
@@ -1093,6 +1170,11 @@ public partial class GameManager
 
 	private string GetNetworkRoleLabel()
 	{
+		if (singlePlayerMode)
+		{
+			return "Single Player";
+		}
+
 		if (!enableNetworkAuthoritativeSync)
 		{
 			return "Offline (sync disabled)";

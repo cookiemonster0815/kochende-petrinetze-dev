@@ -60,6 +60,8 @@ public partial class GameManager
 		public float avatarHeldOffsetX;
 		public float avatarHeldOffsetY;
 		public int avatarSceneMode;
+		public string avatarConnectStartNodeId;
+		public bool avatarConnectReversed;
 	}
 
 	[Serializable]
@@ -90,6 +92,8 @@ public partial class GameManager
 		public float heldOffsetX;
 		public float heldOffsetY;
 		public int sceneMode;
+		public string connectStartNodeId;
+		public bool connectReversed;
 	}
 
 	[Serializable]
@@ -150,6 +154,7 @@ public partial class GameManager
 		public MeshRenderer visual3DRenderer;
 		public Collider2D collider;
 		public TextMesh label;
+		public TextMesh capacityLabel;
 		public Transform tokenRoot;
 		public float processingDuration;
 		public float processingReadyTime;
@@ -188,6 +193,7 @@ public partial class GameManager
 		public SpriteRenderer fill;
 		public LineRenderer border;
 		public BoxCollider2D collider;
+		public Transform baseShadowCaster;
 	}
 
 	private class RemoteHeldObjectState
@@ -195,6 +201,12 @@ public partial class GameManager
 		public HeldObjectKind kind;
 		public string id;
 		public Vector2 offset;
+	}
+
+	private class RemoteCraneConnectState
+	{
+		public string startNodeId;
+		public bool reversed;
 	}
 
 	private const string CommandMessageName = "PetriCommand";
