@@ -208,12 +208,20 @@ public partial class GameManager
 
 	private float GetSharedScreenCameraSize()
 	{
+		float size;
 		if (!enableSharedTransitionPool)
 		{
-			return 3.6f;
+			size = 3.6f;
+		}
+		else
+		{
+			size = Mathf.Max(4.8f, playerZoneYSpacing + sharedPoolHalfHeight + 1.4f);
 		}
 
-		return Mathf.Max(4.8f, playerZoneYSpacing + sharedPoolHalfHeight + 1.4f);
+#if UNITY_WEBGL && !UNITY_EDITOR
+		size *= Mathf.Max(1f, webGlCameraSizeMultiplier);
+#endif
+		return size;
 	}
 
 	private void EnsureGraphRootExists()

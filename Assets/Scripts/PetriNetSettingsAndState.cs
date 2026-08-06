@@ -57,6 +57,7 @@ public partial class GameManager
 	[SerializeField] private float mouseWheelScrollThreshold = 1.5f;
 	[SerializeField] private float minZoom = 1.8f;
 	[SerializeField] private float maxZoom = 12f;
+	[SerializeField] private float webGlCameraSizeMultiplier = 1.22f;
 
 	[Header("Rendering")]
 	[SerializeField] private bool enforceMinimumWindowResolution = true;

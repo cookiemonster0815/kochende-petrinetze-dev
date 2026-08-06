@@ -3,7 +3,6 @@
   <head>
     <meta charset="utf-8">
     <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
-    <meta name="viewport" content="width=device-width, height=device-height, initial-scale=1.0, user-scalable=no">
     <title>Unity Web Player | BA Overcooked</title>
     <link rel="shortcut icon" href="TemplateData/favicon.ico">
     <link rel="stylesheet" href="TemplateData/style.css">
@@ -53,19 +52,17 @@
       }
 
       var buildUrl = "Build";
-      var loaderUrl = buildUrl + "/BA_overcooked_Web_v0-9.loader.js";
+      var loaderUrl = buildUrl + "/BA_overcooked_Web_v0-11.loader.js";
       var config = {
         arguments: [],
-        dataUrl: buildUrl + "/BA_overcooked_Web_v0-9.data.unityweb",
-        frameworkUrl: buildUrl + "/BA_overcooked_Web_v0-9.framework.js.unityweb",
-        codeUrl: buildUrl + "/BA_overcooked_Web_v0-9.wasm.unityweb",
+        dataUrl: buildUrl + "/BA_overcooked_Web_v0-11.data.unityweb",
+        frameworkUrl: buildUrl + "/BA_overcooked_Web_v0-11.framework.js.unityweb",
+        codeUrl: buildUrl + "/BA_overcooked_Web_v0-11.wasm.unityweb",
         streamingAssetsUrl: "StreamingAssets",
         companyName: "DefaultCompany",
         productName: "BA Overcooked",
         productVersion: "0.1.0",
         showBanner: unityShowBanner,
-        devicePixelRatio: 1,
-        matchWebGLToCanvasSize: false,
         // errorHandler: function(err, url, line) {
         //    alert("error " + err + " occurred at line " + line);
         //    // Return 'true' if you handled this error and don't want Unity
@@ -90,46 +87,15 @@
       // JS_FileSystem_Sync() behavior, but in future Unity version, this will be
       // expected to change.
 
-      function fitUnityCanvas() {
-        var footer = document.querySelector("#unity-footer");
-        if (footer) {
-          footer.style.display = "none";
-        }
-
-        var viewport = window.visualViewport || window;
-        var availableWidth = Math.floor(viewport.width || window.innerWidth);
-        var availableHeight = Math.max(1, Math.floor(viewport.height || window.innerHeight));
-        var targetAspect = 16 / 9;
-        var width = availableWidth;
-        var height = width / targetAspect;
-        if (height > availableHeight) {
-          height = availableHeight;
-          width = height * targetAspect;
-        }
-
-        var container = document.querySelector("#unity-container");
-        container.style.width = width + "px";
-        container.style.height = height + "px";
-        container.style.left = Math.max(0, Math.floor((availableWidth - width) * 0.5)) + "px";
-        container.style.top = "0px";
-        container.style.transform = "none";
-        canvas.style.width = width + "px";
-        canvas.style.height = height + "px";
-        canvas.width = Math.max(1, Math.round(width));
-        canvas.height = Math.max(1, Math.round(height));
-      }
-
-      window.addEventListener("resize", fitUnityCanvas);
-      if (window.visualViewport) {
-        window.visualViewport.addEventListener("resize", fitUnityCanvas);
-      }
-
       if (/iPhone|iPad|iPod|Android/i.test(navigator.userAgent)) {
         // Mobile device style: fill the whole browser client area with the game canvas:
 
+        var meta = document.createElement('meta');
+        meta.name = 'viewport';
+        meta.content = 'width=device-width, height=device-height, initial-scale=1.0, user-scalable=no, shrink-to-fit=yes';
+        document.getElementsByTagName('head')[0].appendChild(meta);
         document.querySelector("#unity-container").className = "unity-mobile";
         canvas.className = "unity-mobile";
-        fitUnityCanvas();
 
         // To lower canvas resolution on mobile devices to gain some
         // performance, uncomment the following line:
@@ -138,7 +104,8 @@
 
       } else {
         // Desktop style: Render the game canvas in a window that can be maximized to fullscreen:
-        fitUnityCanvas();
+        canvas.style.width = "1600px";
+        canvas.style.height = "900px";
       }
 
       document.querySelector("#unity-loading-bar").style.display = "block";
