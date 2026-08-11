@@ -518,6 +518,11 @@ public partial class GameManager
 			}
 		}
 
+		if (ShouldCreateNothingTokenForInputlessBlockEntry(transitionId, inputArcs))
+		{
+			consumedTokens.Add(CreateNothingToken());
+		}
+
 		for (int i = 0; i < outputArcs.Count; i++)
 		{
 			ArcRuntime arc = outputArcs[i];
@@ -654,7 +659,10 @@ public partial class GameManager
 			}
 		}
 
-		if (!IsIngredientTransition(transition) && !hasInputPlace)
+		if (!IsIngredientTransition(transition)
+			&& !IsDeliveryTransition(transition)
+			&& !hasInputPlace
+			&& !IsCompositeBlockFirstTransitionId(transition.id))
 		{
 			return false;
 		}
@@ -662,6 +670,30 @@ public partial class GameManager
 		if (!IsIngredientTransition(transition) && !IsDeliveryTransition(transition) && !IsSharedPoolTrashTransitionId(transition.id) && !hasOutputPlace)
 		{
 			return false;
+		}
+
+		return true;
+	}
+
+	private bool ShouldCreateNothingTokenForInputlessBlockEntry(string transitionId, List<ArcRuntime> inputArcs)
+	{
+		if (!IsCompositeBlockFirstTransitionId(transitionId))
+		{
+			return false;
+		}
+
+		if (inputArcs == null)
+		{
+			return true;
+		}
+
+		for (int i = 0; i < inputArcs.Count; i++)
+		{
+			ArcRuntime arc = inputArcs[i];
+			if (arc != null && nodesById.TryGetValue(arc.fromId, out NodeRuntime place) && place.type == NodeType.Place)
+			{
+				return false;
+			}
 		}
 
 		return true;

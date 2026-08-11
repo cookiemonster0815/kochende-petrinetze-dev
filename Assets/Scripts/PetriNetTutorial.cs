@@ -35,7 +35,7 @@ public partial class GameManager
 	private const float TutorialBubbleScale = 1.45f;
 	private const float TutorialBubbleTextScale = 2f;
 	private const float TutorialBubbleCharacterSize = 0.115f * TutorialBubbleTextScale;
-	private const float TutorialBubbleTextWidthRatio = 0.72f;
+	private const float TutorialBubbleTextWidthRatio = 0.78f;
 	private const float TutorialBubbleTextHeightRatio = 0.56f;
 	private const float TutorialBubbleEstimatedCharacterWidth = 0.7f;
 	private const float TutorialBubbleEstimatedLineHeight = 1.28f;
@@ -231,7 +231,7 @@ public partial class GameManager
 				center,
 				size,
 				ingredientTransition,
-				GetTutorialText(TutorialTextId.FireIngredient),
+				GetTutorialFireIngredientText(),
 				TutorialBubbleCharacterSize);
 			return;
 		}
@@ -495,6 +495,12 @@ public partial class GameManager
 			|| tutorialSkipped
 			|| tutorialStep != TutorialStepFireIngredient
 			|| !IsIngredientTransitionId(transitionId))
+		{
+			return;
+		}
+
+		if (TryGetTutorialExpectedFireIngredientTransitionId(out string expectedTransitionId)
+			&& transitionId != expectedTransitionId)
 		{
 			return;
 		}
@@ -1202,12 +1208,39 @@ public partial class GameManager
 
 	private string GetTutorialMoveConnectionText()
 	{
-		if (singlePlayerMode || IsActorTopSide(GetLocalActorClientId()))
+		if (singlePlayerMode)
+		{
+			return GetTutorialText(TutorialTextId.MoveConnectionToPotatoesSinglePlayer);
+		}
+
+		if (IsActorTopSide(GetLocalActorClientId()))
 		{
 			return GetTutorialText(TutorialTextId.MoveConnectionToPotatoes);
 		}
 
 		return GetTutorialText(TutorialTextId.MoveConnectionToIncoming);
+	}
+
+	private string GetTutorialFireIngredientText()
+	{
+		if (NamesMatch(GetTutorialExpectedFireIngredientName(), "Suppengemüse"))
+		{
+			return GetTutorialText(TutorialTextId.FireSoupVegetables);
+		}
+
+		return GetTutorialText(TutorialTextId.FirePotatoes);
+	}
+
+	private string GetTutorialExpectedFireIngredientName()
+	{
+		return IsTutorialExpectedFireIngredientTopSide()
+			? "Kartoffeln"
+			: "Suppengemüse";
+	}
+
+	private bool IsTutorialExpectedFireIngredientTopSide()
+	{
+		return singlePlayerMode || IsActorTopSide(GetLocalActorClientId());
 	}
 
 	private bool TryGetTutorialPlayerExchangeTargets(out Vector2 outTransition, out Vector2 inPlace)
@@ -1660,6 +1693,12 @@ public partial class GameManager
 	private bool TryGetTutorialOwnIngredientTransitionTarget(out Vector2 ingredientTransitionPosition)
 	{
 		ingredientTransitionPosition = Vector2.zero;
+		if (TryGetTutorialExpectedFireIngredientTransitionId(out string expectedTransitionId)
+			&& TryGetTutorialNodePosition(expectedTransitionId, out ingredientTransitionPosition))
+		{
+			return true;
+		}
+
 		bool ownTopSide = IsActorTopSide(GetLocalActorClientId());
 		string ownIngredientPrefix = ownTopSide ? "T_Top_Zutat_" : "T_Bottom_Zutat_";
 		NodeRuntime firstIngredientTransition = null;
@@ -1691,6 +1730,44 @@ public partial class GameManager
 
 		ingredientTransitionPosition = firstIngredientTransition.transform.position;
 		return true;
+	}
+
+	private bool TryGetTutorialExpectedFireIngredientTransitionId(out string transitionId)
+	{
+		transitionId = null;
+		if (!IsTutorialGuidedBlockFlowActive())
+		{
+			return false;
+		}
+
+		return TryFindTutorialIngredientTransitionId(
+			IsTutorialExpectedFireIngredientTopSide(),
+			GetTutorialExpectedFireIngredientName(),
+			out transitionId);
+	}
+
+	private bool TryFindTutorialIngredientTransitionId(bool topSide, string ingredientName, out string transitionId)
+	{
+		transitionId = null;
+		string prefix = topSide ? "T_Top_Zutat_" : "T_Bottom_Zutat_";
+		foreach (NodeRuntime node in nodesById.Values)
+		{
+			if (node == null
+				|| node.type != NodeType.Transition
+				|| string.IsNullOrEmpty(node.id)
+				|| !node.id.StartsWith(prefix))
+			{
+				continue;
+			}
+
+			if (NamesMatch(GetIngredientDisplayNameForNodeId(node.id), ingredientName))
+			{
+				transitionId = node.id;
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	private bool TryGetTutorialConnectionTargets(out Vector2 ingredientPlacePosition, out Vector2 blockTransitionPosition)

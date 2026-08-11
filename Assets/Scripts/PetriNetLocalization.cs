@@ -18,7 +18,8 @@ public partial class GameManager
 		LevelSelectionMovement,
 		Explore,
 		ExploreSinglePlayer,
-		FireIngredient,
+		FirePotatoes,
+		FireSoupVegetables,
 		PlayerExchange,
 		Orders,
 		Delivery,
@@ -36,6 +37,7 @@ public partial class GameManager
 		ConnectSinglePlayer,
 		ConnectTopPlayer,
 		ConnectBottomPlayer,
+		MoveConnectionToPotatoesSinglePlayer,
 		MoveConnectionToPotatoes,
 		MoveConnectionToIncoming
 	}
@@ -64,8 +66,8 @@ public partial class GameManager
 		{
 			TutorialTextId.Intro,
 			new LocalizedTutorialText(
-				"In diesem Spiel kochst du Gerichte.\nDabei lernst du Konzepte von Petrinetzen kennen.\nDrücke Enter, um loszulegen.",
-				"In this game, you cook dishes.\nAlong the way, you learn concepts from Petri nets.\nPress Enter to get started.")
+				"In diesem Spiel kochst du Gerichte.\nDabei lernst du Konzepte von Petrinetzen kennen.\nDrücke jederzeit esc um zu pausieren und alle möglichen Tastenbelegungen zu sehen.\nDrücke Enter, um loszulegen.",
+				"In this game, you cook dishes.\nAlong the way, you learn concepts from Petri nets.\nPress Esc at any time to pause and see all key bindings.\nPress Enter to get started.")
 		},
 		{
 			TutorialTextId.LevelSelectionMovement,
@@ -86,10 +88,16 @@ public partial class GameManager
 				"Zoom with the mouse wheel and explore by dragging the map.")
 		},
 		{
-			TutorialTextId.FireIngredient,
+			TutorialTextId.FirePotatoes,
 			new LocalizedTutorialText(
-				"Feuere Transitionen mit F, um Token (Zutaten und Gerichte) zu bewegen.\nTransitionen holen dabei ein Token aus jeder Stelle mit\nVerbindung zur Transition und legen in jede Zielstelle ein Token.\nAber Vorsicht: mit Transitionen wie\n'Kochen start' änderst du ihren Zustand",
-				"Fire transitions with F to move tokens (ingredients and dishes).\nTransitions retrieve a token from each place\nconnected to the transition and place a token in each destination place.\nCareful: transitions like\n'cooking start' change their state")
+				"Wenn du eine Transition feuerst, holt sie dabei ein Token\n(also eine Zutat oder ein Gericht) aus jeder Stelle mit\nVerbindung zur Transition und legt in jede Zielstelle ein Token (bzw. Zutat/Gericht).\nAber Vorsicht: mit Transitionen wie\n'Kochen start' änderst du ihren Zustand.\nFeuere jetzt die Transition 'Kartoffeln' mit F, um eine Kartoffel zu erschaffen.",
+				"If you fire a transition, it retrieves a token from\neach place connected to the transition and places a token\n(ingredient/dish) in each destination place.\nCareful: transitions like 'cooking start' change their state.\nFire the 'Potatoes' transition with F to create a potato.")
+		},
+		{
+			TutorialTextId.FireSoupVegetables,
+			new LocalizedTutorialText(
+				"Wenn du eine Transition feuerst, holt sie dabei ein Token\n(also eine Zutat oder ein Gericht) aus jeder Stelle mit\nVerbindung zur Transition und legt in jede Zielstelle ein Token (bzw. Zutat/Gericht).\nAber Vorsicht: mit Transitionen wie\n'Kochen start' änderst du ihren Zustand.\nFeuere jetzt die Transition 'Suppengemüse' mit F, um Suppengemüse zu erschaffen.",
+				"If you fire a transition, it retrieves a token from\neach place connected to the transition and places a token\n(ingredient/dish) in each destination place.\nCareful: transitions like 'cooking start' change their state.\nFire the 'Soup Vegetables' transition with F to create soup vegetables.")
 		},
 		{
 			TutorialTextId.PlayerExchange,
@@ -106,14 +114,14 @@ public partial class GameManager
 		{
 			TutorialTextId.Delivery,
 			new LocalizedTutorialText(
-				"...und liefere sie aus",
-				"...and deliver them")
+				"...und liefere sie rechtzeitig aus. Aber nichts\nfalsches, sonst gibt es Minuspunkte",
+				"...and deliver them on time. But nothing wrong,\notherwise you get penalty points")
 		},
 		{
 			TutorialTextId.CreateStorage,
 			new LocalizedTutorialText(
-				"Erzeuge Lager mit E,\num Zutaten zwischenzulagern.\nDie Zahl über einer Stelle heißt Kapazität und zeigt an,\nwie viele Zutaten sie enthalten kann",
-				"Create storage blocks with E\nto temporarily store ingredients.\nThe number above a place is called capacity and shows\nhow many ingredients it can hold")
+				"Die Zahl über einer Stelle heißt Kapazität und zeigt an,\nwie viele Zutaten sie enthalten kann.\nErstelle Lagerblöcke mit E, um Zutaten zwischenzulagern.",
+				"The number above a place is called capacity and shows\nhow many ingredients it can hold.\nCreate storage blocks with E to temporarily store ingredients.")
 		},
 		{
 			TutorialTextId.DeleteStorage,
@@ -124,8 +132,8 @@ public partial class GameManager
 		{
 			TutorialTextId.Completion,
 			new LocalizedTutorialText(
-				"Tutorial abgeschlossen. Alle Tasten und ihre\nWirkung siehst du auch im Pausenmenü unter Esc.\nKoche jetzt 3 Kartoffelsuppen.\nSchritt abschließen mit Enter.",
-				"Tutorial complete. You can also see\nall keys and actions in the Esc pause menu.\nNow cook 3 potato soups.\nComplete this step with Enter.")
+				"Tutorial abgeschlossen! Koche jetzt 3 Kartoffelsuppen.\nSchritt abschließen mit Enter.",
+				"Tutorial complete. Now cook 3 potato soups.\nComplete this step with Enter.")
 		},
 		{
 			TutorialTextId.Trash,
@@ -154,20 +162,20 @@ public partial class GameManager
 		{
 			TutorialTextId.PickupCuttingSinglePlayer,
 			new LocalizedTutorialText(
-				"Du kannst Objekte mit Leertaste hochheben\nwenn du darüber schwebst und sie wieder absetzen.\nNimm den Schneideblock aus dem Lager,\num ihn zu benutzen",
-				"You can pick up objects with Space\nwhen hovering over them and set them down again.\nTake the cutting block from storage\nto use it")
+				"Du kannst Objekte mit Leertaste hochheben\nwenn du darüber schwebst und sie wieder absetzen.\nNimm den Schneideblock aus dem Bereich, um ihn zu benutzen.\nInnerhalb des Bereichs kannst du ihn nicht benutzen!",
+				"You can pick up objects with Space\nwhen hovering over them and set them down again.\nTake the cutting block from the area to use it.\nYou cannot use it within the area!")
 		},
 		{
 			TutorialTextId.PickupCutting,
 			new LocalizedTutorialText(
-				"Du kannst Objekte mit Leertaste hochheben\nwenn du darüber schwebst und sie wieder absetzen.\nNimm den Schneideblock aus dem geteilten Lager,\num ihn zu benutzen",
-				"You can pick up objects with Space\nwhen hovering over them and set them down again.\nTake the cutting block from the shared storage\nto use it")
+				"Du kannst Objekte mit Leertaste hochheben\nwenn du darüber schwebst und sie wieder absetzen.\nNimm den Schneideblock aus dem geteilten Bereich, um ihn zu benutzen.\nInnerhalb des geteilten Bereichs kannst du ihn nicht benutzen!",
+				"You can pick up objects with Space\nwhen hovering over them and set them down again.\nTake the cutting block from the shared area to use it.\nYou cannot use it within the shared area!")
 		},
 		{
 			TutorialTextId.PickupCooking,
 			new LocalizedTutorialText(
-				"Du kannst Objekte mit Leertaste hochheben\nwenn du darüber schwebst und sie wieder absetzen.\nNimm den Kochblock aus dem geteilten Lager,\num ihn zu benutzen",
-				"You can pick up objects with Space\nwhen hovering over them and set them down again.\nTake the cooking block from the shared storage\nto use it")
+				"Du kannst Objekte mit Leertaste hochheben\nwenn du darüber schwebst und sie wieder absetzen.\nNimm den Kochblock aus dem geteilten Bereich, um ihn zu benutzen.\nInnerhalb des geteilten Bereichs kannst du ihn nicht benutzen!",
+				"You can pick up objects with Space\nwhen hovering over them and set them down again.\nTake the cooking block from the shared area to use it.\nYou cannot use it within the shared area!")
 		},
 		{
 			TutorialTextId.ConnectGeneric,
@@ -178,32 +186,38 @@ public partial class GameManager
 		{
 			TutorialTextId.ConnectSinglePlayer,
 			new LocalizedTutorialText(
-				"Ziehe mit Q eine Verbindung zwischen der Stelle des Suppengemüses und der\nSchneidebeginn-Transition. In Stellen können Zutaten und Gerichte,\nin Petrinetzen Token genannt, liegen, die von Transitionen\nvon einer Stelle zur nächsten bewegt werden können.",
-				"Draw a connection with Q between the soup-vegetable place and the\ncutting-start transition. In places, ingredients and dishes,\ncalled tokens in Petri nets, can be moved from one place to another by transitions.")
+				"In Stellen können Zutaten und Gerichte,\nin Petrinetzen Token genannt, liegen, die von Transitionen\nvon einer Stelle zur nächsten bewegt werden können.\nZiehe mit Q eine Verbindung zwischen der Stelle (Kreis)\ndes Suppengemüses und der 'Schneiden Start'-Transition (Rechteck).\nHinweis: wenn du ausversehen eine falsche Verbindung gezogen hast,\nkannst du sie mit R entfernen. Auch in der Luft",
+				"Places can contain ingredients and dishes,\ncalled tokens in Petri nets, which can be moved from one place to another by transitions.\nDraw a connection with Q between the soup-vegetable\nplace (circle) and the \"Cutting Start\" transition (rectangle).\nHint: if you accidentally drew a wrong connection, you can\nremove it with R. Even in the air.")
 		},
 		{
 			TutorialTextId.ConnectTopPlayer,
 			new LocalizedTutorialText(
-				"Ziehe mit Q eine Verbindung zwischen der eingehenden Stelle und der\nSchneidebeginn-Transition. In Stellen können Zutaten und Gerichte,\nin Petrinetzen Token genannt, liegen, die von Transitionen\nvon einer Stelle zur nächsten bewegt werden können.",
-				"Draw a connection with Q\nbetween the incoming place and the\ncutting-start transition. In places, ingredients and dishes,\ncalled tokens in Petri nets, can be moved from one place to another by transitions.")
+				"In Stellen können Zutaten und Gerichte,\nin Petrinetzen Token genannt, liegen, die von Transitionen\nvon einer Stelle zur nächsten bewegt werden können.\nZiehe mit Q eine Verbindung zwischen der eingehenden Stelle (Kreis)\nvon deinem Mitspieler und der 'Schneiden Start'-Transition (Rechteck).\nHinweis: wenn du ausversehen eine falsche Verbindung gezogen hast,\nkannst du sie mit R entfernen. Auch in der Luft",
+				"Places can contain ingredients and dishes,\ncalled tokens in Petri nets, which can be moved from one place to another by transitions.\nDraw a connection with Q between the incoming place (circle)\nand the \"Cutting Start\" transition (rectangle).\nHint: if you accidentally drew a wrong connection, you can remove\nit with R. Even in the air.")
 		},
 		{
 			TutorialTextId.ConnectBottomPlayer,
 			new LocalizedTutorialText(
-				"Ziehe mit Q eine Verbindung zwischen der Stelle des Suppengemüses und der\nKochenbeginn-Transition. In Stellen können Zutaten und Gerichte,\nin Petrinetzen Token genannt, liegen, die von Transitionen\nvon einer Stelle zur nächsten bewegt werden können.",
-				"Draw a connection with Q\nbetween the soup-vegetable place and the\ncooking-start transition. In places, ingredients and dishes,\ncalled tokens in Petri nets, can be moved from one place to another by transitions.")
+				"In Stellen können Zutaten und Gerichte,\nin Petrinetzen Token genannt, liegen, die von Transitionen\nvon einer Stelle zur nächsten bewegt werden können.\nZiehe mit Q eine Verbindung zwischen der Stelle (Kreis) des Suppengemüses und der 'Kochen Start'-Transition (Rechteck).\nHinweis: wenn du ausversehen eine falsche Verbindung gezogen hast,\nkannst du sie mit R entfernen. Auch in der Luft",
+				"Places can contain ingredients and dishes,\ncalled tokens in Petri nets, which can be moved from one place to another by transitions.\nDraw a connection with Q between the soup-vegetable place (circle)\nand the \"Cooking Start\" transition (rectangle).\nHint: if you accidentally drew a wrong connection, you can remove\nit with R. Even in the air.")
+		},
+		{
+			TutorialTextId.MoveConnectionToPotatoesSinglePlayer,
+			new LocalizedTutorialText(
+				"Verschiebe die gerade gezogene Verbindung\nvon der Stelle des Suppengemüses zu den Kartoffeln, indem du\nden hinteren Teil mit Leertaste wieder hochhebst\nund an der Stelle der Kartoffeln anbringst",
+				"Move the connection you've just made from\nthe soup-vegetable place to the potato place by picking up\nthe rear part with Space\nand attaching it to the potato place")
 		},
 		{
 			TutorialTextId.MoveConnectionToPotatoes,
 			new LocalizedTutorialText(
-				"Verschiebe die Verbindung, indem du\nden hinteren Teil mit Leertaste wieder hochhebst\nund an der Stelle der Kartoffeln anbringst",
-				"Move the connection by picking up\nthe rear part with Space\nand attaching it to the potato place")
+				"Verschiebe die gerade gezogene Verbindung\nzwischen der vom Mitspieler eingehenden Stelle zu den Kartoffeln, indem du\nden hinteren Teil mit Leertaste wieder hochhebst\nund an der Stelle der Kartoffeln anbringst",
+				"Move the connection you've just made from\nthe incoming place from your teammate to the potato place by picking up\nthe rear part with Space\nand attaching it to the potato place")
 		},
 		{
 			TutorialTextId.MoveConnectionToIncoming,
 			new LocalizedTutorialText(
-				"Verschiebe die Verbindung, indem du\nden hinteren Teil mit Leertaste wieder hochhebst\nund an der eingehenden Stelle anbringst",
-				"Move the connection by picking up\nthe rear part with Space\nand attaching it to the incoming place")
+				"Verschiebe die gerade gezogene Verbindung zwischen der Stelle\ndes Suppengemüses und der vom Mitspieler eingehenden Stelle, indem du\nden hinteren Teil mit Leertaste wieder hochhebst\nund an der eingehenden Stelle anbringst",
+				"Move the connection you've just made from the soup-vegetable place\nto the incoming place from your teammate by picking up the rear part\nwith Space and attaching it to the incoming place")
 		}
 	};
 
@@ -271,6 +285,10 @@ public partial class GameManager
 			if (label != null && label.gameObject.name == "ZutatenLabel")
 			{
 				label.text = GameText("Zutaten", "Ingredients");
+			}
+			else if (label != null && label.gameObject.name == "SharedAreaLabel")
+			{
+				label.text = GameText("Geteilter Bereich", "Shared Area");
 			}
 		}
 	}
@@ -356,9 +374,21 @@ public partial class GameManager
 		{ "Spieler 1", "Player 1" },
 		{ "Spieler 2", "Player 2" },
 		{ "Zutaten", "Ingredients" },
+		{ "Geteilter Bereich", "Shared Area" },
 		{ "Müll", "Trash" },
 		{ "Lager", "Storage" },
+		{ "Kochblock", "Cooking Block" },
+		{ "Schneideblock", "Cutting Block" },
+		{ "Verteilblock", "Distribution Block" },
+		{ "Dekorierblock", "Decoration Block" },
+		{ "Lagerblock", "Storage Block" },
+		{ "Block", "Block" },
 		{ "Ausliefern", "Deliver" },
+		{ "nichts", "nothing" },
+		{ "nichts gekocht", "nothing cooked" },
+		{ "nichts geschnitten", "nothing cut" },
+		{ "nichts dekoriert", "nothing garnished" },
+		{ "nichts aufgeteilt", "nothing split" },
 		{ "keine", "none" },
 		{ "keine\n", "none\n" },
 		{ "Start", "Start" },
@@ -430,6 +460,7 @@ public partial class GameManager
 
 	private static readonly KeyValuePair<string, string>[] EnglishReplacementPairs =
 	{
+		new KeyValuePair<string, string>("nichts", "nothing"),
 		new KeyValuePair<string, string>("Suppengemüse", "soup vegetables"),
 		new KeyValuePair<string, string>("Kartoffeln", "potatoes"),
 		new KeyValuePair<string, string>("Kartoffel", "potato"),

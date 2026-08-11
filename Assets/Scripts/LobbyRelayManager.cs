@@ -20,6 +20,10 @@ using UnityEditor;
 public class LobbyRelayManager : MonoBehaviour
 {
     private const string SessionTimestampKey = "sessionTs";
+    private const string LobbyExplanationText =
+        "If you play the game together with a partner, please either click on \"Create 2 Player Game\" and give your partner the shown code or type in the code from your partner in the field under \"Create 2 Player Game\" and click \"Join 2 Player Game\"\n\n"
+        + "If you play alone, please click \"Single Player Game\".\n\n"
+        + "If you clicked \"Create 2 Player Game\" and want to go back to be able to choose \"Join 2 Player Game\" or \"Single Player Game\", click on \"Return to Lobby\"";
 
     [Header("Lobby")]
     [SerializeField] private string lobbyName = "OvercookedPetriLobby";
@@ -115,6 +119,7 @@ public class LobbyRelayManager : MonoBehaviour
         float uiScale = GetLobbyUiScale();
         GUIStyle boxStyle = CreateLobbyGuiStyle(GUI.skin.box, 44f, uiScale, TextAnchor.UpperCenter, FontStyle.Bold, false);
         GUIStyle labelStyle = CreateLobbyGuiStyle(GUI.skin.label, 36f, uiScale, TextAnchor.MiddleLeft, FontStyle.Normal, true);
+        GUIStyle explanationStyle = CreateLobbyGuiStyle(GUI.skin.label, 22f, uiScale, TextAnchor.UpperLeft, FontStyle.Normal, true);
         GUIStyle statusStyle = CreateLobbyGuiStyle(GUI.skin.label, 28f, uiScale, TextAnchor.MiddleLeft, FontStyle.Normal, true);
         GUIStyle buttonStyle = CreateLobbyGuiStyle(GUI.skin.button, 40f, uiScale, TextAnchor.MiddleCenter, FontStyle.Bold, false);
         GUIStyle textFieldStyle = CreateLobbyGuiStyle(GUI.skin.textField, 40f, uiScale, TextAnchor.MiddleLeft, FontStyle.Normal, false);
@@ -131,6 +136,8 @@ public class LobbyRelayManager : MonoBehaviour
         float buttonHeight = 78f * uiScale;
         float textFieldHeight = 68f * uiScale;
         float gap = 22f * uiScale;
+        float explanationWidth = Mathf.Clamp(scrollViewRect.width - 24f * uiScale, 320f * uiScale, 980f * uiScale);
+        float explanationHeight = explanationStyle.CalcHeight(new GUIContent(LobbyExplanationText), explanationWidth) + 20f * uiScale;
         bool canStartLobbyAction = servicesReady && !busy && currentLobby == null;
         string statusDisplayText = GetLobbyStatusDisplayText();
         bool showExitButton = ShouldShowExitToDesktopButton();
@@ -141,6 +148,7 @@ public class LobbyRelayManager : MonoBehaviour
             scrollViewRect.height - fixedExitButtonHeight - fixedExitButtonGap);
 
         float measuredY = 10f * uiScale;
+        measuredY += explanationHeight + gap;
         if (!string.IsNullOrEmpty(statusDisplayText))
         {
             measuredY += 78f * uiScale + gap;
@@ -180,6 +188,9 @@ public class LobbyRelayManager : MonoBehaviour
             scrollContentRect,
             false,
             false);
+        GUI.Label(new Rect(x, y, contentWidth, explanationHeight), LobbyExplanationText, explanationStyle);
+        y += explanationHeight + gap;
+
         if (!string.IsNullOrEmpty(statusDisplayText))
         {
             Rect statusRect = new Rect(x, y, contentWidth, 78f * uiScale);
@@ -190,7 +201,7 @@ public class LobbyRelayManager : MonoBehaviour
 
         GUI.enabled = canStartLobbyAction;
 
-        if (GUI.Button(new Rect(x, y, contentWidth, buttonHeight), "Create Game", buttonStyle))
+        if (GUI.Button(new Rect(x, y, contentWidth, buttonHeight), "Create 2 Player Game", buttonStyle))
         {
             _ = CreateLobbyAndStartHostAsync();
         }
@@ -204,7 +215,7 @@ public class LobbyRelayManager : MonoBehaviour
         y += textFieldHeight + gap;
 
         GUI.enabled = canStartLobbyAction && !string.IsNullOrWhiteSpace(joinCodeInput);
-        if (GUI.Button(new Rect(x, y, contentWidth, buttonHeight), "Join Game", buttonStyle))
+        if (GUI.Button(new Rect(x, y, contentWidth, buttonHeight), "Join 2 Player Game", buttonStyle))
         {
             _ = JoinLobbyAndStartClientAsync(joinCodeInput);
         }
@@ -412,7 +423,7 @@ public class LobbyRelayManager : MonoBehaviour
             await ResetNetworkSessionAsync();
             EnsureNetworkManagerExists();
             UnityTransport transport = NetworkManager.Singleton.GetComponent<UnityTransport>();
-            transport.SetRelayServerData(new RelayServerData(allocation, "dtls"));
+            transport.SetRelayServerData(new RelayServerData(allocation, GetRelayConnectionType()));
 
             if (!NetworkManager.Singleton.StartHost())
             {
@@ -496,7 +507,7 @@ public class LobbyRelayManager : MonoBehaviour
             await ResetNetworkSessionAsync();
             EnsureNetworkManagerExists();
             UnityTransport transport = NetworkManager.Singleton.GetComponent<UnityTransport>();
-            transport.SetRelayServerData(new RelayServerData(joinAllocation, "dtls"));
+            transport.SetRelayServerData(new RelayServerData(joinAllocation, GetRelayConnectionType()));
 
             if (!NetworkManager.Singleton.StartClient())
             {
@@ -597,7 +608,7 @@ public class LobbyRelayManager : MonoBehaviour
             await ResetNetworkSessionAsync();
             EnsureNetworkManagerExists();
             UnityTransport transport = NetworkManager.Singleton.GetComponent<UnityTransport>();
-            transport.SetRelayServerData(new RelayServerData(joinAllocation, "dtls"));
+            transport.SetRelayServerData(new RelayServerData(joinAllocation, GetRelayConnectionType()));
 
             if (!NetworkManager.Singleton.StartClient())
             {
@@ -909,6 +920,15 @@ public class LobbyRelayManager : MonoBehaviour
         {
             manager.NetworkConfig.NetworkTransport = transport;
         }
+    }
+
+    private static string GetRelayConnectionType()
+    {
+#if UNITY_WEBGL && !UNITY_EDITOR
+        return "wss";
+#else
+        return "dtls";
+#endif
     }
 
     private void OnDestroy()

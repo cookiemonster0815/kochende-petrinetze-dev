@@ -11,6 +11,15 @@ public partial class GameManager
 	private float levelOrderStartTime = -1f;
 	private float levelOrderPauseStartedTime = -1f;
 	private RectTransform levelOrderDisplayRoot;
+	private GameObject levelOrderStatusObject;
+	private Image levelOrderStatusBackground;
+	private Image levelOrderStatusAccent;
+	private Image levelOrderStatusProgressTrack;
+	private Image levelOrderStatusProgressFill;
+	private Image levelOrderStatusScoreBadge;
+	private Text levelOrderStatusTitleText;
+	private Text levelOrderStatusCompletedText;
+	private Text levelOrderStatusScoreText;
 	private Font levelOrderUiFont;
 	private readonly List<GameObject> levelOrderCardObjects = new List<GameObject>();
 	private readonly List<Image> levelOrderCardBackgrounds = new List<Image>();
@@ -24,6 +33,7 @@ public partial class GameManager
 	private readonly HashSet<int> completedLevelOrderIndexes = new HashSet<int>();
 	private readonly Dictionary<int, float> completedLevelOrderDeliveredAtSeconds = new Dictionary<int, float>();
 	private readonly Dictionary<int, float> highlightedLevelOrderUntil = new Dictionary<int, float>();
+	private int wrongLevelOrderDeliveryPenaltyCount;
 	private bool showLevelOrderRecipeDetails;
 	private string levelOrderDisplayLayoutKey = "";
 	private float nextLevelOrderDynamicRefreshTime;
@@ -37,6 +47,10 @@ public partial class GameManager
 	private const float LevelOrderCardMinWidth = 120f;
 	private const float LevelOrderCardMaxWidth = 270f;
 	private const float LevelOrderCardPadding = 6f;
+	private const float LevelOrderStatusCardWidth = 330f;
+	private const float LevelOrderStatusCardHeight = 92f;
+	private const float LevelOrderStatusAccentWidth = 10f;
+	private const float LevelOrderStatusScoreBadgeWidth = 108f;
 	private const float LevelOrderHintFooterHeight = 24f;
 	private const float LevelOrderHintKeySize = 18f;
 	private const float LevelOrderHintGap = 4f;
@@ -47,6 +61,10 @@ public partial class GameManager
 	private const int LevelOrderTextFontSize = 24;
 	private const int LevelOrderRecipeTextFontSize = 17;
 	private const int LevelOrderMinTextFontSize = 15;
+	private const int LevelOrderStatusTitleFontSize = 14;
+	private const int LevelOrderStatusCompletedFontSize = 18;
+	private const int LevelOrderStatusScoreFontSize = 18;
+	private const int LevelOrderStatusMinTextFontSize = 11;
 	private const int LevelOrderHintTextFontSize = 13;
 	private const int LevelOrderHintKeyFontSize = 14;
 	private const int LevelOrderTextWrapLength = 28;
@@ -99,6 +117,7 @@ public partial class GameManager
 		completedLevelOrderIndexes.Clear();
 		completedLevelOrderDeliveredAtSeconds.Clear();
 		highlightedLevelOrderUntil.Clear();
+		wrongLevelOrderDeliveryPenaltyCount = 0;
 		showLevelOrderRecipeDetails = false;
 		gameplayMenuOpen = false;
 		gameplayMenuOwnerClientId = NoGameplayMenuOwnerClientId;
@@ -116,6 +135,7 @@ public partial class GameManager
 		completedLevelOrderIndexes.Clear();
 		completedLevelOrderDeliveredAtSeconds.Clear();
 		highlightedLevelOrderUntil.Clear();
+		wrongLevelOrderDeliveryPenaltyCount = 0;
 		showLevelOrderRecipeDetails = false;
 		gameplayMenuOpen = false;
 		gameplayMenuOwnerClientId = NoGameplayMenuOwnerClientId;
@@ -134,6 +154,7 @@ public partial class GameManager
 	{
 		if (!gameplayInitialized || levelOrderStartTime < 0f || levelOrderDefinitions == null || levelOrderDefinitions.Count <= 0)
 		{
+			ClearLevelOrderStatusBlock();
 			ClearLevelOrderCards();
 			return;
 		}
@@ -145,6 +166,10 @@ public partial class GameManager
 
 		CleanupExpiredLevelOrderHighlights();
 		float elapsed = GetLevelOrderElapsedTime();
+		EnsureLevelOrderDisplayRoot();
+		float uiScale = GetGameplayMenuUiScale();
+		UpdateLevelOrderStatusBlock(uiScale);
+
 		List<int> activeOrderIndexes = GetVisibleLevelOrderIndexes(elapsed);
 		if (activeOrderIndexes.Count <= 0)
 		{
@@ -154,8 +179,6 @@ public partial class GameManager
 			return;
 		}
 
-		EnsureLevelOrderDisplayRoot();
-		float uiScale = GetGameplayMenuUiScale();
 		string layoutKey = GetLevelOrderDisplayLayoutKey(activeOrderIndexes, uiScale);
 		bool layoutChanged = layoutKey != levelOrderDisplayLayoutKey
 			|| levelOrderCardObjects.Count != activeOrderIndexes.Count;
@@ -173,7 +196,7 @@ public partial class GameManager
 		}
 
 		TrimLevelOrderCards(activeOrderIndexes.Count);
-		float x = LevelOrderCardMargin * uiScale;
+		float x = GetLevelOrderCardsStartX(uiScale);
 		List<float> cardWidths = CalculateLevelOrderCardWidths(activeOrderIndexes, uiScale);
 		for (int i = 0; i < activeOrderIndexes.Count; i++)
 		{
@@ -297,6 +320,258 @@ public partial class GameManager
 		scaler.scaleFactor = 1f;
 
 		levelOrderDisplayRoot = canvasObject.GetComponent<RectTransform>();
+	}
+
+	private void EnsureLevelOrderStatusBlock()
+	{
+		if (levelOrderStatusObject != null
+			&& levelOrderStatusBackground != null
+			&& levelOrderStatusAccent != null
+			&& levelOrderStatusProgressTrack != null
+			&& levelOrderStatusProgressFill != null
+			&& levelOrderStatusScoreBadge != null
+			&& levelOrderStatusTitleText != null
+			&& levelOrderStatusCompletedText != null
+			&& levelOrderStatusScoreText != null)
+		{
+			return;
+		}
+
+		if (levelOrderStatusObject != null)
+		{
+			Destroy(levelOrderStatusObject);
+		}
+
+		levelOrderStatusObject = new GameObject("OrderProgressCard", typeof(RectTransform));
+		levelOrderStatusObject.transform.SetParent(levelOrderDisplayRoot, false);
+		RectTransform statusRect = levelOrderStatusObject.GetComponent<RectTransform>();
+		statusRect.anchorMin = new Vector2(0f, 1f);
+		statusRect.anchorMax = new Vector2(0f, 1f);
+		statusRect.pivot = new Vector2(0f, 1f);
+
+		levelOrderStatusBackground = levelOrderStatusObject.AddComponent<Image>();
+		levelOrderStatusBackground.sprite = GetSquareSprite();
+		levelOrderStatusBackground.color = new Color(0.16f, 0.17f, 0.16f, 0.94f);
+		levelOrderStatusBackground.raycastTarget = false;
+		Outline statusOutline = levelOrderStatusObject.AddComponent<Outline>();
+		statusOutline.effectColor = new Color(0.36f, 0.46f, 0.48f, 0.82f);
+		statusOutline.effectDistance = new Vector2(2f, -2f);
+		statusOutline.useGraphicAlpha = false;
+		Shadow statusShadow = levelOrderStatusObject.AddComponent<Shadow>();
+		statusShadow.effectColor = new Color(0f, 0f, 0f, 0.24f);
+		statusShadow.effectDistance = new Vector2(4f, -5f);
+		statusShadow.useGraphicAlpha = false;
+
+		levelOrderStatusAccent = CreateLevelOrderStatusImage(
+			levelOrderStatusObject.transform,
+			"AccentBar",
+			new Color(0.66f, 0.48f, 0.28f, 0.98f));
+		levelOrderStatusProgressTrack = CreateLevelOrderStatusImage(
+			levelOrderStatusObject.transform,
+			"ProgressTrack",
+			new Color(0.78f, 0.76f, 0.69f, 0.22f));
+		levelOrderStatusProgressFill = CreateLevelOrderStatusImage(
+			levelOrderStatusProgressTrack.transform,
+			"Fill",
+			new Color(0.38f, 0.58f, 0.54f, 0.98f));
+		levelOrderStatusProgressFill.type = Image.Type.Filled;
+		levelOrderStatusProgressFill.fillMethod = Image.FillMethod.Horizontal;
+		levelOrderStatusProgressFill.fillOrigin = (int)Image.OriginHorizontal.Left;
+		levelOrderStatusScoreBadge = CreateLevelOrderStatusImage(
+			levelOrderStatusObject.transform,
+			"ScoreBadge",
+			new Color(0.78f, 0.61f, 0.38f, 0.98f));
+		Outline scoreOutline = levelOrderStatusScoreBadge.gameObject.AddComponent<Outline>();
+		scoreOutline.effectColor = new Color(0.15f, 0.12f, 0.08f, 0.45f);
+		scoreOutline.effectDistance = new Vector2(1f, -1f);
+		scoreOutline.useGraphicAlpha = false;
+
+		levelOrderStatusTitleText = CreateLevelOrderStatusText(
+			levelOrderStatusObject.transform,
+			"Title",
+			TextAnchor.MiddleLeft,
+			new Color(0.86f, 0.74f, 0.56f, 1f),
+			FontStyle.Bold);
+		levelOrderStatusCompletedText = CreateLevelOrderStatusText(
+			levelOrderStatusObject.transform,
+			"Completed",
+			TextAnchor.MiddleLeft,
+			Color.white,
+			FontStyle.Bold);
+		levelOrderStatusScoreText = CreateLevelOrderStatusText(
+			levelOrderStatusScoreBadge.transform,
+			"Label",
+			TextAnchor.MiddleCenter,
+			new Color(0.1f, 0.07f, 0.02f, 1f),
+			FontStyle.Bold);
+	}
+
+	private void UpdateLevelOrderStatusBlock(float uiScale)
+	{
+		EnsureLevelOrderStatusBlock();
+		if (levelOrderStatusObject == null
+			|| levelOrderStatusTitleText == null
+			|| levelOrderStatusCompletedText == null
+			|| levelOrderStatusScoreText == null)
+		{
+			return;
+		}
+
+		float width = GetLevelOrderStatusBlockWidth(uiScale);
+		float height = GetLevelOrderStatusBlockHeight(uiScale);
+		RectTransform statusRect = levelOrderStatusObject.transform as RectTransform;
+		if (statusRect != null)
+		{
+			statusRect.anchoredPosition = new Vector2(LevelOrderCardMargin * uiScale, -LevelOrderCardMargin * uiScale);
+			statusRect.sizeDelta = new Vector2(width, height);
+		}
+
+		LayoutLevelOrderStatusBlock(width, height, uiScale);
+		UpdateLevelOrderStatusBlockText(uiScale);
+	}
+
+	private Image CreateLevelOrderStatusImage(Transform parent, string name, Color color)
+	{
+		GameObject imageObject = new GameObject(name, typeof(RectTransform));
+		imageObject.transform.SetParent(parent, false);
+		Image image = imageObject.AddComponent<Image>();
+		image.sprite = GetSquareSprite();
+		image.color = color;
+		image.raycastTarget = false;
+		return image;
+	}
+
+	private Text CreateLevelOrderStatusText(Transform parent, string name, TextAnchor alignment, Color color, FontStyle fontStyle)
+	{
+		GameObject textObject = new GameObject(name, typeof(RectTransform));
+		textObject.transform.SetParent(parent, false);
+		Text text = textObject.AddComponent<Text>();
+		text.font = GetLevelOrderUiFont();
+		text.alignment = alignment;
+		text.color = color;
+		text.fontStyle = fontStyle;
+		text.resizeTextForBestFit = true;
+		text.resizeTextMinSize = LevelOrderStatusMinTextFontSize;
+		text.resizeTextMaxSize = LevelOrderStatusCompletedFontSize;
+		text.horizontalOverflow = HorizontalWrapMode.Wrap;
+		text.verticalOverflow = VerticalWrapMode.Truncate;
+		text.supportRichText = false;
+		text.raycastTarget = false;
+		return text;
+	}
+
+	private void LayoutLevelOrderStatusBlock(float width, float height, float uiScale)
+	{
+		float padding = 10f * uiScale;
+		float accentWidth = LevelOrderStatusAccentWidth * uiScale;
+		float contentLeft = padding + accentWidth + 10f * uiScale;
+		float scoreWidth = LevelOrderStatusScoreBadgeWidth * uiScale;
+		float scoreHeight = 28f * uiScale;
+		float scoreX = width - padding - scoreWidth;
+		float titleRight = scoreX - 10f * uiScale;
+		float contentRight = width - padding;
+
+		SetLevelOrderStatusRect(levelOrderStatusAccent, 0f, 0f, accentWidth, height);
+		SetLevelOrderStatusTextRect(levelOrderStatusTitleText, contentLeft, 8f * uiScale, titleRight - contentLeft, 18f * uiScale);
+		SetLevelOrderStatusTextRect(levelOrderStatusCompletedText, contentLeft, 36f * uiScale, contentRight - contentLeft, 24f * uiScale);
+		SetLevelOrderStatusRect(levelOrderStatusProgressTrack, contentLeft, height - 18f * uiScale, contentRight - contentLeft, 8f * uiScale);
+		SetLevelOrderStatusRect(levelOrderStatusProgressFill, 0f, 0f, contentRight - contentLeft, 8f * uiScale);
+		SetLevelOrderStatusRect(levelOrderStatusScoreBadge, scoreX, 8f * uiScale, scoreWidth, scoreHeight);
+		SetLevelOrderStatusTextRect(levelOrderStatusScoreText, 0f, 0f, scoreWidth, scoreHeight);
+	}
+
+	private void SetLevelOrderStatusRect(Image image, float x, float y, float width, float height)
+	{
+		if (image == null)
+		{
+			return;
+		}
+
+		RectTransform rect = image.transform as RectTransform;
+		if (rect == null)
+		{
+			return;
+		}
+
+		rect.anchorMin = new Vector2(0f, 1f);
+		rect.anchorMax = new Vector2(0f, 1f);
+		rect.pivot = new Vector2(0f, 1f);
+		rect.anchoredPosition = new Vector2(x, -y);
+		rect.sizeDelta = new Vector2(width, height);
+	}
+
+	private void SetLevelOrderStatusTextRect(Text text, float x, float y, float width, float height)
+	{
+		if (text == null)
+		{
+			return;
+		}
+
+		RectTransform rect = text.transform as RectTransform;
+		if (rect == null)
+		{
+			return;
+		}
+
+		rect.anchorMin = new Vector2(0f, 1f);
+		rect.anchorMax = new Vector2(0f, 1f);
+		rect.pivot = new Vector2(0f, 1f);
+		rect.anchoredPosition = new Vector2(x, -y);
+		rect.sizeDelta = new Vector2(width, height);
+	}
+
+	private void UpdateLevelOrderStatusBlockText(float uiScale)
+	{
+		int orderCount = GetLevelOrderCount();
+		int completedCount = Mathf.Clamp(completedLevelOrderIndexes.Count, 0, orderCount);
+		float completionRatio = orderCount > 0 ? Mathf.Clamp01((float)completedCount / orderCount) : 0f;
+		if (levelOrderStatusProgressFill != null)
+		{
+			levelOrderStatusProgressFill.fillAmount = completionRatio;
+			levelOrderStatusProgressFill.color = Color.Lerp(
+				new Color(0.38f, 0.58f, 0.54f, 0.98f),
+				new Color(0.52f, 0.64f, 0.42f, 0.98f),
+				completionRatio);
+		}
+
+		int titleFontSize = Mathf.RoundToInt(LevelOrderStatusTitleFontSize * uiScale);
+		int completedFontSize = Mathf.RoundToInt(LevelOrderStatusCompletedFontSize * uiScale);
+		int scoreFontSize = Mathf.RoundToInt(LevelOrderStatusScoreFontSize * uiScale);
+		levelOrderStatusTitleText.text = GameText("Bestellstand", "Order status");
+		levelOrderStatusTitleText.fontSize = titleFontSize;
+		levelOrderStatusTitleText.resizeTextMaxSize = titleFontSize;
+		levelOrderStatusTitleText.resizeTextMinSize = Mathf.Max(8, Mathf.RoundToInt(LevelOrderStatusMinTextFontSize * uiScale));
+		levelOrderStatusCompletedText.text = completedCount
+			+ GameText(" von ", " of ")
+			+ orderCount
+			+ GameText(orderCount == 1 ? " Bestellung erledigt" : " Bestellungen erledigt", orderCount == 1 ? " order completed" : " orders completed");
+		levelOrderStatusCompletedText.fontSize = completedFontSize;
+		levelOrderStatusCompletedText.resizeTextMaxSize = completedFontSize;
+		levelOrderStatusCompletedText.resizeTextMinSize = Mathf.Max(8, Mathf.RoundToInt(LevelOrderStatusMinTextFontSize * uiScale));
+		levelOrderStatusScoreText.text = GameText("Punkte: ", "Points: ") + GetLevelOrderScore();
+		levelOrderStatusScoreText.fontSize = scoreFontSize;
+		levelOrderStatusScoreText.resizeTextMaxSize = scoreFontSize;
+		levelOrderStatusScoreText.resizeTextMinSize = Mathf.Max(8, Mathf.RoundToInt(LevelOrderStatusMinTextFontSize * uiScale));
+	}
+
+	private float GetLevelOrderStatusBlockWidth(float uiScale)
+	{
+		return LevelOrderStatusCardWidth * uiScale;
+	}
+
+	private float GetLevelOrderStatusBlockHeight(float uiScale)
+	{
+		return LevelOrderStatusCardHeight * uiScale;
+	}
+
+	private float GetLevelOrderStatusReservedWidth(float uiScale)
+	{
+		return GetLevelOrderStatusBlockWidth(uiScale) + LevelOrderCardGap * uiScale;
+	}
+
+	private float GetLevelOrderCardsStartX(float uiScale)
+	{
+		return LevelOrderCardMargin * uiScale + GetLevelOrderStatusReservedWidth(uiScale);
 	}
 
 	private void EnsureLevelOrderCard(int index)
@@ -439,7 +714,9 @@ public partial class GameManager
 
 		float margin = LevelOrderCardMargin * uiScale;
 		float gap = LevelOrderCardGap * uiScale;
-		float availableWidth = Mathf.Max(LevelOrderCardMinWidth * uiScale, Screen.width - margin * 2f - gap * Mathf.Max(0, activeOrderIndexes.Count - 1));
+		float availableWidth = Mathf.Max(
+			LevelOrderCardMinWidth * uiScale,
+			Screen.width - margin * 2f - GetLevelOrderStatusReservedWidth(uiScale) - gap * Mathf.Max(0, activeOrderIndexes.Count - 1));
 		float totalWidth = 0f;
 		List<float> minimumWidths = new List<float>();
 		for (int i = 0; i < activeOrderIndexes.Count; i++)
@@ -963,9 +1240,28 @@ public partial class GameManager
 		TrimLevelOrderCards(0);
 	}
 
+	private void ClearLevelOrderStatusBlock()
+	{
+		if (levelOrderStatusObject != null)
+		{
+			Destroy(levelOrderStatusObject);
+		}
+
+		levelOrderStatusObject = null;
+		levelOrderStatusBackground = null;
+		levelOrderStatusAccent = null;
+		levelOrderStatusProgressTrack = null;
+		levelOrderStatusProgressFill = null;
+		levelOrderStatusScoreBadge = null;
+		levelOrderStatusTitleText = null;
+		levelOrderStatusCompletedText = null;
+		levelOrderStatusScoreText = null;
+	}
+
 	private void ClearLevelOrderDisplay()
 	{
 		ClearLevelOrderCards();
+		ClearLevelOrderStatusBlock();
 		if (levelOrderDisplayRoot != null)
 		{
 			Destroy(levelOrderDisplayRoot.gameObject);
@@ -1012,6 +1308,13 @@ public partial class GameManager
 				return;
 			}
 		}
+
+		MarkWrongLevelOrderDelivery();
+	}
+
+	private void MarkWrongLevelOrderDelivery()
+	{
+		wrongLevelOrderDeliveryPenaltyCount++;
 	}
 
 	private List<string> BuildDeliveredDishCandidates(List<TokenRuntime> deliveredTokens)
@@ -1207,6 +1510,16 @@ public partial class GameManager
 		return deliveryTimes;
 	}
 
+	private int GetWrongLevelOrderDeliveryPenaltyCount()
+	{
+		return wrongLevelOrderDeliveryPenaltyCount;
+	}
+
+	private void ApplyWrongLevelOrderDeliveryPenaltyCount(int penaltyCount)
+	{
+		wrongLevelOrderDeliveryPenaltyCount = Mathf.Max(0, penaltyCount);
+	}
+
 	private void ApplyCompletedLevelOrderIndexes(List<int> completedIndexes)
 	{
 		ApplyCompletedLevelOrderState(completedIndexes, null);
@@ -1256,12 +1569,9 @@ public partial class GameManager
 	{
 		int orderCount = levelOrderDefinitions != null ? levelOrderDefinitions.Count : 0;
 		int score = GetLevelOrderScore();
-		int maximumScore = orderCount * 3;
 		StringBuilder text = new StringBuilder();
 		text.Append(GameText("Punkte: ", "Points: "));
 		text.Append(score);
-		text.Append(" / ");
-		text.Append(maximumScore);
 
 		if (orderCount <= 0)
 		{
@@ -1331,7 +1641,7 @@ public partial class GameManager
 			}
 		}
 
-		return score;
+		return score - wrongLevelOrderDeliveryPenaltyCount;
 	}
 
 	private int GetLevelOrderScore(int orderIndex, float deliveredAtSeconds)

@@ -1718,7 +1718,6 @@ public partial class GameManager
 		}
 
 		int totalScore = GetLevelOrderScore();
-		int maximumScore = GetLevelOrderCount() * 3;
 		float scoreProgress = Mathf.SmoothStep(0f, 1f, Mathf.Clamp01((elapsed - 0.75f) / 0.9f));
 		int displayedScore = Mathf.RoundToInt(totalScore * scoreProgress);
 		GUIStyle scoreStyle = new GUIStyle(GUI.skin.label)
@@ -1730,8 +1729,8 @@ public partial class GameManager
 		SetStaticGuiTextColor(scoreStyle, new Color(0.12f, 0.17f, 0.24f));
 		GUI.Label(
 			new Rect(panel.x, panel.y + 345f * uiScale, panel.width, 60f * uiScale),
-				displayedScore + " / " + maximumScore + " " + GameText("Punkte", "points"),
-				scoreStyle);
+			GameText("Punkte: ", "Points: ") + displayedScore,
+			scoreStyle);
 
 		GUIStyle detailStyle = new GUIStyle(GUI.skin.label)
 		{

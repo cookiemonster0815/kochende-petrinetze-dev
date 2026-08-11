@@ -73,6 +73,7 @@ public partial class GameManager
 		public bool levelEnded;
 		public List<int> completedOrderIndexes = new List<int>();
 		public List<float> completedOrderDeliveryTimes = new List<float>();
+		public int wrongOrderDeliveryPenaltyCount;
 		public List<NodeState> nodes = new List<NodeState>();
 		public List<ArcState> arcs = new List<ArcState>();
 		public List<AvatarState> avatars = new List<AvatarState>();
@@ -192,6 +193,7 @@ public partial class GameManager
 		public GameObject gameObject;
 		public SpriteRenderer fill;
 		public LineRenderer border;
+		public TextMesh label;
 		public BoxCollider2D collider;
 		public Transform baseShadowCaster;
 	}

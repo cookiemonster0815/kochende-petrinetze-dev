@@ -642,7 +642,8 @@ public partial class GameManager
 			gameplayMenuOwnerClientId = GetSerializableGameplayMenuOwnerClientId(),
 			levelEnded = this.levelEnded,
 			completedOrderIndexes = GetCompletedLevelOrderIndexes(),
-			completedOrderDeliveryTimes = GetCompletedLevelOrderDeliveryTimes()
+			completedOrderDeliveryTimes = GetCompletedLevelOrderDeliveryTimes(),
+			wrongOrderDeliveryPenaltyCount = GetWrongLevelOrderDeliveryPenaltyCount()
 		};
 
 		foreach (KeyValuePair<string, NodeRuntime> pair in nodesById)
@@ -1015,6 +1016,7 @@ public partial class GameManager
 			}
 
 			ApplyCompletedLevelOrderState(snapshot.completedOrderIndexes, snapshot.completedOrderDeliveryTimes);
+			ApplyWrongLevelOrderDeliveryPenaltyCount(snapshot.wrongOrderDeliveryPenaltyCount);
 			ApplyGameplayMenuSnapshotState(snapshot.gameplayMenuOpen, snapshot.gameplayMenuOwnerClientId);
 			ApplyLevelEndSnapshotState(snapshot.levelEnded);
 			EnsureLocalAvatarStartPosition();
@@ -1090,6 +1092,7 @@ public partial class GameManager
 		}
 
 		ApplyCompletedLevelOrderState(snapshot.completedOrderIndexes, snapshot.completedOrderDeliveryTimes);
+		ApplyWrongLevelOrderDeliveryPenaltyCount(snapshot.wrongOrderDeliveryPenaltyCount);
 		ApplyGameplayMenuSnapshotState(snapshot.gameplayMenuOpen, snapshot.gameplayMenuOwnerClientId);
 		ApplyLevelEndSnapshotState(snapshot.levelEnded);
 		pendingClaimedTransitionId = null;
