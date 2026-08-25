@@ -3649,7 +3649,7 @@ public partial class GameManager
 		labelObject.transform.position = new Vector3(labelX, labelY, ArcZ);
 
 		TextMesh label = labelObject.AddComponent<TextMesh>();
-		label.text = GameText("Geteilter Bereich", "Shared Area");
+		label.text = GetSharedAreaLabelText();
 		label.characterSize = 0.06f;
 		label.fontSize = 64;
 		label.anchor = TextAnchor.LowerLeft;

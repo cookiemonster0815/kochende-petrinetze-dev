@@ -61,12 +61,20 @@ public partial class GameManager
 	{
 		if (!showLevelSelection)
 		{
+			DrawAvatarActionPrompt();
+			DrawTutorialScreenFallback();
 			return;
 		}
 
 		if (IsGameplayMenuOpen())
 		{
+			DrawTutorialScreenFallback();
 			DrawGameplayMenu();
+		}
+		else
+		{
+			DrawAvatarActionPrompt();
+			DrawTutorialScreenFallback();
 		}
 	}
 

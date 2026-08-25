@@ -14,6 +14,7 @@ public partial class GameManager
 	private enum TutorialTextId
 	{
 		Skip,
+		PreviousStep,
 		Intro,
 		LevelSelectionMovement,
 		Explore,
@@ -62,6 +63,12 @@ public partial class GameManager
 			new LocalizedTutorialText(
 				"Schritt überspringen: Enter",
 				"Skip step: Enter")
+		},
+		{
+			TutorialTextId.PreviousStep,
+			new LocalizedTutorialText(
+				"Schritt zurück: Backspace",
+				"Previous step: Backspace")
 		},
 		{
 			TutorialTextId.Intro,
@@ -251,6 +258,13 @@ public partial class GameManager
 		return language == PetriNetGameLanguage.English ? english : german;
 	}
 
+	private string GetSharedAreaLabelText()
+	{
+		return singlePlayerMode
+			? GameText("Aufbewahrungsbereich", "Holding Area")
+			: GameText("Geteilter Bereich", "Shared Area");
+	}
+
 	private string GetLanguageToggleButtonText()
 	{
 		return IsEnglishLanguage() ? "Deutsch" : "English";
@@ -288,7 +302,7 @@ public partial class GameManager
 			}
 			else if (label != null && label.gameObject.name == "SharedAreaLabel")
 			{
-				label.text = GameText("Geteilter Bereich", "Shared Area");
+				label.text = GetSharedAreaLabelText();
 			}
 		}
 	}
@@ -375,6 +389,7 @@ public partial class GameManager
 		{ "Spieler 2", "Player 2" },
 		{ "Zutaten", "Ingredients" },
 		{ "Geteilter Bereich", "Shared Area" },
+		{ "Aufbewahrungsbereich", "Holding Area" },
 		{ "Müll", "Trash" },
 		{ "Lager", "Storage" },
 		{ "Kochblock", "Cooking Block" },

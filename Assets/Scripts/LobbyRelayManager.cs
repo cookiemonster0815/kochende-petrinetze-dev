@@ -24,6 +24,7 @@ public class LobbyRelayManager : MonoBehaviour
         "If you play the game together with a partner, please either click on \"Create 2 Player Game\" and give your partner the shown code or type in the code from your partner in the field under \"Create 2 Player Game\" and click \"Join 2 Player Game\"\n\n"
         + "If you play alone, please click \"Single Player Game\".\n\n"
         + "If you clicked \"Create 2 Player Game\" and want to go back to be able to choose \"Join 2 Player Game\" or \"Single Player Game\", click on \"Return to Lobby\"";
+    private const int LobbyCleanupTimeoutMilliseconds = 3500;
 
     [Header("Lobby")]
     [SerializeField] private string lobbyName = "OvercookedPetriLobby";
@@ -632,30 +633,23 @@ public class LobbyRelayManager : MonoBehaviour
 
     private async Task LeaveLobbyAsync()
     {
+        if (busy)
+        {
+            return;
+        }
+
         busy = true;
+        bool wasHost = IsHost() || IsCurrentLobbyHost();
+        Lobby lobbyToLeave = currentLobby;
+        currentLobby = null;
+        currentJoinCode = string.Empty;
+        joinCodeInput = string.Empty;
+        statusMessage = "Leaving game...";
+
         try
         {
-            bool wasHost = IsHost() || IsCurrentLobbyHost();
-            Lobby lobbyToLeave = currentLobby;
-            currentLobby = null;
-            currentJoinCode = string.Empty;
-            joinCodeInput = string.Empty;
-            statusMessage = "Leaving game...";
-
             await ResetNetworkSessionAsync();
-
-            if (lobbyToLeave != null)
-            {
-                if (wasHost)
-                {
-                    await LobbyService.Instance.DeleteLobbyAsync(lobbyToLeave.Id);
-                }
-                else
-                {
-                    await LobbyService.Instance.RemovePlayerAsync(lobbyToLeave.Id, AuthenticationService.Instance.PlayerId);
-                }
-            }
-
+            await CleanupLobbyRecordBestEffortAsync(lobbyToLeave, wasHost);
             wasNetworkListening = false;
             wasTwoPlayersConnected = false;
             statusMessage = "Left game.";
@@ -733,20 +727,56 @@ public class LobbyRelayManager : MonoBehaviour
             return;
         }
 
+        await CleanupLobbyRecordBestEffortAsync(lobbyToCleanUp, wasHost);
+    }
+
+    private async Task CleanupLobbyRecordBestEffortAsync(Lobby lobbyToCleanUp, bool wasHost)
+    {
+        if (lobbyToCleanUp == null)
+        {
+            return;
+        }
+
         try
         {
-            if (wasHost)
+            Task cleanupTask = CleanupLobbyRecordAsync(lobbyToCleanUp, wasHost);
+            Task completedTask = await Task.WhenAny(cleanupTask, Task.Delay(LobbyCleanupTimeoutMilliseconds));
+            if (completedTask != cleanupTask)
             {
-                await LobbyService.Instance.DeleteLobbyAsync(lobbyToCleanUp.Id);
+                Debug.LogWarning("Lobby cleanup timed out. Continuing locally.");
+                _ = ObserveLobbyCleanupFailureAsync(cleanupTask);
+                return;
             }
-            else if (AuthenticationService.Instance.IsSignedIn)
-            {
-                await LobbyService.Instance.RemovePlayerAsync(lobbyToCleanUp.Id, AuthenticationService.Instance.PlayerId);
-            }
+
+            await cleanupTask;
         }
         catch (Exception ex)
         {
-            Debug.LogWarning("Existing game cleanup failed: " + ex.Message);
+            Debug.LogWarning("Lobby cleanup failed: " + ex.Message);
+        }
+    }
+
+    private async Task CleanupLobbyRecordAsync(Lobby lobbyToCleanUp, bool wasHost)
+    {
+        if (wasHost)
+        {
+            await LobbyService.Instance.DeleteLobbyAsync(lobbyToCleanUp.Id);
+        }
+        else if (AuthenticationService.Instance.IsSignedIn)
+        {
+            await LobbyService.Instance.RemovePlayerAsync(lobbyToCleanUp.Id, AuthenticationService.Instance.PlayerId);
+        }
+    }
+
+    private async Task ObserveLobbyCleanupFailureAsync(Task cleanupTask)
+    {
+        try
+        {
+            await cleanupTask;
+        }
+        catch (Exception ex)
+        {
+            Debug.LogWarning("Late lobby cleanup failed: " + ex.Message);
         }
     }
 
@@ -778,6 +808,12 @@ public class LobbyRelayManager : MonoBehaviour
         }
 
         NetworkManager.Singleton.Shutdown();
+#if UNITY_WEBGL && !UNITY_EDITOR
+        await Task.Yield();
+        wasNetworkListening = false;
+        wasTwoPlayersConnected = false;
+        return;
+#else
         for (int i = 0; i < 60; i++)
         {
             if (NetworkManager.Singleton == null || !NetworkManager.Singleton.IsListening)
@@ -794,6 +830,7 @@ public class LobbyRelayManager : MonoBehaviour
         await Task.Delay(100);
         wasNetworkListening = false;
         wasTwoPlayersConnected = false;
+#endif
     }
 
     private void ResetGameManagerToLobbyStartScreen()

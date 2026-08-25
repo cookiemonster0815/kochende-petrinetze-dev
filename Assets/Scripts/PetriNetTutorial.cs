@@ -41,6 +41,10 @@ public partial class GameManager
 	private const float TutorialBubbleEstimatedLineHeight = 1.28f;
 	private const float TutorialCircleSpriteFilledDiameter = 0.96f;
 	private const float TutorialBubbleDotMinimumGap = 0.16f;
+	private const int TutorialScreenFallbackMaximumBubbles = 2;
+	private const int TutorialScreenFallbackGuiDepth = 20;
+	private const float TutorialScreenFallbackPanelWidthRatio = 0.82f;
+	private const float TutorialScreenFallbackPanelMaxHeightRatio = 0.42f;
 
 	private string activeLevelId = "";
 	private int tutorialStep = TutorialStepInactive;
@@ -51,6 +55,7 @@ public partial class GameManager
 	private int tutorialCompletionMessageStartFrame = -1;
 	private string tutorialPendingBlockId;
 	private string tutorialPlacedBlockId;
+	private bool tutorialStepWasRewound;
 	private bool inhibitorArcHintFinished;
 	private bool weightedArcHintFinished;
 	private GameObject tutorialBubbleRoot;
@@ -72,6 +77,30 @@ public partial class GameManager
 	private TextMesh tutorialCompanionBubbleText;
 	private TextMesh tutorialCompanionBubbleSkipText;
 	private Material tutorialBubbleDepthTestedTextMaterial;
+	private readonly List<TutorialScreenFallbackBubble> tutorialScreenFallbackBubbles =
+		new List<TutorialScreenFallbackBubble>(TutorialScreenFallbackMaximumBubbles);
+
+	private struct TutorialScreenFallbackBubble
+	{
+		public Vector2 worldCenter;
+		public Vector2 target;
+		public bool hasSecondTarget;
+		public Vector2 secondTarget;
+		public string mainText;
+		public string footerText;
+	}
+
+	private struct TutorialScreenFallbackTextLine
+	{
+		public string text;
+		public bool isFooter;
+
+		public TutorialScreenFallbackTextLine(string text, bool isFooter)
+		{
+			this.text = text;
+			this.isFooter = isFooter;
+		}
+	}
 
 	private void OnLevelDefinitionApplied(PetriNetLevelDefinition level)
 	{
@@ -86,6 +115,8 @@ public partial class GameManager
 
 	private void UpdateLevelTutorial()
 	{
+		BeginTutorialScreenFallbackFrame();
+
 		if (!gameplayInitialized)
 		{
 			DestroyLevelTutorialVisuals();
@@ -113,6 +144,13 @@ public partial class GameManager
 		if (tutorialSkipped)
 		{
 			DestroyLevelTutorialVisuals();
+			return;
+		}
+
+		if (tutorialStep != TutorialStepIntro
+			&& IsTutorialStepBackPressed())
+		{
+			ReturnToPreviousLevelTutorialStep();
 			return;
 		}
 
@@ -329,12 +367,14 @@ public partial class GameManager
 				GetTutorialText(TutorialTextId.Completion),
 				TutorialBubbleCharacterSize,
 				null,
-				false);
+				true);
 		}
 	}
 
 	private void UpdateLevelSelectionTutorial()
 	{
+		BeginTutorialScreenFallbackFrame();
+
 		if (!showLevelSelection || gameplayInitialized)
 		{
 			tutorialLevelSelectionMovementActiveThisVisit = false;
@@ -518,6 +558,7 @@ public partial class GameManager
 		}
 
 		DestroyLevelTutorialVisuals();
+		tutorialStepWasRewound = false;
 		tutorialStep = TutorialStepPlayerExchange;
 	}
 
@@ -537,6 +578,7 @@ public partial class GameManager
 	private void BeginLevelTutorialOrdersAndDeliveryStep()
 	{
 		DestroyLevelTutorialVisuals();
+		tutorialStepWasRewound = false;
 		tutorialStep = TutorialStepOrdersAndDelivery;
 	}
 
@@ -622,24 +664,28 @@ public partial class GameManager
 	private void BeginLevelTutorialActionHint(int nextStep)
 	{
 		DestroyLevelTutorialVisuals();
+		tutorialStepWasRewound = false;
 		tutorialStep = nextStep;
 	}
 
 	private void BeginLevelTutorialDeleteEmptyStorageHint()
 	{
 		DestroyLevelTutorialVisuals();
+		tutorialStepWasRewound = false;
 		tutorialStep = TutorialStepDeleteEmptyStorage;
 	}
 
 	private void BeginLevelTutorialTrashHint()
 	{
 		DestroyLevelTutorialVisuals();
+		tutorialStepWasRewound = false;
 		tutorialStep = TutorialStepTrash;
 	}
 
 	private void TryCompleteTutorialInitialConnection()
 	{
 		if (tutorialStep != TutorialStepConnectNodes
+			|| tutorialStepWasRewound
 			|| !TryGetTutorialInitialConnectionIds(out string fromId, out string toId)
 			|| !HasTutorialArc(fromId, toId))
 		{
@@ -652,6 +698,7 @@ public partial class GameManager
 	private void TryCompleteTutorialMovedConnection()
 	{
 		if (tutorialStep != TutorialStepMoveConnection
+			|| tutorialStepWasRewound
 			|| !TryGetTutorialMovedConnectionIds(out string fromId, out string toId)
 			|| !HasTutorialArc(fromId, toId))
 		{
@@ -751,6 +798,86 @@ public partial class GameManager
 				DestroyLevelTutorialVisuals();
 				break;
 		}
+	}
+
+	private void ReturnToPreviousLevelTutorialStep()
+	{
+		if (!CanGoBackCurrentLevelTutorialStep())
+		{
+			return;
+		}
+
+		DestroyLevelTutorialVisuals();
+		tutorialStepWasRewound = false;
+		switch (tutorialStep)
+		{
+			case TutorialStepExplore:
+				tutorialStep = TutorialStepIntro;
+				break;
+			case TutorialStepPickupBlock:
+				tutorialStep = TutorialStepExplore;
+				break;
+			case TutorialStepConnectNodes:
+				tutorialStep = TutorialStepPickupBlock;
+				break;
+			case TutorialStepMoveConnection:
+				tutorialStep = TutorialStepConnectNodes;
+				break;
+			case TutorialStepFireIngredient:
+				tutorialStep = TutorialStepMoveConnection;
+				break;
+			case TutorialStepPlayerExchange:
+				tutorialStep = TutorialStepFireIngredient;
+				break;
+			case TutorialStepOrdersAndDelivery:
+				tutorialStep = singlePlayerMode ? TutorialStepFireIngredient : TutorialStepPlayerExchange;
+				break;
+			case TutorialStepCreateStorage:
+				tutorialStep = TutorialStepOrdersAndDelivery;
+				break;
+			case TutorialStepWaitForStoragePlacement:
+				tutorialStep = TutorialStepCreateStorage;
+				break;
+			case TutorialStepDeleteEmptyStorage:
+				tutorialStep = TutorialStepCreateStorage;
+				break;
+			case TutorialStepTrash:
+				tutorialStep = TutorialStepDeleteEmptyStorage;
+				break;
+			case TutorialStepCompletionMessage:
+				tutorialStep = TutorialStepTrash;
+				break;
+			default:
+				break;
+		}
+
+		tutorialStepWasRewound = ShouldSuppressTutorialAutoCompletionAfterRewind();
+	}
+
+	private bool CanGoBackCurrentLevelTutorialStep()
+	{
+		return IsTutorialLevelActive()
+			&& !tutorialSkipped
+			&& tutorialStep != TutorialStepInactive
+			&& tutorialStep != TutorialStepIntro
+			&& tutorialStep != TutorialStepDone;
+	}
+
+	private bool ShouldSuppressTutorialAutoCompletionAfterRewind()
+	{
+		if (tutorialStep == TutorialStepConnectNodes)
+		{
+			return TryGetTutorialInitialConnectionIds(out string fromId, out string toId)
+				&& HasTutorialArc(fromId, toId);
+		}
+
+		if (tutorialStep == TutorialStepMoveConnection)
+		{
+			return TryGetTutorialMovedConnectionIds(out string movedFromId, out string movedToId)
+				&& HasTutorialArc(movedFromId, movedToId);
+		}
+
+		return false;
 	}
 
 	private string GetTutorialFallbackCompositeBlockId()
@@ -1070,6 +1197,7 @@ public partial class GameManager
 		tutorialCompletionMessageStartFrame = -1;
 		tutorialPendingBlockId = null;
 		tutorialPlacedBlockId = null;
+		tutorialStepWasRewound = false;
 		inhibitorArcHintFinished = false;
 		weightedArcHintFinished = false;
 		DestroyLevelTutorialVisuals();
@@ -1077,6 +1205,8 @@ public partial class GameManager
 
 	private void DestroyLevelTutorialVisuals()
 	{
+		tutorialScreenFallbackBubbles.Clear();
+
 		if (tutorialBubbleRoot != null)
 		{
 			Destroy(tutorialBubbleRoot);
@@ -1976,12 +2106,6 @@ public partial class GameManager
 		bool showSkipText = true)
 	{
 		text = LocalizeVisibleText(text);
-		EnsureTutorialBubbleVisual();
-		if (tutorialBubbleRoot == null)
-		{
-			return;
-		}
-
 		size = GetTightTutorialBubbleSize(text, characterSize, showSkipText);
 		for (int i = 0; i < (secondTarget.HasValue ? 4 : 1); i++)
 		{
@@ -1992,6 +2116,24 @@ public partial class GameManager
 			}
 		}
 
+		if (UseScreenTutorialBubbles())
+		{
+			AddTutorialScreenFallbackBubble(center, size, target, text, showSkipText, secondTarget);
+			if (tutorialBubbleRoot != null)
+			{
+				tutorialBubbleRoot.SetActive(false);
+			}
+			return;
+		}
+
+		EnsureTutorialBubbleVisual();
+		if (tutorialBubbleRoot == null)
+		{
+			AddTutorialScreenFallbackBubble(center, size, target, text, showSkipText, secondTarget);
+			return;
+		}
+
+		tutorialBubbleRoot.SetActive(true);
 		tutorialBubbleFill.transform.position = new Vector3(center.x, center.y, TutorialBubbleZ);
 		tutorialBubbleFill.transform.localScale = new Vector3(
 			size.x / TutorialCircleSpriteFilledDiameter,
@@ -2146,16 +2288,29 @@ public partial class GameManager
 		float characterSize)
 	{
 		text = LocalizeVisibleText(text);
+		size = GetTightTutorialBubbleSize(text, characterSize, false);
+		center = EnsureTutorialThoughtDotClearance(center, size * 0.5f, target);
+
+		if (UseScreenTutorialBubbles())
+		{
+			AddTutorialScreenFallbackBubble(center, size, target, text, false);
+			if (tutorialCompanionBubbleRoot != null)
+			{
+				tutorialCompanionBubbleRoot.SetActive(false);
+			}
+			return;
+		}
+
 		EnsureTutorialCompanionBubbleVisual();
 		if (tutorialCompanionBubbleRoot == null
 			|| tutorialCompanionBubbleFill == null
 			|| tutorialCompanionBubbleText == null)
 		{
+			AddTutorialScreenFallbackBubble(center, size, target, text, false);
 			return;
 		}
 
-		size = GetTightTutorialBubbleSize(text, characterSize, false);
-		center = EnsureTutorialThoughtDotClearance(center, size * 0.5f, target);
+		tutorialCompanionBubbleRoot.SetActive(true);
 		tutorialCompanionBubbleFill.transform.position = new Vector3(center.x, center.y, TutorialBubbleZ);
 		tutorialCompanionBubbleFill.transform.localScale = new Vector3(
 			size.x / TutorialCircleSpriteFilledDiameter,
@@ -2179,6 +2334,833 @@ public partial class GameManager
 			characterSize);
 	}
 
+	private void BeginTutorialScreenFallbackFrame()
+	{
+		tutorialScreenFallbackBubbles.Clear();
+	}
+
+	private bool UseScreenTutorialBubbles()
+	{
+		return true;
+	}
+
+	private void AddTutorialScreenFallbackBubble(
+		Vector2 center,
+		Vector2 size,
+		Vector2 target,
+		string text,
+		bool showSkipText,
+		Vector2? secondTarget = null)
+	{
+		if (tutorialScreenFallbackBubbles.Count >= TutorialScreenFallbackMaximumBubbles)
+		{
+			return;
+		}
+
+		string mainText = text ?? "";
+		string footerText = "";
+		if (showSkipText)
+		{
+			footerText = NormalizeTutorialScreenFallbackFooterText(GetTutorialFooterText());
+		}
+		else if (TryMoveTutorialScreenFallbackFinalEnterLineToFooter(ref mainText, out string extractedFooterText))
+		{
+			footerText = NormalizeTutorialScreenFallbackFooterText(extractedFooterText);
+		}
+
+		mainText = NormalizeTutorialScreenFallbackHardLineBreaks(mainText);
+		tutorialScreenFallbackBubbles.Add(new TutorialScreenFallbackBubble
+		{
+			worldCenter = center,
+			target = target,
+			hasSecondTarget = secondTarget.HasValue,
+			secondTarget = secondTarget.HasValue ? secondTarget.Value : Vector2.zero,
+			mainText = mainText,
+			footerText = footerText
+		});
+	}
+
+	private string NormalizeTutorialScreenFallbackFooterText(string text)
+	{
+		if (string.IsNullOrEmpty(text))
+		{
+			return "";
+		}
+
+		string[] lines = text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
+		System.Text.StringBuilder result = new System.Text.StringBuilder(text.Length);
+		for (int i = 0; i < lines.Length; i++)
+		{
+			string line = NormalizeTutorialScreenFallbackHardLineBreaks(lines[i]).Trim();
+			if (string.IsNullOrEmpty(line))
+			{
+				continue;
+			}
+
+			if (result.Length > 0)
+			{
+				result.Append('\n');
+			}
+
+			result.Append(line);
+		}
+
+		return result.ToString();
+	}
+
+	private bool TryMoveTutorialScreenFallbackFinalEnterLineToFooter(ref string mainText, out string footerText)
+	{
+		footerText = "";
+		if (string.IsNullOrEmpty(mainText))
+		{
+			return false;
+		}
+
+		string[] lines = mainText.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
+		int footerLineIndex = -1;
+		for (int i = lines.Length - 1; i >= 0; i--)
+		{
+			if (string.IsNullOrWhiteSpace(lines[i]))
+			{
+				continue;
+			}
+
+			if (!IsTutorialScreenFallbackSkipFooterText(lines[i]))
+			{
+				return false;
+			}
+
+			footerLineIndex = i;
+			break;
+		}
+
+		if (footerLineIndex < 0)
+		{
+			return false;
+		}
+
+		footerText = lines[footerLineIndex].Trim();
+		System.Text.StringBuilder remainingText = new System.Text.StringBuilder(mainText.Length);
+		for (int i = 0; i < lines.Length; i++)
+		{
+			if (i == footerLineIndex)
+			{
+				continue;
+			}
+
+			if (remainingText.Length > 0)
+			{
+				remainingText.Append('\n');
+			}
+
+			remainingText.Append(lines[i]);
+		}
+
+		mainText = remainingText.ToString();
+		return true;
+	}
+
+	private string NormalizeTutorialScreenFallbackHardLineBreaks(string text)
+	{
+		if (string.IsNullOrEmpty(text))
+		{
+			return "";
+		}
+
+		string normalized = text.Replace("\r\n", "\n").Replace('\r', '\n');
+		System.Text.StringBuilder result = new System.Text.StringBuilder(normalized.Length);
+		int pendingLineBreaks = 0;
+		for (int i = 0; i < normalized.Length; i++)
+		{
+			char character = normalized[i];
+			if (character == '\n')
+			{
+				pendingLineBreaks++;
+				continue;
+			}
+
+			if (pendingLineBreaks > 0)
+			{
+				if (pendingLineBreaks >= 2)
+				{
+					TrimTrailingSpaces(result);
+					if (result.Length > 0)
+					{
+						result.Append("\n\n");
+					}
+				}
+				else if (result.Length > 0 && result[result.Length - 1] != ' ' && result[result.Length - 1] != '\n')
+				{
+					result.Append(' ');
+				}
+
+				pendingLineBreaks = 0;
+			}
+
+			if (char.IsWhiteSpace(character))
+			{
+				if (result.Length > 0 && result[result.Length - 1] != ' ' && result[result.Length - 1] != '\n')
+				{
+					result.Append(' ');
+				}
+
+				continue;
+			}
+
+			result.Append(character);
+		}
+
+		TrimTrailingSpaces(result);
+		return result.ToString();
+	}
+
+	private void TrimTrailingSpaces(System.Text.StringBuilder text)
+	{
+		while (text.Length > 0 && text[text.Length - 1] == ' ')
+		{
+			text.Length--;
+		}
+	}
+
+	private Vector2 GetTutorialScreenFallbackScreenCenter(Vector2 center)
+	{
+		Vector2 screenCenter = new Vector2(Screen.width * 0.5f, Screen.height * 0.24f);
+		if (mainCamera == null)
+		{
+			return screenCenter;
+		}
+
+		float z = TutorialBubbleTextZ;
+		Vector3 worldCenter = new Vector3(center.x, center.y, z);
+		Vector3 projectedCenter = mainCamera.WorldToScreenPoint(worldCenter);
+		if (projectedCenter.z > 0f)
+		{
+			screenCenter = new Vector2(projectedCenter.x, Screen.height - projectedCenter.y);
+		}
+
+		return screenCenter;
+	}
+
+	private float GetTutorialScreenFallbackHeightForLineCount(int lineCount, int fontSize)
+	{
+		float paddingY = GetTutorialScreenFallbackPaddingY(fontSize);
+		return Mathf.Max(1, lineCount) * GetTutorialScreenFallbackLineHeight(fontSize) + paddingY * 2f;
+	}
+
+	private float GetTutorialScreenFallbackPaddingY(int fontSize)
+	{
+		return Mathf.Max(12f, fontSize * 0.52f);
+	}
+
+	private float GetTutorialScreenFallbackLineHeight(int fontSize)
+	{
+		return fontSize * 1.24f;
+	}
+
+	private float ClampTutorialScreenFallbackCoordinate(float value, float minimum, float maximum)
+	{
+		return maximum < minimum ? (minimum + maximum) * 0.5f : Mathf.Clamp(value, minimum, maximum);
+	}
+
+	private int GetTutorialScreenFallbackFontSize()
+	{
+		return Mathf.RoundToInt(Mathf.Clamp(Screen.height * 0.028f, 18f, 34f));
+	}
+
+	private void DrawTutorialScreenFallback()
+	{
+		Event currentEvent = Event.current;
+		if (currentEvent != null && currentEvent.type != EventType.Repaint)
+		{
+			return;
+		}
+
+		if (tutorialScreenFallbackBubbles.Count == 0)
+		{
+			return;
+		}
+
+		int previousDepth = GUI.depth;
+		Color previousColor = GUI.color;
+		GUI.depth = TutorialScreenFallbackGuiDepth;
+		GUIStyle lineMeasureStyle = CreateTutorialScreenFallbackLineStyle();
+		List<TutorialScreenFallbackTextLine> panelSourceLines = BuildTutorialScreenFallbackPanelTextLines();
+		Rect panelRect = GetTutorialScreenFallbackPanelRect(panelSourceLines, lineMeasureStyle, out TutorialScreenFallbackTextLine[] panelLines);
+
+		for (int i = 0; i < tutorialScreenFallbackBubbles.Count; i++)
+		{
+			TutorialScreenFallbackBubble bubble = tutorialScreenFallbackBubbles[i];
+			DrawTutorialScreenFallbackThoughtDots(GetTutorialScreenFallbackThoughtDotRects(panelRect, bubble.worldCenter, bubble.target));
+			if (bubble.hasSecondTarget)
+			{
+				DrawTutorialScreenFallbackThoughtDots(GetTutorialScreenFallbackThoughtDotRects(panelRect, bubble.worldCenter, bubble.secondTarget));
+			}
+		}
+
+		DrawTutorialScreenFallbackPanel(panelRect);
+		DrawTutorialScreenFallbackPanelText(panelRect, panelLines, lineMeasureStyle);
+		GUI.color = previousColor;
+		GUI.depth = previousDepth;
+	}
+
+	private GUIStyle CreateTutorialScreenFallbackLineStyle()
+	{
+		GUIStyle style = new GUIStyle(GUI.skin.label)
+		{
+			alignment = TextAnchor.MiddleCenter,
+			fontSize = GetTutorialScreenFallbackFontSize(),
+			wordWrap = false,
+			clipping = TextClipping.Clip
+		};
+		SetTutorialScreenFallbackStyleTextColor(style, Color.black);
+		return style;
+	}
+
+	private bool TryGetTutorialScreenFallbackPanelRect(out Rect panelRect)
+	{
+		panelRect = Rect.zero;
+		if (tutorialScreenFallbackBubbles.Count == 0)
+		{
+			return false;
+		}
+
+		GUIStyle lineStyle = CreateTutorialScreenFallbackLineStyle();
+		List<TutorialScreenFallbackTextLine> lines = BuildTutorialScreenFallbackPanelTextLines();
+		panelRect = GetTutorialScreenFallbackPanelRect(lines, lineStyle, out TutorialScreenFallbackTextLine[] unusedLines);
+		_ = unusedLines;
+		return true;
+	}
+
+	private List<TutorialScreenFallbackTextLine> BuildTutorialScreenFallbackPanelTextLines()
+	{
+		List<TutorialScreenFallbackTextLine> lines = new List<TutorialScreenFallbackTextLine>();
+		string footerText = "";
+		for (int i = 0; i < tutorialScreenFallbackBubbles.Count; i++)
+		{
+			TutorialScreenFallbackBubble bubble = tutorialScreenFallbackBubbles[i];
+			AddTutorialScreenFallbackTextLines(lines, bubble.mainText, false);
+			if (string.IsNullOrEmpty(footerText) && !string.IsNullOrEmpty(bubble.footerText))
+			{
+				footerText = bubble.footerText;
+			}
+		}
+
+		AddTutorialScreenFallbackTextLines(lines, footerText, true);
+		if (lines.Count == 0)
+		{
+			lines.Add(new TutorialScreenFallbackTextLine("", false));
+		}
+
+		return lines;
+	}
+
+	private Rect GetTutorialScreenFallbackPanelRect(
+		List<TutorialScreenFallbackTextLine> sourceLines,
+		GUIStyle style,
+		out TutorialScreenFallbackTextLine[] fittedLines)
+	{
+		SplitTutorialScreenFallbackPanelLines(
+			sourceLines,
+			out List<TutorialScreenFallbackTextLine> mainSourceLines,
+			out List<TutorialScreenFallbackTextLine> footerLines);
+		float uiScale = Mathf.Clamp(Mathf.Min(Screen.width / 1600f, Screen.height / 900f), 0.72f, 1.35f);
+		float marginX = Mathf.Max(18f, Screen.width * 0.035f);
+		float bottomMargin = Mathf.Max(18f, 22f * uiScale);
+		float panelWidth = Mathf.Min(
+			Screen.width - marginX * 2f,
+			Mathf.Max(420f * uiScale, Screen.width * TutorialScreenFallbackPanelWidthRatio));
+		float paddingX = Mathf.Max(18f, style.fontSize * 1.1f);
+		float paddingY = Mathf.Max(14f, style.fontSize * 0.62f);
+		float contentWidth = Mathf.Max(80f, panelWidth - paddingX * 2f);
+		TutorialScreenFallbackTextLine[] mainLines = FitTutorialScreenFallbackLinesToBox(mainSourceLines, contentWidth, style);
+		fittedLines = CombineTutorialScreenFallbackPanelLines(mainLines, footerLines);
+		float lineHeight = GetTutorialScreenFallbackLineHeight(style.fontSize);
+		int visibleLineCount = mainLines.Length + (footerLines.Count > 0 ? 1 : 0);
+		float preferredHeight = Mathf.Max(1, visibleLineCount) * lineHeight + paddingY * 2f;
+		float panelHeight = Mathf.Clamp(
+			preferredHeight,
+			Mathf.Min(96f * uiScale, Screen.height * 0.24f),
+			Mathf.Max(110f, Screen.height * TutorialScreenFallbackPanelMaxHeightRatio));
+		float panelX = (Screen.width - panelWidth) * 0.5f;
+		float panelY = Mathf.Max(8f, Screen.height - bottomMargin - panelHeight);
+		return new Rect(panelX, panelY, panelWidth, panelHeight);
+	}
+
+	private void SplitTutorialScreenFallbackPanelLines(
+		List<TutorialScreenFallbackTextLine> sourceLines,
+		out List<TutorialScreenFallbackTextLine> mainLines,
+		out List<TutorialScreenFallbackTextLine> footerLines)
+	{
+		mainLines = new List<TutorialScreenFallbackTextLine>();
+		footerLines = new List<TutorialScreenFallbackTextLine>();
+		if (sourceLines != null)
+		{
+			for (int i = 0; i < sourceLines.Count; i++)
+			{
+				if (sourceLines[i].isFooter)
+				{
+					footerLines.Add(sourceLines[i]);
+				}
+				else
+				{
+					mainLines.Add(sourceLines[i]);
+				}
+			}
+		}
+
+		if (mainLines.Count == 0)
+		{
+			mainLines.Add(new TutorialScreenFallbackTextLine("", false));
+		}
+	}
+
+	private TutorialScreenFallbackTextLine[] CombineTutorialScreenFallbackPanelLines(
+		TutorialScreenFallbackTextLine[] mainLines,
+		List<TutorialScreenFallbackTextLine> footerLines)
+	{
+		List<TutorialScreenFallbackTextLine> combined = new List<TutorialScreenFallbackTextLine>();
+		if (mainLines != null)
+		{
+			combined.AddRange(mainLines);
+		}
+
+		if (footerLines != null)
+		{
+			for (int i = 0; i < footerLines.Count; i++)
+			{
+				combined.Add(footerLines[i]);
+			}
+		}
+
+		if (combined.Count == 0)
+		{
+			combined.Add(new TutorialScreenFallbackTextLine("", false));
+		}
+
+		return combined.ToArray();
+	}
+
+	private TutorialScreenFallbackTextLine[] FitTutorialScreenFallbackLinesToBox(
+		List<TutorialScreenFallbackTextLine> sourceLines,
+		float maxWidth,
+		GUIStyle style)
+	{
+		List<TutorialScreenFallbackTextLine> lines = new List<TutorialScreenFallbackTextLine>(sourceLines);
+		if (lines.Count == 0)
+		{
+			lines.Add(new TutorialScreenFallbackTextLine("", false));
+		}
+
+		for (int pass = 0; pass < 48; pass++)
+		{
+			bool changed = false;
+			for (int i = 0; i < lines.Count; i++)
+			{
+				TutorialScreenFallbackTextLine line = lines[i];
+				if (string.IsNullOrEmpty(line.text)
+					|| style.CalcSize(new GUIContent(line.text)).x <= maxWidth)
+				{
+					continue;
+				}
+
+				SplitTutorialScreenFallbackLine(line.text, maxWidth, style, out string firstPart, out string secondPart);
+				lines[i] = new TutorialScreenFallbackTextLine(firstPart, line.isFooter);
+				lines.Insert(i + 1, new TutorialScreenFallbackTextLine(secondPart, line.isFooter));
+				changed = true;
+				break;
+			}
+
+			if (!changed)
+			{
+				break;
+			}
+		}
+
+		return lines.ToArray();
+	}
+
+	private void DrawTutorialScreenFallbackPanel(Rect rect)
+	{
+		Color previousColor = GUI.color;
+		GUI.color = new Color(1f, 1f, 1f, 0.96f);
+		GUI.DrawTexture(rect, Texture2D.whiteTexture);
+		GUI.color = new Color(0.08f, 0.09f, 0.1f, 1f);
+		float thickness = Mathf.Clamp(Screen.height * 0.004f, 3f, 6f);
+		GUI.DrawTexture(new Rect(rect.x, rect.y, rect.width, thickness), Texture2D.whiteTexture);
+		GUI.DrawTexture(new Rect(rect.x, rect.yMax - thickness, rect.width, thickness), Texture2D.whiteTexture);
+		GUI.DrawTexture(new Rect(rect.x, rect.y, thickness, rect.height), Texture2D.whiteTexture);
+		GUI.DrawTexture(new Rect(rect.xMax - thickness, rect.y, thickness, rect.height), Texture2D.whiteTexture);
+		GUI.color = previousColor;
+	}
+
+	private void DrawTutorialScreenFallbackPanelText(Rect panelRect, TutorialScreenFallbackTextLine[] lines, GUIStyle style)
+	{
+		if (lines == null || lines.Length == 0)
+		{
+			return;
+		}
+
+		SplitTutorialScreenFallbackPanelLines(
+			new List<TutorialScreenFallbackTextLine>(lines),
+			out List<TutorialScreenFallbackTextLine> mainLines,
+			out List<TutorialScreenFallbackTextLine> footerLines);
+		GUIStyle lineStyle = new GUIStyle(style)
+		{
+			alignment = TextAnchor.MiddleCenter,
+			wordWrap = false,
+			clipping = TextClipping.Clip
+		};
+		float paddingX = Mathf.Max(18f, lineStyle.fontSize * 1.1f);
+		float paddingY = Mathf.Max(14f, lineStyle.fontSize * 0.62f);
+		float lineHeight = GetTutorialScreenFallbackLineHeight(lineStyle.fontSize);
+		float footerHeight = footerLines.Count > 0 ? lineHeight : 0f;
+		float mainAreaHeight = Mathf.Max(lineHeight, panelRect.height - paddingY * 2f - footerHeight);
+		float mainTextHeight = mainLines.Count * lineHeight;
+		float startY = panelRect.y + paddingY + Mathf.Max(0f, (mainAreaHeight - mainTextHeight) * 0.5f);
+		Color footerTextColor = new Color(0.42f, 0.44f, 0.47f, 1f);
+		SetTutorialScreenFallbackStyleTextColor(lineStyle, Color.black);
+		for (int i = 0; i < mainLines.Count; i++)
+		{
+			GUI.Label(
+				new Rect(panelRect.x + paddingX, startY + i * lineHeight, panelRect.width - paddingX * 2f, lineHeight),
+				mainLines[i].text,
+				lineStyle);
+		}
+
+		DrawTutorialScreenFallbackFooterLine(panelRect, footerLines, lineStyle, footerTextColor, paddingX, paddingY, lineHeight);
+	}
+
+	private void DrawTutorialScreenFallbackFooterLine(
+		Rect panelRect,
+		List<TutorialScreenFallbackTextLine> footerLines,
+		GUIStyle style,
+		Color textColor,
+		float paddingX,
+		float paddingY,
+		float lineHeight)
+	{
+		if (footerLines == null || footerLines.Count == 0)
+		{
+			return;
+		}
+
+		string leftText = "";
+		string rightText = "";
+		for (int i = 0; i < footerLines.Count; i++)
+		{
+			string footerText = footerLines[i].text;
+			if (string.IsNullOrEmpty(footerText))
+			{
+				continue;
+			}
+
+			if (IsTutorialScreenFallbackPreviousFooterText(footerText))
+			{
+				leftText = footerText;
+			}
+			else if (IsTutorialScreenFallbackSkipFooterText(footerText))
+			{
+				rightText = footerText;
+			}
+			else if (i == 0 && string.IsNullOrEmpty(leftText))
+			{
+				leftText = footerText;
+			}
+			else if (string.IsNullOrEmpty(rightText))
+			{
+				rightText = footerText;
+			}
+		}
+
+		SetTutorialScreenFallbackStyleTextColor(style, textColor);
+		float y = panelRect.yMax - paddingY - lineHeight;
+		float halfWidth = (panelRect.width - paddingX * 2f) * 0.5f;
+		if (!string.IsNullOrEmpty(leftText))
+		{
+			style.alignment = TextAnchor.MiddleLeft;
+			GUI.Label(new Rect(panelRect.x + paddingX, y, halfWidth, lineHeight), leftText, style);
+		}
+
+		if (!string.IsNullOrEmpty(rightText))
+		{
+			style.alignment = TextAnchor.MiddleRight;
+			GUI.Label(new Rect(panelRect.xMax - paddingX - halfWidth, y, halfWidth, lineHeight), rightText, style);
+		}
+
+		style.alignment = TextAnchor.MiddleCenter;
+	}
+
+	private bool IsTutorialScreenFallbackPreviousFooterText(string text)
+	{
+		return !string.IsNullOrEmpty(text)
+			&& text.IndexOf("Backspace", System.StringComparison.OrdinalIgnoreCase) >= 0;
+	}
+
+	private bool IsTutorialScreenFallbackSkipFooterText(string text)
+	{
+		return !string.IsNullOrEmpty(text)
+			&& text.IndexOf("Enter", System.StringComparison.OrdinalIgnoreCase) >= 0;
+	}
+
+	private void AddTutorialScreenFallbackTextLines(
+		List<TutorialScreenFallbackTextLine> lines,
+		string text,
+		bool isFooter)
+	{
+		if (string.IsNullOrEmpty(text))
+		{
+			return;
+		}
+
+		string[] splitLines = text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
+		for (int i = 0; i < splitLines.Length; i++)
+		{
+			string line = splitLines[i].Trim();
+			if (line.Length == 0)
+			{
+				if (!isFooter && lines.Count > 0 && i < splitLines.Length - 1)
+				{
+					lines.Add(new TutorialScreenFallbackTextLine("", false));
+				}
+
+				continue;
+			}
+
+			lines.Add(new TutorialScreenFallbackTextLine(line, isFooter));
+		}
+	}
+
+	private void SplitTutorialScreenFallbackLine(string line, float maxWidth, GUIStyle style, out string firstPart, out string secondPart)
+	{
+		firstPart = line;
+		secondPart = "";
+		if (string.IsNullOrEmpty(line) || line.Length <= 1)
+		{
+			return;
+		}
+
+		int splitIndex = GetTutorialScreenFallbackFittingPrefixLength(line, maxWidth, style);
+		int preferredSpace = line.LastIndexOf(' ', Mathf.Clamp(splitIndex, 0, line.Length - 1));
+		if (preferredSpace > 0 && preferredSpace >= Mathf.Max(1, splitIndex / 2))
+		{
+			splitIndex = preferredSpace;
+		}
+
+		splitIndex = Mathf.Clamp(splitIndex, 1, line.Length - 1);
+		firstPart = line.Substring(0, splitIndex).Trim();
+		secondPart = line.Substring(splitIndex).Trim();
+		if (string.IsNullOrEmpty(firstPart))
+		{
+			firstPart = line.Substring(0, 1);
+		}
+
+		if (string.IsNullOrEmpty(secondPart))
+		{
+			secondPart = line.Substring(firstPart.Length).Trim();
+		}
+	}
+
+	private int GetTutorialScreenFallbackFittingPrefixLength(string line, float maxWidth, GUIStyle style)
+	{
+		int best = 1;
+		for (int i = 1; i < line.Length; i++)
+		{
+			string candidate = line.Substring(0, i).TrimEnd();
+			if (string.IsNullOrEmpty(candidate))
+			{
+				continue;
+			}
+
+			if (style.CalcSize(new GUIContent(candidate)).x > maxWidth)
+			{
+				break;
+			}
+
+			best = i;
+		}
+
+		return best;
+	}
+
+	private void SetTutorialScreenFallbackStyleTextColor(GUIStyle style, Color color)
+	{
+		style.normal.textColor = color;
+		style.hover.textColor = color;
+		style.active.textColor = color;
+		style.focused.textColor = color;
+		style.onNormal.textColor = color;
+		style.onHover.textColor = color;
+		style.onActive.textColor = color;
+		style.onFocused.textColor = color;
+	}
+
+	private Rect[] GetTutorialScreenFallbackThoughtDotRects(Rect bubbleRect, Vector2 bubbleWorldCenter, Vector2 target)
+	{
+		Vector2 bubbleCenter = bubbleRect.center;
+		Vector2 targetPoint = GetTutorialScreenFallbackPoint(target, bubbleWorldCenter);
+		Vector2 direction = targetPoint - bubbleCenter;
+		if (direction.sqrMagnitude < 0.001f)
+		{
+			direction = Vector2.down;
+		}
+
+		float halfWidth = Mathf.Max(1f, bubbleRect.width * 0.5f);
+		float halfHeight = Mathf.Max(1f, bubbleRect.height * 0.5f);
+		float scaleX = Mathf.Abs(direction.x) > 0.001f ? halfWidth / Mathf.Abs(direction.x) : float.MaxValue;
+		float scaleY = Mathf.Abs(direction.y) > 0.001f ? halfHeight / Mathf.Abs(direction.y) : float.MaxValue;
+		Vector2 edgePoint = bubbleCenter + direction * Mathf.Min(scaleX, scaleY);
+		Vector2[] points =
+		{
+			Vector2.Lerp(edgePoint, targetPoint, 0.28f),
+			Vector2.Lerp(edgePoint, targetPoint, 0.52f),
+			Vector2.Lerp(edgePoint, targetPoint, 0.74f)
+		};
+		float scale = Mathf.Clamp(Screen.height / 900f, 0.75f, 1.45f);
+		float[] sizes = { 28f * scale, 22f * scale, 15f * scale };
+		Rect[] rects = new Rect[points.Length];
+		for (int i = 0; i < points.Length; i++)
+		{
+			rects[i] = new Rect(
+				points[i].x - sizes[i] * 0.5f,
+				points[i].y - sizes[i] * 0.5f,
+				sizes[i],
+				sizes[i]);
+			rects[i] = ClampTutorialScreenFallbackRect(rects[i], 8f);
+		}
+
+		return rects;
+	}
+
+	private Rect ClampTutorialScreenFallbackRect(Rect rect, float margin)
+	{
+		float maxX = Screen.width - margin - rect.width;
+		float maxY = Screen.height - margin - rect.height;
+		rect.x = ClampTutorialScreenFallbackCoordinate(rect.x, margin, maxX);
+		rect.y = ClampTutorialScreenFallbackCoordinate(rect.y, margin, maxY);
+		return rect;
+	}
+
+	private Vector2 GetTutorialScreenFallbackPoint(Vector2 worldPoint, Vector2 fallbackWorldPoint)
+	{
+		if (mainCamera == null)
+		{
+			return new Vector2(Screen.width * 0.5f, Screen.height * 0.5f);
+		}
+
+		Vector3 projected = mainCamera.WorldToScreenPoint(new Vector3(worldPoint.x, worldPoint.y, TutorialBubbleTextZ));
+		if (projected.z <= 0f)
+		{
+			projected = mainCamera.WorldToScreenPoint(
+				new Vector3(fallbackWorldPoint.x, fallbackWorldPoint.y, TutorialBubbleTextZ));
+		}
+
+		return new Vector2(projected.x, Screen.height - projected.y);
+	}
+
+	private void DrawTutorialScreenFallbackThoughtDots(Rect[] dotRects)
+	{
+		if (dotRects == null)
+		{
+			return;
+		}
+
+		for (int i = 0; i < dotRects.Length; i++)
+		{
+			DrawTutorialScreenFallbackEllipse(
+				dotRects[i],
+				Color.white,
+				new Color(0.08f, 0.09f, 0.1f, 1f),
+				Mathf.Clamp(dotRects[i].height * 0.15f, 2f, 4f));
+		}
+	}
+
+	private void DrawTutorialScreenFallbackEllipse(Rect rect, Color fillColor, Color borderColor, float borderPixels)
+	{
+		if (rect.width <= 1f || rect.height <= 1f)
+		{
+			return;
+		}
+
+		Color previousColor = GUI.color;
+		float radiusX = rect.width * 0.5f;
+		float radiusY = rect.height * 0.5f;
+		float centerX = rect.x + radiusX;
+		float centerY = rect.y + radiusY;
+		int rowCount = Mathf.Max(1, Mathf.CeilToInt(rect.height));
+
+		GUI.color = fillColor;
+		for (int row = 0; row < rowCount; row++)
+		{
+			float y = rect.y + row;
+			float normalizedY = (y + 0.5f - centerY) / Mathf.Max(0.001f, radiusY);
+			float halfWidth = GetTutorialScreenFallbackEllipseHalfWidth(normalizedY, radiusX);
+			if (halfWidth <= 0f)
+			{
+				continue;
+			}
+
+			GUI.DrawTexture(new Rect(centerX - halfWidth, y, halfWidth * 2f, 1f), Texture2D.whiteTexture);
+		}
+
+		GUI.color = borderColor;
+		float innerRadiusX = Mathf.Max(0.001f, radiusX - borderPixels);
+		float innerRadiusY = Mathf.Max(0.001f, radiusY - borderPixels);
+		for (int row = 0; row < rowCount; row++)
+		{
+			float y = rect.y + row;
+			float sampleY = y + 0.5f - centerY;
+			float outerHalfWidth = GetTutorialScreenFallbackEllipseHalfWidth(sampleY / Mathf.Max(0.001f, radiusY), radiusX);
+			if (outerHalfWidth <= 0f)
+			{
+				continue;
+			}
+
+			float innerHalfWidth = GetTutorialScreenFallbackEllipseHalfWidth(sampleY / innerRadiusY, innerRadiusX);
+			if (innerHalfWidth <= 0f)
+			{
+				GUI.DrawTexture(new Rect(centerX - outerHalfWidth, y, outerHalfWidth * 2f, 1f), Texture2D.whiteTexture);
+				continue;
+			}
+
+			float borderWidth = Mathf.Max(0f, outerHalfWidth - innerHalfWidth);
+			if (borderWidth <= 0f)
+			{
+				continue;
+			}
+
+			GUI.DrawTexture(new Rect(centerX - outerHalfWidth, y, borderWidth, 1f), Texture2D.whiteTexture);
+			GUI.DrawTexture(new Rect(centerX + innerHalfWidth, y, borderWidth, 1f), Texture2D.whiteTexture);
+		}
+
+		GUI.color = previousColor;
+	}
+
+	private float GetTutorialScreenFallbackEllipseHalfWidth(float normalizedY, float radiusX)
+	{
+		float inside = 1f - normalizedY * normalizedY;
+		if (inside <= 0f)
+		{
+			return 0f;
+		}
+
+		return Mathf.Sqrt(inside) * radiusX;
+	}
+
+	private string GetTutorialFooterText()
+	{
+		if (CanGoBackCurrentLevelTutorialStep())
+		{
+			if (tutorialStep == TutorialStepCompletionMessage)
+			{
+				return GetTutorialText(TutorialTextId.PreviousStep);
+			}
+
+			return GetTutorialText(TutorialTextId.PreviousStep) + "\n" + GetTutorialText(TutorialTextId.Skip);
+		}
+
+		return GetTutorialText(TutorialTextId.Skip);
+	}
+
 	private Vector2 GetTightTutorialBubbleSize(string text, float characterSize, bool showSkipText)
 	{
 		int lineCount = CountTutorialTextLines(text);
@@ -2191,10 +3173,11 @@ public partial class GameManager
 		if (showSkipText)
 		{
 			float skipCharacterSize = 0.055f * TutorialBubbleTextScale;
-			string skipText = GetTutorialText(TutorialTextId.Skip);
-			float skipTextWidth = skipText.Length * skipCharacterSize * TutorialBubbleEstimatedCharacterWidth;
-			bubbleWidth = Mathf.Max(bubbleWidth, skipTextWidth / 0.58f + 0.25f);
-			bubbleHeight += 0.5f;
+			string footerText = GetTutorialFooterText();
+			float footerTextWidth = GetLongestTutorialTextLineLength(footerText) * skipCharacterSize * TutorialBubbleEstimatedCharacterWidth;
+			float footerTextHeight = CountTutorialTextLines(footerText) * skipCharacterSize * TutorialBubbleEstimatedLineHeight;
+			bubbleWidth = Mathf.Max(bubbleWidth, footerTextWidth / 0.58f + 0.25f);
+			bubbleHeight += Mathf.Max(0.5f, footerTextHeight + 0.22f);
 		}
 
 		float minimumWidth = showSkipText ? 3.6f : 2.7f;
@@ -2258,8 +3241,8 @@ public partial class GameManager
 		}
 
 		tutorialBubbleSkipText.transform.position = new Vector3(center.x, center.y - bubbleSize.y * 0.31f, TutorialBubbleTextZ);
-		tutorialBubbleSkipText.text = GetTutorialText(TutorialTextId.Skip);
-		FitTutorialText(tutorialBubbleSkipText, bubbleSize.x * 0.58f, bubbleSize.y * 0.12f, 0.055f * TutorialBubbleTextScale);
+		tutorialBubbleSkipText.text = GetTutorialFooterText();
+		FitTutorialText(tutorialBubbleSkipText, bubbleSize.x * 0.58f, bubbleSize.y * 0.2f, 0.055f * TutorialBubbleTextScale);
 	}
 
 	private void SetTutorialBubbleBorder(Vector2 center, Vector2 radius)
@@ -2467,6 +3450,12 @@ public partial class GameManager
 		Keyboard keyboard = Keyboard.current;
 		return keyboard != null
 			&& (keyboard.enterKey.wasPressedThisFrame || keyboard.numpadEnterKey.wasPressedThisFrame);
+	}
+
+	private bool IsTutorialStepBackPressed()
+	{
+		Keyboard keyboard = Keyboard.current;
+		return keyboard != null && keyboard.backspaceKey.wasPressedThisFrame;
 	}
 
 	private bool IsTutorialIntroAdvancePressed()
